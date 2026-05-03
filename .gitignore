@@ -1,0 +1,15 @@
+.env
+.venv/
+
+__pycache__/
+*.pyc
+*.pyo
+
+data/downloads/
+data/renders/
+data/clips/
+data/metadata/
+
+*.mp4
+*.mov
+*.log
