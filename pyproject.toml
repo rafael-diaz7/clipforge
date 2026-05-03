@@ -7,3 +7,8 @@ dependencies = [
     "requests",
     "python-dotenv"
 ]
+
+[project.optional-dependencies]
+dev = [
+    "pytest"
+]

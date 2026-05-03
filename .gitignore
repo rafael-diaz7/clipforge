@@ -4,6 +4,7 @@
 __pycache__/
 *.pyc
 *.pyo
+*.egg-info/
 
 data/downloads/
 data/renders/

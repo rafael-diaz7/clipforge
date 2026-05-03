@@ -2,9 +2,14 @@
 
 This plan is organized as small milestones. Each task should be small enough to land as one git commit. Future agents should complete tasks in order unless the user explicitly changes priority.
 
+Task status markers:
+
+- `[x]` Complete
+- `[ ]` Not started
+
 ## Milestone 1: Documentation Foundation
 
-### 1. docs: add initial design and task plan
+### [x] 1. docs: add initial design and task plan
 
 Goal: Add the project design and implementation task plan before runtime implementation begins.
 
@@ -29,9 +34,11 @@ docs: add initial design and task plan
 
 ## Milestone 2: Configuration and Paths
 
-### 2. chore: add shared config and path helpers
+### [x] 2. chore: add shared config and path helpers
 
 Goal: Centralize environment loading, path constants, render defaults, and shared path helpers.
+
+Status: Complete in this commit.
 
 Files likely touched:
 
@@ -53,7 +60,7 @@ Suggested commit message:
 chore: add shared config and path helpers
 ```
 
-### 3. feat: add Clipr API client
+### [ ] 3. feat: add Clipr API client
 
 Goal: Add a small client that exchanges a Twitch clip URL for a direct downloadable video URL using Clipr.
 
@@ -77,7 +84,7 @@ Suggested commit message:
 feat: add Clipr API client
 ```
 
-### 4. feat: add local clip downloader
+### [ ] 4. feat: add local clip downloader
 
 Goal: Download direct media URLs to `data/downloads/` safely and predictably.
 
@@ -103,7 +110,7 @@ feat: add local clip downloader
 
 ## Milestone 3: Layouts
 
-### 5. feat: define layout schema and example layouts
+### [ ] 5. feat: define layout schema and example layouts
 
 Goal: Define editable JSON layout templates for the three MVP candidates.
 
@@ -130,7 +137,7 @@ feat: define layout schema and example layouts
 
 ## Milestone 4: Rendering
 
-### 6. feat: add FFmpeg render command builder
+### [ ] 6. feat: add FFmpeg render command builder
 
 Goal: Convert layout data into FFmpeg argument lists without running shell strings.
 
@@ -154,7 +161,7 @@ Suggested commit message:
 feat: add FFmpeg render command builder
 ```
 
-### 7. feat: render center crop candidate
+### [ ] 7. feat: render center crop candidate
 
 Goal: Generate the center gameplay crop candidate from its layout template.
 
@@ -177,7 +184,7 @@ Suggested commit message:
 feat: render center crop candidate
 ```
 
-### 8. feat: render facecam-focused candidate
+### [ ] 8. feat: render facecam-focused candidate
 
 Goal: Generate the facecam-focused vertical candidate from its layout template.
 
@@ -200,7 +207,7 @@ Suggested commit message:
 feat: render facecam-focused candidate
 ```
 
-### 9. feat: render hybrid candidate
+### [ ] 9. feat: render hybrid candidate
 
 Goal: Generate the hybrid candidate with facecam plus gameplay sections.
 
@@ -226,7 +233,7 @@ feat: render hybrid candidate
 
 ## Milestone 5: CLI and Metadata
 
-### 10. feat: add CLI entrypoint for URL to rendered candidates
+### [ ] 10. feat: add CLI entrypoint for URL to rendered candidates
 
 Goal: Wire the full MVP flow into `python -m clipforge.render_clip --url "<twitch_clip_url>"`.
 
@@ -255,7 +262,7 @@ Suggested commit message:
 feat: add CLI entrypoint for URL to rendered candidates
 ```
 
-### 11. chore: improve error handling and logging
+### [ ] 11. chore: improve error handling and logging
 
 Goal: Make failures understandable and safe without exposing secrets.
 
@@ -286,7 +293,7 @@ chore: improve error handling and logging
 
 ## Milestone 6: Usage Documentation
 
-### 12. docs: update README with working usage
+### [ ] 12. docs: update README with working usage
 
 Goal: Update the README once the MVP CLI flow is functional.
 
