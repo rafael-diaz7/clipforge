@@ -83,7 +83,7 @@ Copy .env.example to .env and fill in:
 CLIPR_API_KEY=your_key_here
 ```
 
-## Running (planned)
+## Running
 
 ```bash
 python -m clipforge.render_clip --url "<twitch_clip_url>"
@@ -94,6 +94,23 @@ This should:
 - generate multiple vertical edits
 - save them to data/renders/
 - save layout metadata to data/metadata/
+
+You can also run each pipeline step directly:
+
+```bash
+python -m clipforge.render_clip resolve-url --url "<twitch_clip_url>"
+python -m clipforge.render_clip download --media-url "<direct_media_url>" --clip-id "<clip_id>"
+python -m clipforge.render_clip render --source "data/downloads/<clip_id>.mp4" --layout center_gameplay
+python -m clipforge.render_clip render-all --source "data/downloads/<clip_id>.mp4"
+python -m clipforge.render_clip process --url "<twitch_clip_url>"
+```
+
+After reinstalling with `pip install -e .`, the same commands are available through:
+
+```bash
+clipforge --url "<twitch_clip_url>"
+clipforge render-all --source "data/downloads/<clip_id>.mp4"
+```
 
 ## Design notes
 
