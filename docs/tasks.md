@@ -86,9 +86,11 @@ Suggested commit message:
 feat: add Clipr API client
 ```
 
-### [ ] 4. feat: add local clip downloader
+### [x] 4. feat: add local clip downloader
 
 Goal: Download direct media URLs to `data/downloads/` safely and predictably.
+
+Status: Complete in this commit.
 
 Files likely touched:
 
