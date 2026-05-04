@@ -143,9 +143,11 @@ feat: define layout schema and example layouts
 
 ## Milestone 4: Rendering
 
-### [ ] 6. feat: add FFmpeg render command builder
+### [x] 6. feat: add FFmpeg render command builder
 
 Goal: Convert layout data into FFmpeg argument lists without running shell strings.
+
+Status: Complete in this commit.
 
 Files likely touched:
 
