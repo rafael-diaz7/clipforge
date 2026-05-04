@@ -1,0 +1,25 @@
+{
+  "name": "center_gameplay",
+  "description": "Centered vertical crop focused on gameplay.",
+  "output": {
+    "width": 1080,
+    "height": 1920
+  },
+  "regions": [
+    {
+      "name": "gameplay",
+      "source_region": {
+        "x": 0.21875,
+        "y": 0.0,
+        "width": 0.5625,
+        "height": 1.0
+      },
+      "output_region": {
+        "x": 0.0,
+        "y": 0.0,
+        "width": 1.0,
+        "height": 1.0
+      }
+    }
+  ]
+}

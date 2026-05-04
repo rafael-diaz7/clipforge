@@ -1,0 +1,25 @@
+{
+  "name": "facecam_focus",
+  "description": "Vertical crop shifted toward the typical facecam side of the source clip.",
+  "output": {
+    "width": 1080,
+    "height": 1920
+  },
+  "regions": [
+    {
+      "name": "facecam",
+      "source_region": {
+        "x": 0.0,
+        "y": 0.0,
+        "width": 0.5625,
+        "height": 1.0
+      },
+      "output_region": {
+        "x": 0.0,
+        "y": 0.0,
+        "width": 1.0,
+        "height": 1.0
+      }
+    }
+  ]
+}

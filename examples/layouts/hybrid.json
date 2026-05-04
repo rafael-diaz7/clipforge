@@ -1,0 +1,40 @@
+{
+  "name": "hybrid",
+  "description": "Stacked facecam and gameplay crops for a vertical composite.",
+  "output": {
+    "width": 1080,
+    "height": 1920
+  },
+  "regions": [
+    {
+      "name": "gameplay",
+      "source_region": {
+        "x": 0.21875,
+        "y": 0.0,
+        "width": 0.5625,
+        "height": 1.0
+      },
+      "output_region": {
+        "x": 0.0,
+        "y": 0.36,
+        "width": 1.0,
+        "height": 0.64
+      }
+    },
+    {
+      "name": "facecam",
+      "source_region": {
+        "x": 0.0,
+        "y": 0.0,
+        "width": 0.375,
+        "height": 0.375
+      },
+      "output_region": {
+        "x": 0.0,
+        "y": 0.0,
+        "width": 1.0,
+        "height": 0.36
+      }
+    }
+  ]
+}

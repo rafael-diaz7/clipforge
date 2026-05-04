@@ -114,9 +114,11 @@ feat: add local clip downloader
 
 ## Milestone 3: Layouts
 
-### [ ] 5. feat: define layout schema and example layouts
+### [x] 5. feat: define layout schema and example layouts
 
 Goal: Define editable JSON layout templates for the three MVP candidates.
+
+Status: Complete in this commit.
 
 Files likely touched:
 
