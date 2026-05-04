@@ -60,9 +60,11 @@ Suggested commit message:
 chore: add shared config and path helpers
 ```
 
-### [ ] 3. feat: add Clipr API client
+### [x] 3. feat: add Clipr API client
 
 Goal: Add a small client that exchanges a Twitch clip URL for a direct downloadable video URL using Clipr.
+
+Status: Complete in this commit.
 
 Files likely touched:
 
