@@ -3,6 +3,8 @@ from __future__ import annotations
 import json
 from pathlib import Path
 
+import pytest
+
 from clipforge.config import ClipforgeConfig, EXAMPLE_LAYOUTS_DIR
 from clipforge.layouts import load_example_layout
 from clipforge.render_clip import (
@@ -56,6 +58,40 @@ def test_main_routes_render_all_command(monkeypatch, capsys) -> None:
 
     assert exit_code == 0
     assert capsys.readouterr().out.splitlines() == ["one.mp4", "two.mp4"]
+
+
+def test_main_returns_non_zero_for_missing_clipr_api_key(monkeypatch, capsys) -> None:
+    def fake_process(url: str) -> Path:
+        raise RuntimeError("Missing required configuration: CLIPR_API_KEY")
+
+    monkeypatch.setattr("clipforge.render_clip.process_clip", fake_process)
+
+    exit_code = main(["--url", "https://clips.twitch.tv/TallHelpfulClipKappa"])
+
+    captured = capsys.readouterr()
+    assert exit_code == 1
+    assert "CLIPR_API_KEY" in captured.err
+
+
+def test_main_returns_non_zero_for_invalid_twitch_clip_url(
+    monkeypatch: pytest.MonkeyPatch,
+    capsys,
+) -> None:
+    calls: list[str] = []
+
+    def fake_get(self, twitch_clip_url: str) -> str:
+        calls.append(twitch_clip_url)
+        raise AssertionError("network call should not be reached")
+
+    monkeypatch.setenv("CLIPR_API_KEY", "test-key")
+    monkeypatch.setattr("clipforge.clipr.CliprClient._get", fake_get)
+
+    exit_code = main(["resolve-url", "--url", "https://example.com/not-a-clip"])
+
+    captured = capsys.readouterr()
+    assert exit_code == 1
+    assert "Unsupported Twitch clip URL" in captured.err
+    assert calls == []
 
 
 def test_render_candidate_uses_layout_name_for_output_path(

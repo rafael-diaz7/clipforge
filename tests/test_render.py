@@ -136,6 +136,8 @@ def test_render_layout_runs_command_and_returns_output_path(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     calls: list[list[str]] = []
+    source_path = tmp_path / "source.mp4"
+    source_path.write_bytes(b"video")
 
     def fake_run(command: list[str]) -> None:
         calls.append(command)
@@ -144,5 +146,33 @@ def test_render_layout_runs_command_and_returns_output_path(
 
     output_path = tmp_path / "render.mp4"
 
-    assert render_layout(tmp_path / "source.mp4", output_path, _layout(_region())) == output_path
+    assert render_layout(source_path, output_path, _layout(_region())) == output_path
     assert calls
+
+
+def test_render_layout_reports_missing_source_path(tmp_path: Path) -> None:
+    with pytest.raises(RenderError, match="Source video not found"):
+        render_layout(tmp_path / "missing.mp4", tmp_path / "render.mp4", _layout(_region()))
+
+
+def test_render_layout_adds_context_to_ffmpeg_errors(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    source_path = tmp_path / "source.mp4"
+    output_path = tmp_path / "render.mp4"
+    source_path.write_bytes(b"video")
+
+    def fake_run(command: list[str]) -> None:
+        raise RenderError("bad filter")
+
+    monkeypatch.setattr("clipforge.render.run_ffmpeg_command", fake_run)
+
+    with pytest.raises(RenderError) as exc_info:
+        render_layout(source_path, output_path, _layout(_region()))
+
+    message = str(exc_info.value)
+    assert "test_layout" in message
+    assert str(source_path) in message
+    assert str(output_path) in message
+    assert "bad filter" in message

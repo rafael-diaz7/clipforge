@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import argparse
 import json
+import logging
 import sys
 from dataclasses import asdict
 from pathlib import Path
@@ -22,6 +23,7 @@ from clipforge.utils import ensure_directory, twitch_clip_slug_from_url, utc_tim
 
 
 DEFAULT_LAYOUT_NAMES = ("center_gameplay", "facecam_focus", "hybrid")
+LOGGER = logging.getLogger(__name__)
 
 
 class CLIError(RuntimeError):
@@ -36,6 +38,11 @@ def build_parser() -> argparse.ArgumentParser:
     parser.add_argument(
         "--url",
         help="Run the full URL-to-renders pipeline for a Twitch clip URL.",
+    )
+    parser.add_argument(
+        "--verbose",
+        action="store_true",
+        help="Enable progress logging on stderr.",
     )
 
     subparsers = parser.add_subparsers(dest="command")
@@ -97,6 +104,7 @@ def build_parser() -> argparse.ArgumentParser:
 def main(argv: Sequence[str] | None = None) -> int:
     parser = build_parser()
     args = parser.parse_args(argv)
+    _configure_logging(verbose=args.verbose)
 
     try:
         if args.url and args.command is None:
@@ -143,6 +151,7 @@ def resolve_download_url(twitch_clip_url: str, *, config: ClipforgeConfig | None
     """Resolve a Twitch clip URL to a direct downloadable media URL."""
 
     config = config or load_config(require_clipr_api_key=True)
+    LOGGER.info("Resolving Twitch clip URL with Clipr.")
     return CliprClient.from_config(config).get_download_url(twitch_clip_url)
 
 
@@ -155,6 +164,7 @@ def download_media_url(
     """Download a direct media URL into the configured downloads directory."""
 
     config = config or load_config()
+    LOGGER.info("Downloading clip media to %s.", config.downloads_dir)
     return download_clip(
         media_url,
         downloads_dir=config.downloads_dir,
@@ -174,6 +184,7 @@ def render_candidate(
     config = config or load_config()
     layout = _load_layout_ref(layout_ref, config=config)
     output_path = _render_output_path(source_path, layout, clip_id=clip_id, config=config)
+    LOGGER.info("Rendering layout %s to %s.", layout.name, output_path)
     return render_layout(source_path, output_path, layout)
 
 
@@ -188,11 +199,7 @@ def render_all_candidates(
     config = config or load_config()
     layouts = load_example_layouts(DEFAULT_LAYOUT_NAMES, layouts_dir=config.example_layouts_dir)
     return tuple(
-        render_layout(
-            source_path,
-            _render_output_path(source_path, layout, clip_id=clip_id, config=config),
-            layout,
-        )
+        _render_candidate_layout(source_path, layout, clip_id=clip_id, config=config)
         for layout in layouts
     )
 
@@ -206,16 +213,18 @@ def process_clip(
 
     config = config or load_config(require_clipr_api_key=True)
     clip_id = twitch_clip_slug_from_url(twitch_clip_url)
+    LOGGER.info("Starting clip pipeline for clip %s.", clip_id)
     download_url = resolve_download_url(twitch_clip_url, config=config)
     source_path = download_media_url(download_url, clip_id=clip_id, config=config)
     layouts = load_example_layouts(DEFAULT_LAYOUT_NAMES, layouts_dir=config.example_layouts_dir)
 
     outputs = []
     for layout in layouts:
-        output_path = render_layout(
+        output_path = _render_candidate_layout(
             source_path,
-            _render_output_path(source_path, layout, clip_id=clip_id, config=config),
             layout,
+            clip_id=clip_id,
+            config=config,
         )
         outputs.append({"layout": layout.name, "path": str(output_path)})
 
@@ -234,6 +243,11 @@ def process_clip(
         print(f"{output['layout']}: {output['path']}")
     print(f"metadata: {metadata_path}")
     return metadata_path
+
+
+def _configure_logging(*, verbose: bool) -> None:
+    level = logging.INFO if verbose else logging.WARNING
+    logging.basicConfig(level=level, format="clipforge: %(levelname)s: %(message)s")
 
 
 def write_metadata(
@@ -272,9 +286,12 @@ def write_metadata(
 def _load_layout_ref(layout_ref: str, *, config: ClipforgeConfig) -> Layout:
     path = Path(layout_ref)
     if path.suffix.lower() == ".json" or path.exists():
+        LOGGER.info("Loading layout from %s.", path)
         return load_layout(path)
 
-    return load_layout(config.example_layouts_dir / f"{layout_ref}.json")
+    layout_path = config.example_layouts_dir / f"{layout_ref}.json"
+    LOGGER.info("Loading example layout %s from %s.", layout_ref, layout_path)
+    return load_layout(layout_path)
 
 
 def _render_output_path(
@@ -287,6 +304,18 @@ def _render_output_path(
     output_dir = ensure_directory(config.renders_dir)
     stem = clip_id or source_path.stem
     return output_dir / f"{stem}_{layout.name}.{config.output_format}"
+
+
+def _render_candidate_layout(
+    source_path: Path,
+    layout: Layout,
+    *,
+    clip_id: str | None,
+    config: ClipforgeConfig,
+) -> Path:
+    output_path = _render_output_path(source_path, layout, clip_id=clip_id, config=config)
+    LOGGER.info("Rendering layout %s to %s.", layout.name, output_path)
+    return render_layout(source_path, output_path, layout)
 
 
 if __name__ == "__main__":

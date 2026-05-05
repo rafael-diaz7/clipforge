@@ -143,13 +143,23 @@ def render_layout(
 ) -> Path:
     """Render one layout and return the output path."""
 
+    if not source_path.is_file():
+        raise RenderError(f"Source video not found: {source_path}")
+
     command = build_ffmpeg_command(
         source_path,
         output_path,
         layout,
         ffmpeg_binary=ffmpeg_binary,
     )
-    run_ffmpeg_command(command)
+    try:
+        run_ffmpeg_command(command)
+    except RenderError as exc:
+        raise RenderError(
+            f"Could not render layout {layout.name!r} from {source_path} "
+            f"to {output_path}: {exc}"
+        ) from exc
+
     return output_path
 
 

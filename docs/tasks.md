@@ -296,7 +296,7 @@ Suggested commit message:
 docs: mark CLI render pipeline task complete
 ```
 
-### [ ] 11. chore: improve error handling and logging
+### [x] 11. chore: improve error handling and logging
 
 Goal: Make failures understandable and safe without exposing secrets.
 
