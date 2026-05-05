@@ -327,9 +327,11 @@ chore: improve error handling and logging
 
 ## Milestone 6: Usage Documentation
 
-### [ ] 12. docs: update README with working usage
+### [x] 12. docs: update README with working usage
 
 Goal: Update the README once the MVP CLI flow is functional.
+
+Status: Complete in this commit.
 
 Files likely touched:
 

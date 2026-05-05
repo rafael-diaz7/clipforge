@@ -20,6 +20,8 @@ Given a Twitch clip URL:
 - Save all outputs locally
 - Save layout metadata so edits can be tweaked later without starting over
 
+This is a human-in-the-loop workflow: clipforge creates candidates, then I review, tweak, and post manually.
+
 
 ## Project structure
 
@@ -44,56 +46,90 @@ clipforge/
 5. If needed, I tweak layout values or re-render
 6. Post manually
 
-This is a human-in-the-loop workflow, not full automation.
-
-
-
 ## Setup
 
 Requirements:
 
 - Python 3.11+
 - FFmpeg installed and available in PATH
+- A Clipr API key in `CLIPR_API_KEY`
 
-Check FFmpeg:
+### FFmpeg
 
+Check whether FFmpeg is already available:
 
 ```bash
 ffmpeg -version
 ```
 
-Install:
+If that command fails, install FFmpeg first:
+
+- Windows: install FFmpeg, then make sure the `ffmpeg` executable is on PATH before opening Git Bash.
+- Ubuntu/Linux: use your distro package manager, for example `sudo apt install ffmpeg`.
+- macOS: install with Homebrew using `brew install ffmpeg`.
+
+### Python Environment
+
+Windows Git Bash:
 
 ```bash
 python -m venv .venv
-
-Windows (Git Bash):
 source .venv/Scripts/activate
-
-Linux / Mac:
-source .venv/bin/activate
-
-pip install -e .
+python -m pip install -e .
 ```
-Environment variables:
 
-Copy .env.example to .env and fill in:
+Ubuntu/Linux:
 
 ```bash
+python3 -m venv .venv
+source .venv/bin/activate
+python -m pip install -e .
+```
+
+macOS:
+
+```bash
+python3 -m venv .venv
+source .venv/bin/activate
+python -m pip install -e .
+```
+
+### Clipr API Key
+
+Copy `.env.example` to `.env` and replace the placeholder with your real key:
+
+```bash
+cp .env.example .env
+```
+
+`.env`:
+
+```text
 CLIPR_API_KEY=your_key_here
 ```
 
 ## Running
 
+Run the full Twitch-clip-to-candidates flow:
+
 ```bash
 python -m clipforge.render_clip --url "<twitch_clip_url>"
 ```
-This should:
 
-- download the clip
-- generate multiple vertical edits
-- save them to data/renders/
-- save layout metadata to data/metadata/
+After reinstalling with `python -m pip install -e .`, the same full pipeline is available through the console script:
+
+```bash
+clipforge --url "<twitch_clip_url>"
+```
+
+The command:
+
+- validates the Twitch clip URL
+- resolves a direct media URL through Clipr
+- downloads the source clip to `data/downloads/`
+- renders the `center_gameplay`, `facecam_focus`, and `hybrid` candidates to `data/renders/`
+- writes run metadata to `data/metadata/`
+- prints the source, render, and metadata paths
 
 You can also run each pipeline step directly:
 
@@ -105,11 +141,15 @@ python -m clipforge.render_clip render-all --source "data/downloads/<clip_id>.mp
 python -m clipforge.render_clip process --url "<twitch_clip_url>"
 ```
 
-After reinstalling with `pip install -e .`, the same commands are available through:
+The same subcommands are available through the installed `clipforge` command:
 
 ```bash
 clipforge --url "<twitch_clip_url>"
+clipforge resolve-url --url "<twitch_clip_url>"
+clipforge download --media-url "<direct_media_url>" --clip-id "<clip_id>"
+clipforge render --source "data/downloads/<clip_id>.mp4" --layout center_gameplay
 clipforge render-all --source "data/downloads/<clip_id>.mp4"
+clipforge process --url "<twitch_clip_url>"
 ```
 
 ## Design notes
@@ -134,7 +174,7 @@ The idea is to:
 - upload integration
 
 
-## Why I’m building this
+## Why I'm building this
 
 Clipping is mostly repetitive work. The creative part is deciding what is funny or worth posting.
 
