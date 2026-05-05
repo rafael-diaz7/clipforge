@@ -238,7 +238,7 @@ docs: mark separate candidate render tasks unnecessary
 
 ## Milestone 5: CLI and Metadata
 
-### [ ] 10. feat: add CLI entrypoint for URL to rendered candidates
+### [x] 10. feat: add CLI entrypoint for URL to rendered candidates
 
 Goal: Wire the full MVP flow into `python -m clipforge.render_clip --url "<twitch_clip_url>"`.
 
@@ -265,6 +265,35 @@ Suggested commit message:
 
 ```text
 feat: add CLI entrypoint for URL to rendered candidates
+```
+
+Status: Done. The CLI entrypoint already wires the MVP flow through
+`python -m clipforge.render_clip --url "<twitch_clip_url>"` and the installed
+`clipforge --url "<twitch_clip_url>"` script.
+
+Files touched:
+
+- `docs/tasks.md`
+
+Resolution:
+
+- Validates supported Twitch clip URLs before calling Clipr via
+  `twitch_clip_slug_from_url`.
+- Resolves the Clipr download URL, downloads the source clip, renders the three
+  default layout candidates, writes metadata under `data/metadata/`, and prints
+  concise source/output/metadata paths.
+- Verified existing coverage with the full test suite.
+
+Tests:
+
+```text
+.\.venv\Scripts\python -m pytest tests\test_render_clip.py tests\test_clipr.py tests\test_download.py tests\test_layouts.py tests\test_render.py tests\test_config.py tests\test_utils.py
+```
+
+Suggested commit message:
+
+```text
+docs: mark CLI render pipeline task complete
 ```
 
 ### [ ] 11. chore: improve error handling and logging
