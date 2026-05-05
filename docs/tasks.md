@@ -169,74 +169,71 @@ Suggested commit message:
 feat: add FFmpeg render command builder
 ```
 
-### [ ] 7. feat: render center crop candidate
+### [x] 7. not needed: render center crop candidate
 
-Goal: Generate the center gameplay crop candidate from its layout template.
+Goal: Previously intended to generate the center gameplay crop candidate from its layout template.
 
-Files likely touched:
+Status: Not needed. Task 6 already added the generic renderer, and the existing `render_candidate` / `render_all_candidates` orchestration renders named layout templates without per-layout code.
 
-- `src/clipforge/render.py`
-- `examples/layouts/center_gameplay.json`
-- `src/clipforge/layouts.py`
+Files touched:
 
-Acceptance criteria:
+- `docs/tasks.md`
 
-- The center gameplay layout renders a vertical `1080x1920` MP4.
-- Output is written to `data/renders/`.
-- The source crop is centered around gameplay according to layout values.
-- Render output path is returned to the caller.
+Resolution:
+
+- Keep `render.py` layout-agnostic.
+- Keep candidate behavior in JSON layout templates.
+- Use `render_candidate(..., layout_ref="center_gameplay")` or `render_all_candidates(...)`.
+- Do not add a center-specific render function.
 
 Suggested commit message:
 
 ```text
-feat: render center crop candidate
+docs: mark separate candidate render tasks unnecessary
 ```
 
-### [ ] 8. feat: render facecam-focused candidate
+### [x] 8. not needed: render facecam-focused candidate
 
-Goal: Generate the facecam-focused vertical candidate from its layout template.
+Goal: Previously intended to generate the facecam-focused vertical candidate from its layout template.
 
-Files likely touched:
+Status: Not needed. The generic renderer already handles this candidate through the `facecam_focus` layout template.
 
-- `src/clipforge/render.py`
-- `examples/layouts/facecam_focus.json`
-- `src/clipforge/layouts.py`
+Files touched:
 
-Acceptance criteria:
+- `docs/tasks.md`
 
-- The facecam-focused layout renders a vertical `1080x1920` MP4.
-- Output is written to `data/renders/`.
-- The source crop emphasizes the facecam area according to layout values.
-- Render output path is returned to the caller.
+Resolution:
+
+- Keep candidate behavior in `examples/layouts/facecam_focus.json`.
+- Use `render_candidate(..., layout_ref="facecam_focus")` or `render_all_candidates(...)`.
+- Do not add a facecam-specific render function.
 
 Suggested commit message:
 
 ```text
-feat: render facecam-focused candidate
+docs: mark separate candidate render tasks unnecessary
 ```
 
-### [ ] 9. feat: render hybrid candidate
+### [x] 9. not needed: render hybrid candidate
 
-Goal: Generate the hybrid candidate with facecam plus gameplay sections.
+Goal: Previously intended to generate the hybrid candidate with facecam plus gameplay sections.
 
-Files likely touched:
+Status: Not needed. The generic renderer already composes multiple regions in layout order, so the hybrid candidate is data-driven by the `hybrid` layout template.
 
-- `src/clipforge/render.py`
-- `examples/layouts/hybrid.json`
-- `src/clipforge/layouts.py`
+Files touched:
 
-Acceptance criteria:
+- `docs/tasks.md`
 
-- The hybrid layout renders a vertical `1080x1920` MP4.
-- Output is written to `data/renders/`.
-- Facecam and gameplay sections are composed from layout regions.
-- Overlay ordering is deterministic.
-- Render output path is returned to the caller.
+Resolution:
+
+- Keep candidate behavior in `examples/layouts/hybrid.json`.
+- Use `render_candidate(..., layout_ref="hybrid")` or `render_all_candidates(...)`.
+- Do not add a hybrid-specific render function.
 
 Suggested commit message:
 
 ```text
-feat: render hybrid candidate
+docs: mark separate candidate render tasks unnecessary
 ```
 
 ## Milestone 5: CLI and Metadata
