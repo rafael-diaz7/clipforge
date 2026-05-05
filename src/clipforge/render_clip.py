@@ -215,6 +215,7 @@ def process_clip(
     clip_id = twitch_clip_slug_from_url(twitch_clip_url)
     LOGGER.info("Starting clip pipeline for clip %s.", clip_id)
     download_url = resolve_download_url(twitch_clip_url, config=config)
+    print(f"download_url: {download_url}")
     source_path = download_media_url(download_url, clip_id=clip_id, config=config)
     layouts = load_example_layouts(DEFAULT_LAYOUT_NAMES, layouts_dir=config.example_layouts_dir)
 

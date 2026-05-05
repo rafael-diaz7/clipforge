@@ -196,7 +196,9 @@ def test_process_clip_writes_metadata(
     assert metadata["target_resolution"] == {"width": 1080, "height": 1920}
     assert metadata["created_at"].endswith("+00:00")
     assert metadata["rendered_at"].endswith("+00:00")
-    assert "metadata:" in capsys.readouterr().out
+    output = capsys.readouterr().out
+    assert "download_url: https://cdn.example.test/source.mp4" in output
+    assert "metadata:" in output
 
 
 def test_render_candidate_accepts_layout_file_path(
