@@ -1,355 +1,444 @@
-# clipforge MVP Task Plan
+# clipforge Task Roadmap
 
-This plan is organized as small milestones. Each task should be small enough to land as one git commit. Future agents should complete tasks in order unless the user explicitly changes priority.
+The MVP pipeline is working end to end: a Twitch clip URL resolves through Clipr, downloads locally, renders three vertical candidates with FFmpeg, and writes metadata.
+
+This roadmap tracks post-MVP product improvements. Tasks are ordered so each one leaves the project in a usable state. Keep each task small enough to review as one focused change, and preserve the existing one-shot `clipforge --url "<twitch_clip_url>"` workflow unless the task explicitly says otherwise.
 
 Task status markers:
 
 - `[x]` Complete
 - `[ ]` Not started
 
-## Milestone 1: Documentation Foundation
+Task fields:
 
-### [x] 1. docs: add initial design and task plan
+- Goal: the product or engineering outcome.
+- Files likely touched: starting points, not a required or exhaustive list.
+- Acceptance criteria: testable behavior that should be true when the task is done.
+- Out of scope: tempting adjacent work that should stay out of the task.
 
-Goal: Add the project design and implementation task plan before runtime implementation begins.
+## Baseline
+
+### [x] 0. MVP: URL to rendered candidates
+
+Goal: Preserve the known-good baseline before adding intelligence or polish.
+
+Current behavior:
+
+- Accepts a Twitch clip URL through `clipforge --url "<twitch_clip_url>"`.
+- Resolves a direct download URL through Clipr.
+- Prints the resolved download URL before downloading.
+- Downloads the source clip to `data/downloads/`.
+- Renders `center_gameplay`, `facecam_focus`, and `hybrid` candidates to `data/renders/`.
+- Writes run metadata to `data/metadata/`.
+- Keeps the workflow human-in-the-loop.
+
+Verification command:
+
+```text
+.\.venv\Scripts\python -m pytest
+```
+
+## Milestone 1: Captions and Render Polish
+
+### [ ] 1. feat: add caption metadata model
+
+Goal: Define the on-disk caption schema and helpers before wiring in transcription or render overlays.
 
 Files likely touched:
 
-- `docs/design.md`
-- `docs/tasks.md`
+- `src/clipforge/captions.py`
+- `src/clipforge/render_clip.py`
+- `tests/test_captions.py`
+- `tests/test_render_clip.py`
+- `README.md`
 
 Acceptance criteria:
 
-- `docs/design.md` explains project purpose, MVP scope, architecture, data flow, layout system, rendering approach, cross-platform requirements, error handling, git hygiene, and future extensions.
-- `docs/tasks.md` lists milestone tasks with goal, files likely touched, acceptance criteria, and suggested commit message.
-- No runtime code is implemented.
-- No external APIs are called.
-- No secrets, generated videos, or large binary files are added.
+- Caption segments include start time, end time, and text.
+- Caption JSON round-trips through load/save helpers with stable ordering and readable formatting.
+- Caption metadata is saved under `data/metadata/` with a deterministic path derived from the clip ID.
+- Existing run metadata can optionally reference a caption metadata path.
+- Empty caption lists are valid and distinct from missing caption metadata.
+- Existing download and render flows still work when captions are absent.
+
+Out of scope:
+
+- No transcription backend is added.
+- No captions are burned into video.
 
 Suggested commit message:
 
 ```text
-docs: add initial design and task plan
+feat: add caption metadata model
 ```
 
-## Milestone 2: Configuration and Paths
+### [ ] 2. feat: generate captions from downloaded clips
 
-### [x] 2. chore: add shared config and path helpers
-
-Goal: Centralize environment loading, path constants, render defaults, and shared path helpers.
-
-Status: Complete in this commit.
+Goal: Transcribe the downloaded source clip into timed caption segments.
 
 Files likely touched:
 
+- `src/clipforge/captions.py`
 - `src/clipforge/config.py`
-- `src/clipforge/utils.py`
+- `src/clipforge/render_clip.py`
+- `tests/test_captions.py`
 - `.env.example`
+- `README.md`
 
 Acceptance criteria:
 
-- `CLIPR_API_KEY` is read from the environment without hardcoding secrets.
-- Project paths for downloads, renders, metadata, and example layouts are defined with `pathlib`.
-- Target render resolution defaults to `1080x1920`.
-- Missing required configuration can be reported clearly.
-- `.env.example` documents required variables without real secrets.
+- CLI can generate caption metadata for a local source clip.
+- Full pipeline can optionally generate captions after download and before rendering through an explicit opt-in flag or config setting.
+- Caption generation uses the schema from task 1 and saves metadata before rendering starts.
+- If caption generation is requested and fails, the command exits with a clear error before rendering.
+- Secrets, source paths, backend names, and external-service failures are logged safely and usefully.
+- New dependencies, model downloads, or external services are documented before adoption.
+
+Out of scope:
+
+- Rendering captions onto videos remains separate.
+- Automatic clip discovery remains separate.
 
 Suggested commit message:
 
 ```text
-chore: add shared config and path helpers
+feat: generate clip captions
 ```
 
-### [x] 3. feat: add Clipr API client
+### [ ] 3. feat: burn captions into renders
 
-Goal: Add a small client that exchanges a Twitch clip URL for a direct downloadable video URL using Clipr.
-
-Status: Complete in this commit.
-
-Files likely touched:
-
-- `src/clipforge/clipr.py`
-- `src/clipforge/config.py`
-- `src/clipforge/utils.py`
-
-Acceptance criteria:
-
-- The client accepts a Twitch clip URL and API key.
-- The API key is passed from configuration and is never logged.
-- The client returns a direct downloadable video URL.
-- Clipr HTTP errors, malformed responses, and missing download URLs raise clear exceptions.
-- No downloading of video bytes happens in this module.
-
-Suggested commit message:
-
-```text
-feat: add Clipr API client
-```
-
-### [x] 4. feat: add local clip downloader
-
-Goal: Download direct media URLs to `data/downloads/` safely and predictably.
-
-Status: Complete in this commit.
-
-Files likely touched:
-
-- `src/clipforge/download.py`
-- `src/clipforge/utils.py`
-- `src/clipforge/config.py`
-
-Acceptance criteria:
-
-- The downloader streams video content to disk instead of loading the full file into memory.
-- Downloaded filenames are safe for local filesystems.
-- Downloads are saved under `data/downloads/`.
-- Failed or incomplete downloads raise clear errors.
-- The function returns the local source clip path.
-
-Suggested commit message:
-
-```text
-feat: add local clip downloader
-```
-
-## Milestone 3: Layouts
-
-### [x] 5. feat: define layout schema and example layouts
-
-Goal: Define editable JSON layout templates for the three MVP candidates.
-
-Status: Complete in this commit.
-
-Files likely touched:
-
-- `src/clipforge/layouts.py`
-- `examples/layouts/center_gameplay.json`
-- `examples/layouts/facecam_focus.json`
-- `examples/layouts/hybrid.json`
-
-Acceptance criteria:
-
-- Layout JSON uses normalized coordinates from `0` to `1`.
-- Three committed templates exist for center gameplay, facecam-focused, and hybrid candidates.
-- The loader validates required fields and coordinate bounds.
-- Invalid or missing layout files raise clear errors.
-- Layouts are editable without changing Python code.
-
-Suggested commit message:
-
-```text
-feat: define layout schema and example layouts
-```
-
-## Milestone 4: Rendering
-
-### [x] 6. feat: add FFmpeg render command builder
-
-Goal: Convert layout data into FFmpeg argument lists without running shell strings.
-
-Status: Complete in this commit.
+Goal: Overlay timed captions onto rendered vertical candidates.
 
 Files likely touched:
 
 - `src/clipforge/render.py`
-- `src/clipforge/layouts.py`
-- `src/clipforge/utils.py`
+- `src/clipforge/captions.py`
+- `src/clipforge/render_clip.py`
+- `tests/test_render.py`
+- `tests/test_render_clip.py`
 
 Acceptance criteria:
 
-- Renderer builds FFmpeg commands as `list[str]`.
-- Commands target `1080x1920` MP4 output.
-- Normalized source and output regions are converted to pixel operations.
-- FFmpeg execution uses `subprocess.run([...])`.
-- Missing FFmpeg and non-zero FFmpeg exits produce clear errors.
+- Renderer accepts optional caption metadata produced by task 1 or task 2.
+- FFmpeg command builder can include caption overlays without using shell strings.
+- Caption style is readable on mobile vertical video and can be tuned from one place.
+- Captions stay inside a safe area and avoid obvious layout collisions with known templates.
+- Rendering without captions remains supported and remains the default.
+- Tests cover command generation with and without captions.
+
+Out of scope:
+
+- No transcription changes.
+- No per-platform caption style presets yet.
 
 Suggested commit message:
 
 ```text
-feat: add FFmpeg render command builder
+feat: render captions onto candidates
 ```
 
-### [x] 7. not needed: render center crop candidate
+### [ ] 4. feat: add render diagnostics
 
-Goal: Previously intended to generate the center gameplay crop candidate from its layout template.
+Goal: Print and record basic output diagnostics after rendering so bad outputs are easier to spot.
 
-Status: Not needed. Task 6 already added the generic renderer, and the existing `render_candidate` / `render_all_candidates` orchestration renders named layout templates without per-layout code.
+Files likely touched:
 
-Files touched:
+- `src/clipforge/render.py`
+- `src/clipforge/render_clip.py`
+- `src/clipforge/probe.py`
+- `tests/test_render_clip.py`
+- `tests/test_probe.py`
+- `README.md`
 
+Acceptance criteria:
+
+- CLI can print basic output diagnostics: duration, resolution, audio presence, and file size.
+- Diagnostics run after each render.
+- Metadata records diagnostics when they are available.
+- Missing audio is called out clearly.
+- Diagnostics use FFprobe when available and warn without failing the render flow when FFprobe is missing.
+
+Out of scope:
+
+- No thumbnail, contact sheet, or browser-based preview UI yet.
+
+Suggested commit message:
+
+```text
+feat: add render diagnostics
+```
+
+## Milestone 2: Smarter Layouts
+
+### [ ] 5. feat: sample frames from source clips
+
+Goal: Extract representative frames that later layout logic can analyze.
+
+Files likely touched:
+
+- `src/clipforge/analyze.py`
+- `src/clipforge/render_clip.py`
+- `tests/test_analyze.py`
+- `.gitignore`
+- `README.md`
+
+Acceptance criteria:
+
+- CLI can sample frames from a local source clip.
+- Samples are saved under an ignored data directory, such as `data/analysis/<clip_id>/frames/`.
+- Sampling frequency or count is configurable with a simple default.
+- FFmpeg failures include useful context.
+- No layout behavior changes yet.
+
+Out of scope:
+
+- No facecam detection or layout generation yet.
+- No committed generated frames.
+
+Suggested commit message:
+
+```text
+feat: sample frames for layout analysis
+```
+
+### [ ] 6. feat: detect likely facecam region
+
+Goal: Find a stable face or facecam area from sampled frames without training a custom model yet.
+
+Files likely touched:
+
+- `src/clipforge/analyze.py`
+- `src/clipforge/layouts.py`
+- `tests/test_analyze.py`
+- `README.md`
+
+Acceptance criteria:
+
+- Analysis returns a normalized rectangle for the likely facecam region.
+- Detection results include confidence or enough metadata to explain fallbacks.
+- Failure to detect a facecam falls back cleanly to static layouts.
+- Detected regions are saved in metadata.
+- Detection runs locally with no API keys or external services.
+- Any new computer-vision dependency is justified in the README before adoption.
+
+Out of scope:
+
+- No custom model training.
+- No dynamic layout generation yet.
+
+Suggested commit message:
+
+```text
+feat: detect facecam region
+```
+
+### [ ] 7. feat: generate dynamic layout candidates
+
+Goal: Create layout JSON dynamically from detected facecam/gameplay regions.
+
+Files likely touched:
+
+- `src/clipforge/layouts.py`
+- `src/clipforge/analyze.py`
+- `src/clipforge/render_clip.py`
+- `tests/test_layouts.py`
+- `tests/test_render_clip.py`
+
+Acceptance criteria:
+
+- Dynamic layouts use the existing normalized layout schema.
+- Generated layouts are saved to metadata for manual review and tweaking.
+- Static layout templates remain available as fallbacks.
+- Candidate names make it clear whether they are static or detected.
+- Tests cover detected and fallback layout generation.
+
+Out of scope:
+
+- No frame sampling or detection changes beyond consuming saved analysis results.
+- No review UI.
+
+Suggested commit message:
+
+```text
+feat: generate detected layout candidates
+```
+
+### [ ] 8. research: collect bad layout examples
+
+Goal: Build a small local evidence set before considering custom model training.
+
+Files likely touched:
+
+- `docs/layout-evaluation.md`
 - `docs/tasks.md`
 
-Resolution:
+Acceptance criteria:
 
-- Keep `render.py` layout-agnostic.
-- Keep candidate behavior in JSON layout templates.
-- Use `render_candidate(..., layout_ref="center_gameplay")` or `render_all_candidates(...)`.
-- Do not add a center-specific render function.
+- Document common layout failure modes.
+- Capture representative examples without committing large videos or secrets.
+- Decide whether heuristics are enough or a trained model is justified.
+- List what labels would be needed for a training set if ML becomes worthwhile.
 
-Suggested commit message:
+Out of scope:
 
-```text
-docs: mark separate candidate render tasks unnecessary
-```
-
-### [x] 8. not needed: render facecam-focused candidate
-
-Goal: Previously intended to generate the facecam-focused vertical candidate from its layout template.
-
-Status: Not needed. The generic renderer already handles this candidate through the `facecam_focus` layout template.
-
-Files touched:
-
-- `docs/tasks.md`
-
-Resolution:
-
-- Keep candidate behavior in `examples/layouts/facecam_focus.json`.
-- Use `render_candidate(..., layout_ref="facecam_focus")` or `render_all_candidates(...)`.
-- Do not add a facecam-specific render function.
+- No model training.
+- No committed source clips or rendered videos.
 
 Suggested commit message:
 
 ```text
-docs: mark separate candidate render tasks unnecessary
+docs: track layout failure cases
 ```
 
-### [x] 9. not needed: render hybrid candidate
+## Milestone 3: Clip Selection
 
-Goal: Previously intended to generate the hybrid candidate with facecam plus gameplay sections.
+### [ ] 9. feat: add Twitch clip discovery client
 
-Status: Not needed. The generic renderer already composes multiple regions in layout order, so the hybrid candidate is data-driven by the `hybrid` layout template.
+Goal: Discover candidate clips from Twitch instead of requiring one URL at a time.
 
-Files touched:
+Files likely touched:
 
-- `docs/tasks.md`
+- `src/clipforge/twitch.py`
+- `src/clipforge/config.py`
+- `src/clipforge/render_clip.py`
+- `tests/test_twitch.py`
+- `.env.example`
+- `README.md`
 
-Resolution:
+Acceptance criteria:
 
-- Keep candidate behavior in `examples/layouts/hybrid.json`.
-- Use `render_candidate(..., layout_ref="hybrid")` or `render_all_candidates(...)`.
-- Do not add a hybrid-specific render function.
+- Twitch credentials are loaded from environment variables without hardcoding secrets.
+- CLI can list recent clips for a channel.
+- Clip search supports a small set of practical filters such as date range and result limit.
+- API errors are clear and do not expose credentials.
+- No automatic rendering is triggered by discovery alone.
+- HTTP interactions are testable without calling the live Twitch API.
+
+Out of scope:
+
+- No ranking or queue processing yet.
+- No downloading or rendering discovered clips.
 
 Suggested commit message:
 
 ```text
-docs: mark separate candidate render tasks unnecessary
+feat: discover Twitch clips
 ```
 
-## Milestone 5: CLI and Metadata
+### [ ] 10. feat: rank discovered clips
 
-### [x] 10. feat: add CLI entrypoint for URL to rendered candidates
+Goal: Sort discovered clips into a useful review queue.
 
-Goal: Wire the full MVP flow into `python -m clipforge.render_clip --url "<twitch_clip_url>"`.
+Files likely touched:
+
+- `src/clipforge/twitch.py`
+- `src/clipforge/ranking.py`
+- `tests/test_ranking.py`
+- `README.md`
+
+Acceptance criteria:
+
+- Ranking uses available metadata such as views, age, duration, creator, and title.
+- Scoring is deterministic, transparent, and easy to tune.
+- CLI prints a concise ranked list with clip URLs.
+- Ranking does not call rendering or downloading automatically.
+
+Out of scope:
+
+- No AI scoring.
+- No automatic queue processing.
+
+Suggested commit message:
+
+```text
+feat: rank discovered clips
+```
+
+### [ ] 11. feat: process selected clips from a review queue
+
+Goal: Let the user choose clips from discovery results and render only selected items.
 
 Files likely touched:
 
 - `src/clipforge/render_clip.py`
-- `src/clipforge/config.py`
-- `src/clipforge/clipr.py`
-- `src/clipforge/download.py`
-- `src/clipforge/layouts.py`
-- `src/clipforge/render.py`
-- `src/clipforge/utils.py`
+- `src/clipforge/twitch.py`
+- `src/clipforge/ranking.py`
+- `tests/test_render_clip.py`
+- `README.md`
 
 Acceptance criteria:
 
-- CLI accepts a Twitch clip URL with `--url`.
-- CLI validates the URL before calling Clipr.
-- CLI retrieves a Clipr download URL, downloads the source clip, loads three layouts, and renders three candidates.
-- CLI saves metadata under `data/metadata/`.
-- Metadata includes clip ID or slug, source URL, Clipr download URL, local source path, output paths, layout values, target resolution, and timestamps.
-- CLI prints concise output paths for the user.
+- CLI can save a discovered and ranked queue to metadata.
+- CLI can process one selected clip from that queue by stable ID, URL, or list index.
+- Already-downloaded clips are reused when possible.
+- Outputs remain organized by clip slug.
+- The workflow stays human-in-the-loop.
+
+Out of scope:
+
+- No automatic batch rendering.
+- No upload integration.
 
 Suggested commit message:
 
 ```text
-feat: add CLI entrypoint for URL to rendered candidates
+feat: process selected clips from queue
 ```
 
-Status: Done. The CLI entrypoint already wires the MVP flow through
-`python -m clipforge.render_clip --url "<twitch_clip_url>"` and the installed
-`clipforge --url "<twitch_clip_url>"` script.
+## Milestone 4: Workflow UX
 
-Files touched:
+### [ ] 12. feat: add resumable pipeline state
 
-- `docs/tasks.md`
-
-Resolution:
-
-- Validates supported Twitch clip URLs before calling Clipr via
-  `twitch_clip_slug_from_url`.
-- Resolves the Clipr download URL, downloads the source clip, renders the three
-  default layout candidates, writes metadata under `data/metadata/`, and prints
-  concise source/output/metadata paths.
-- Verified existing coverage with the full test suite.
-
-Tests:
-
-```text
-.\.venv\Scripts\python -m pytest tests\test_render_clip.py tests\test_clipr.py tests\test_download.py tests\test_layouts.py tests\test_render.py tests\test_config.py tests\test_utils.py
-```
-
-Suggested commit message:
-
-```text
-docs: mark CLI render pipeline task complete
-```
-
-### [x] 11. chore: improve error handling and logging
-
-Goal: Make failures understandable and safe without exposing secrets.
+Goal: Make failed or interrupted runs easier to continue.
 
 Files likely touched:
 
 - `src/clipforge/render_clip.py`
-- `src/clipforge/config.py`
-- `src/clipforge/clipr.py`
-- `src/clipforge/download.py`
-- `src/clipforge/layouts.py`
-- `src/clipforge/render.py`
-- `src/clipforge/utils.py`
+- `src/clipforge/state.py`
+- `tests/test_render_clip.py`
+- `tests/test_state.py`
 
 Acceptance criteria:
 
-- Missing `CLIPR_API_KEY` produces a clear configuration error.
-- Invalid Twitch clip URLs fail before network calls.
-- Clipr, download, layout, and FFmpeg failures include useful context.
-- API keys are not logged.
-- CLI exits with non-zero status on failures.
-- Logging works cross-platform and does not rely on shell-specific behavior.
+- Each major stage records completion status.
+- A failed run preserves resolved URLs, source paths, caption paths, and partial output metadata.
+- CLI can resume from the latest completed stage.
+- Resume avoids repeating completed download/render work unless an explicit force option is used.
+- Existing one-shot `clipforge --url` behavior remains available.
+
+Out of scope:
+
+- No background worker or scheduler.
+- No multi-clip batch orchestration.
 
 Suggested commit message:
 
 ```text
-chore: improve error handling and logging
+feat: add resumable pipeline state
 ```
 
-## Milestone 6: Usage Documentation
+### [ ] 13. docs: refresh README for post-MVP workflow
 
-### [x] 12. docs: update README with working usage
-
-Goal: Update the README once the MVP CLI flow is functional.
-
-Status: Complete in this commit.
+Goal: Keep the README aligned as captions, analysis, and discovery land.
 
 Files likely touched:
 
 - `README.md`
-- `.env.example`
+- `docs/tasks.md`
 
 Acceptance criteria:
 
-- README documents install steps for Windows Git Bash, Ubuntu/Linux, and macOS.
-- README explains FFmpeg as a requirement.
-- README documents `CLIPR_API_KEY`.
-- README shows the working CLI command.
-- README explains where downloads, renders, and metadata are saved.
-- README keeps the human-in-the-loop framing clear.
-- README does not claim non-MVP features exist.
+- README documents the current recommended workflow.
+- Optional features are clearly marked as optional.
+- Required external tools and credentials are listed.
+- The docs do not claim unfinished features exist.
+
+Out of scope:
+
+- No new runtime behavior.
 
 Suggested commit message:
 
 ```text
-docs: update README with working usage
+docs: refresh post-MVP usage
 ```
