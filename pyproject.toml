@@ -10,7 +10,7 @@ dependencies = [
 ]
 
 [project.scripts]
-clipforge = "clipforge.render_clip:main"
+clipforge = "clipforge.pipeline.render_clip:main"
 
 [project.optional-dependencies]
 dev = [

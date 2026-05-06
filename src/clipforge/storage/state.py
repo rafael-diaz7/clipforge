@@ -1,0 +1,356 @@
+"""Local SQLite-backed clip processing state."""
+
+from __future__ import annotations
+
+import sqlite3
+from dataclasses import dataclass
+from pathlib import Path
+from typing import Any
+
+from clipforge.core.config import STATE_DB_PATH, STATE_DIR
+from clipforge.core.utils import utc_timestamp
+
+
+DEFAULT_STATE_DB_PATH = STATE_DB_PATH
+
+CLIP_STATUSES = frozenset(
+    {
+        "discovered",
+        "queued",
+        "downloaded",
+        "rendered",
+        "approved",
+        "posted",
+        "skipped",
+        "failed",
+    }
+)
+UNPROCESSED_STATUSES = ("discovered", "queued")
+
+
+class ClipStateError(RuntimeError):
+    """Raised when clip state cannot be read or updated."""
+
+
+@dataclass(frozen=True)
+class ClipState:
+    clip_id: str
+    url: str
+    streamer_login: str | None
+    title: str | None
+    view_count: int | None
+    duration_seconds: float | None
+    discovered_at: str
+    last_seen_at: str
+    status: str
+    download_path: str | None
+    metadata_path: str | None
+    render_dir: str | None
+    skip_reason: str | None
+    error_message: str | None
+
+
+def init_db(db_path: Path | str = DEFAULT_STATE_DB_PATH) -> Path:
+    """Create the clip state database if it does not already exist."""
+
+    resolved_path = Path(db_path)
+    resolved_path.parent.mkdir(parents=True, exist_ok=True)
+
+    with _connect(resolved_path) as connection:
+        connection.execute(
+            """
+            CREATE TABLE IF NOT EXISTS clips (
+              clip_id TEXT PRIMARY KEY,
+              url TEXT NOT NULL,
+              streamer_login TEXT,
+              title TEXT,
+              view_count INTEGER,
+              duration_seconds REAL,
+              discovered_at TEXT NOT NULL,
+              last_seen_at TEXT NOT NULL,
+              status TEXT NOT NULL DEFAULT 'discovered'
+                CHECK (status IN (
+                  'discovered',
+                  'queued',
+                  'downloaded',
+                  'rendered',
+                  'approved',
+                  'posted',
+                  'skipped',
+                  'failed'
+                )),
+              download_path TEXT,
+              metadata_path TEXT,
+              render_dir TEXT,
+              skip_reason TEXT,
+              error_message TEXT
+            );
+            """
+        )
+        connection.execute(
+            """
+            CREATE INDEX IF NOT EXISTS idx_clips_status_last_seen
+            ON clips(status, last_seen_at);
+            """
+        )
+
+    return resolved_path
+
+
+def upsert_discovered_clip(
+    *,
+    clip_id: str,
+    url: str,
+    streamer_login: str | None = None,
+    title: str | None = None,
+    view_count: int | None = None,
+    duration_seconds: float | None = None,
+    db_path: Path | str = DEFAULT_STATE_DB_PATH,
+    now: str | None = None,
+) -> ClipState:
+    """Insert or refresh a discovered clip without changing processing status."""
+
+    timestamp = now or utc_timestamp()
+    resolved_path = init_db(db_path)
+    with _connect(resolved_path) as connection:
+        connection.execute(
+            """
+            INSERT INTO clips (
+              clip_id,
+              url,
+              streamer_login,
+              title,
+              view_count,
+              duration_seconds,
+              discovered_at,
+              last_seen_at
+            )
+            VALUES (?, ?, ?, ?, ?, ?, ?, ?)
+            ON CONFLICT(clip_id) DO UPDATE SET
+              url = excluded.url,
+              streamer_login = excluded.streamer_login,
+              title = excluded.title,
+              view_count = excluded.view_count,
+              duration_seconds = excluded.duration_seconds,
+              last_seen_at = excluded.last_seen_at;
+            """,
+            (
+                clip_id,
+                url,
+                streamer_login,
+                title,
+                view_count,
+                duration_seconds,
+                timestamp,
+                timestamp,
+            ),
+        )
+
+    clip = get_clip(clip_id, db_path=resolved_path)
+    if clip is None:
+        raise ClipStateError(f"Clip state was not written for clip_id: {clip_id}.")
+    return clip
+
+
+def get_unprocessed_clips(
+    *,
+    db_path: Path | str = DEFAULT_STATE_DB_PATH,
+    limit: int | None = None,
+) -> tuple[ClipState, ...]:
+    """Return clips that are eligible for automatic processing."""
+
+    resolved_path = init_db(db_path)
+    params: list[Any] = list(UNPROCESSED_STATUSES)
+    sql = """
+        SELECT *
+        FROM clips
+        WHERE status IN (?, ?)
+        ORDER BY discovered_at ASC, clip_id ASC
+    """
+    if limit is not None:
+        if limit < 1:
+            raise ClipStateError("Unprocessed clip limit must be at least 1.")
+        sql += " LIMIT ?"
+        params.append(limit)
+
+    with _connect(resolved_path) as connection:
+        rows = connection.execute(sql, params).fetchall()
+    return tuple(_clip_from_row(row) for row in rows)
+
+
+def get_clip(
+    clip_id: str,
+    *,
+    db_path: Path | str = DEFAULT_STATE_DB_PATH,
+) -> ClipState | None:
+    """Read one clip by ID."""
+
+    resolved_path = init_db(db_path)
+    with _connect(resolved_path) as connection:
+        row = connection.execute(
+            """
+            SELECT *
+            FROM clips
+            WHERE clip_id = ?
+            """,
+            (clip_id,),
+        ).fetchone()
+    if row is None:
+        return None
+    return _clip_from_row(row)
+
+
+def mark_clip_downloaded(
+    clip_id: str,
+    *,
+    download_path: Path | str,
+    metadata_path: Path | str | None = None,
+    db_path: Path | str = DEFAULT_STATE_DB_PATH,
+) -> ClipState:
+    """Mark a clip as downloaded and persist local artifact paths."""
+
+    return _update_clip_status(
+        clip_id,
+        "downloaded",
+        db_path=db_path,
+        download_path=str(download_path),
+        metadata_path=_optional_path_string(metadata_path),
+        clear_skip_reason=True,
+        clear_error_message=True,
+    )
+
+
+def mark_clip_rendered(
+    clip_id: str,
+    *,
+    render_dir: Path | str,
+    metadata_path: Path | str | None = None,
+    db_path: Path | str = DEFAULT_STATE_DB_PATH,
+) -> ClipState:
+    """Mark a clip as rendered and persist local artifact paths."""
+
+    return _update_clip_status(
+        clip_id,
+        "rendered",
+        db_path=db_path,
+        render_dir=str(render_dir),
+        metadata_path=_optional_path_string(metadata_path),
+        clear_skip_reason=True,
+        clear_error_message=True,
+    )
+
+
+def mark_clip_skipped(
+    clip_id: str,
+    *,
+    skip_reason: str,
+    db_path: Path | str = DEFAULT_STATE_DB_PATH,
+) -> ClipState:
+    """Mark a clip as intentionally skipped."""
+
+    return _update_clip_status(
+        clip_id,
+        "skipped",
+        db_path=db_path,
+        skip_reason=skip_reason,
+        clear_error_message=True,
+    )
+
+
+def mark_clip_failed(
+    clip_id: str,
+    *,
+    error_message: str,
+    db_path: Path | str = DEFAULT_STATE_DB_PATH,
+) -> ClipState:
+    """Mark a clip as failed."""
+
+    return _update_clip_status(
+        clip_id,
+        "failed",
+        db_path=db_path,
+        error_message=error_message,
+    )
+
+
+def _update_clip_status(
+    clip_id: str,
+    status: str,
+    *,
+    db_path: Path | str,
+    download_path: str | None = None,
+    metadata_path: str | None = None,
+    render_dir: str | None = None,
+    skip_reason: str | None = None,
+    error_message: str | None = None,
+    clear_skip_reason: bool = False,
+    clear_error_message: bool = False,
+) -> ClipState:
+    if status not in CLIP_STATUSES:
+        raise ClipStateError(f"Unsupported clip status: {status}.")
+
+    resolved_path = init_db(db_path)
+    with _connect(resolved_path) as connection:
+        cursor = connection.execute(
+            """
+            UPDATE clips
+            SET
+              status = ?,
+              download_path = COALESCE(?, download_path),
+              metadata_path = COALESCE(?, metadata_path),
+              render_dir = COALESCE(?, render_dir),
+              skip_reason = CASE WHEN ? THEN NULL ELSE COALESCE(?, skip_reason) END,
+              error_message = CASE WHEN ? THEN NULL ELSE COALESCE(?, error_message) END
+            WHERE clip_id = ?
+            """,
+            (
+                status,
+                download_path,
+                metadata_path,
+                render_dir,
+                clear_skip_reason,
+                skip_reason,
+                clear_error_message,
+                error_message,
+                clip_id,
+            ),
+        )
+        if cursor.rowcount == 0:
+            raise ClipStateError(f"Clip not found: {clip_id}.")
+
+    clip = get_clip(clip_id, db_path=resolved_path)
+    if clip is None:
+        raise ClipStateError(f"Clip not found after status update: {clip_id}.")
+    return clip
+
+
+def _connect(db_path: Path) -> sqlite3.Connection:
+    connection = sqlite3.connect(db_path)
+    connection.row_factory = sqlite3.Row
+    return connection
+
+
+def _optional_path_string(path: Path | str | None) -> str | None:
+    if path is None:
+        return None
+    return str(path)
+
+
+def _clip_from_row(row: sqlite3.Row) -> ClipState:
+    data = dict(row)
+    return ClipState(
+        clip_id=data["clip_id"],
+        url=data["url"],
+        streamer_login=data["streamer_login"],
+        title=data["title"],
+        view_count=data["view_count"],
+        duration_seconds=data["duration_seconds"],
+        discovered_at=data["discovered_at"],
+        last_seen_at=data["last_seen_at"],
+        status=data["status"],
+        download_path=data["download_path"],
+        metadata_path=data["metadata_path"],
+        render_dir=data["render_dir"],
+        skip_reason=data["skip_reason"],
+        error_message=data["error_message"],
+    )

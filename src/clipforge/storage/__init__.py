@@ -1,0 +1,1 @@
+"""Persistent clip state storage."""
