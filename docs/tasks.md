@@ -49,7 +49,7 @@ Files likely touched:
 - `src/clipforge/media/download.py`
 - `src/clipforge/integrations/clipr.py`
 - `src/clipforge/core/config.py`
-- `src/clipforge/pipeline/render_clip.py`
+- `src/clipforge/pipeline/cli.py`
 - `tests/media/test_download.py`
 - `tests/core/test_config.py`
 - `.env.example`
@@ -87,7 +87,7 @@ Files likely touched:
 
 - `src/clipforge/media/download.py`
 - `src/clipforge/core/config.py`
-- `src/clipforge/pipeline/render_clip.py`
+- `src/clipforge/pipeline/cli.py`
 - `tests/media/test_download.py`
 - `tests/core/test_config.py`
 - `.env.example`
@@ -125,7 +125,7 @@ Files likely touched:
 
 - `src/clipforge/integrations/twitch.py`
 - `src/clipforge/core/config.py`
-- `src/clipforge/pipeline/render_clip.py`
+- `src/clipforge/pipeline/cli.py`
 - `tests/integrations/test_twitch.py`
 - `.env.example`
 - `README.md`
@@ -185,10 +185,10 @@ Goal: Let the user choose clips from discovery results and render only selected 
 
 Files likely touched:
 
-- `src/clipforge/pipeline/render_clip.py`
+- `src/clipforge/pipeline/cli.py`
 - `src/clipforge/integrations/twitch.py`
 - `src/clipforge/pipeline/ranking.py`
-- `tests/pipeline/test_render_clip.py`
+- `tests/pipeline/test_cli.py`
 - `README.md`
 
 Acceptance criteria:
@@ -219,9 +219,9 @@ Goal: Define the on-disk caption schema and helpers before wiring in transcripti
 Files likely touched:
 
 - `src/clipforge/media/captions.py`
-- `src/clipforge/pipeline/render_clip.py`
+- `src/clipforge/pipeline/cli.py`
 - `tests/media/test_captions.py`
-- `tests/pipeline/test_render_clip.py`
+- `tests/pipeline/test_cli.py`
 - `README.md`
 
 Acceptance criteria:
@@ -252,7 +252,7 @@ Files likely touched:
 
 - `src/clipforge/media/captions.py`
 - `src/clipforge/core/config.py`
-- `src/clipforge/pipeline/render_clip.py`
+- `src/clipforge/pipeline/cli.py`
 - `tests/media/test_captions.py`
 - `.env.example`
 - `README.md`
@@ -288,9 +288,9 @@ Files likely touched:
 
 - `src/clipforge/media/render.py`
 - `src/clipforge/media/captions.py`
-- `src/clipforge/pipeline/render_clip.py`
+- `src/clipforge/pipeline/cli.py`
 - `tests/media/test_render.py`
-- `tests/pipeline/test_render_clip.py`
+- `tests/pipeline/test_cli.py`
 
 Acceptance criteria:
 
@@ -319,9 +319,9 @@ Goal: Print and record basic output diagnostics after rendering so bad outputs a
 Files likely touched:
 
 - `src/clipforge/media/render.py`
-- `src/clipforge/pipeline/render_clip.py`
+- `src/clipforge/pipeline/cli.py`
 - `src/clipforge/media/probe.py`
-- `tests/pipeline/test_render_clip.py`
+- `tests/pipeline/test_cli.py`
 - `tests/media/test_probe.py`
 - `README.md`
 
@@ -352,7 +352,7 @@ Goal: Extract representative frames that later layout logic can analyze.
 Files likely touched:
 
 - `src/clipforge/media/analyze.py`
-- `src/clipforge/pipeline/render_clip.py`
+- `src/clipforge/pipeline/cli.py`
 - `tests/media/test_analyze.py`
 - `.gitignore`
 - `README.md`
@@ -415,9 +415,9 @@ Files likely touched:
 
 - `src/clipforge/media/layouts.py`
 - `src/clipforge/media/analyze.py`
-- `src/clipforge/pipeline/render_clip.py`
+- `src/clipforge/pipeline/cli.py`
 - `tests/media/test_layouts.py`
-- `tests/pipeline/test_render_clip.py`
+- `tests/pipeline/test_cli.py`
 
 Acceptance criteria:
 
@@ -446,9 +446,9 @@ Goal: Make failed or interrupted runs easier to continue.
 
 Files likely touched:
 
-- `src/clipforge/pipeline/render_clip.py`
+- `src/clipforge/pipeline/cli.py`
 - `src/clipforge/storage/state.py`
-- `tests/pipeline/test_render_clip.py`
+- `tests/pipeline/test_cli.py`
 - `tests/storage/test_state.py`
 
 Acceptance criteria:

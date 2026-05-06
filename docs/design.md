@@ -114,7 +114,7 @@ Responsibilities:
 
 Python should pass FFmpeg arguments as lists, not shell strings.
 
-### `render_clip.py`
+### `cli.py`
 
 CLI entrypoint that wires the flow together.
 
@@ -133,7 +133,7 @@ Responsibilities:
 The planned command is:
 
 ```bash
-python -m clipforge.render_clip --url "<twitch_clip_url>"
+python -m clipforge.pipeline.cli --url "<twitch_clip_url>"
 ```
 
 ### `utils.py`

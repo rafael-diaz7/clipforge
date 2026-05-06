@@ -191,7 +191,7 @@ clipforge clips \
 Run the full Twitch-clip-to-candidates flow:
 
 ```bash
-python -m clipforge.render_clip --url "<twitch_clip_url>"
+python -m clipforge.pipeline.cli --url "<twitch_clip_url>"
 ```
 
 After reinstalling with `python -m pip install -e .`, the same full pipeline is available through the console script:
@@ -220,11 +220,11 @@ verbose mode logs when URL processing starts and when the download begins.
 You can also run each pipeline step directly:
 
 ```bash
-python -m clipforge.render_clip resolve-url --url "<twitch_clip_url>"
-python -m clipforge.render_clip download --media-url "<direct_media_url>" --clip-id "<clip_id>"
-python -m clipforge.render_clip render --source "data/downloads/<clip_slug>/<backend>/<clip_slug>.mp4" --layout center_gameplay
-python -m clipforge.render_clip render-all --source "data/downloads/<clip_slug>/<backend>/<clip_slug>.mp4"
-python -m clipforge.render_clip process --url "<twitch_clip_url>"
+python -m clipforge.pipeline.cli resolve-url --url "<twitch_clip_url>"
+python -m clipforge.pipeline.cli download --media-url "<direct_media_url>" --clip-id "<clip_id>"
+python -m clipforge.pipeline.cli render --source "data/downloads/<clip_slug>/<backend>/<clip_slug>.mp4" --layout center_gameplay
+python -m clipforge.pipeline.cli render-all --source "data/downloads/<clip_slug>/<backend>/<clip_slug>.mp4"
+python -m clipforge.pipeline.cli process --url "<twitch_clip_url>"
 ```
 
 `resolve-url` uses Clipr because it resolves a direct media URL without
@@ -241,6 +241,21 @@ clipforge render --source "data/downloads/<clip_slug>/<backend>/<clip_slug>.mp4"
 clipforge render-all --source "data/downloads/<clip_slug>/<backend>/<clip_slug>.mp4"
 clipforge process --url "<twitch_clip_url>"
 ```
+
+For development, the installed console script points at
+`clipforge.pipeline.cli:main`.
+
+## Testing
+
+Run the test suite from the repository root:
+
+```bash
+pytest .\tests\
+```
+
+The pytest config adds the repo root to Python's import path so shared test
+helpers such as `tests.constants` resolve consistently across `pytest` and
+`python -m pytest`.
 
 ## Design notes
 

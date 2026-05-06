@@ -10,9 +10,14 @@ dependencies = [
 ]
 
 [project.scripts]
-clipforge = "clipforge.pipeline.render_clip:main"
+clipforge = "clipforge.pipeline.cli:main"
 
 [project.optional-dependencies]
 dev = [
     "pytest"
+]
+
+[tool.pytest.ini_options]
+pythonpath = [
+    "."
 ]
