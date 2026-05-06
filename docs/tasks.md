@@ -1,6 +1,6 @@
 # clipforge Task Roadmap
 
-The MVP pipeline is working end to end: a Twitch clip URL resolves through Clipr, downloads locally, renders three vertical candidates with FFmpeg, and writes metadata.
+The MVP pipeline is working end to end: a Twitch clip URL downloads through the configured backend, renders three vertical candidates with FFmpeg, and writes metadata.
 
 This roadmap tracks post-MVP product improvements. Tasks are ordered so each one leaves the project in a usable state. Keep each task small enough to review as one focused change, and preserve the existing one-shot `clipforge --url "<twitch_clip_url>"` workflow unless the task explicitly says otherwise.
 
@@ -25,8 +25,8 @@ Goal: Preserve the known-good baseline before adding intelligence or polish.
 Current behavior:
 
 - Accepts a Twitch clip URL through `clipforge --url "<twitch_clip_url>"`.
-- Resolves a direct download URL through Clipr.
-- Prints the resolved download URL before downloading.
+- Downloads through the configured backend, with `yt-dlp` as the default and Clipr still available as an optional backend.
+- Prints a resolved download URL before downloading when the selected backend exposes one.
 - Downloads the source clip to `data/downloads/<clip_slug>/<backend>/`.
 - Renders `center_gameplay`, `facecam_focus`, and `hybrid` candidates to `data/renders/<clip_slug>/<backend>/`.
 - Writes run metadata to `data/metadata/`.
@@ -46,12 +46,12 @@ Goal: Let Clipforge select a downloader provider while preserving the existing C
 
 Files likely touched:
 
-- `src/clipforge/download.py`
-- `src/clipforge/clipr.py`
-- `src/clipforge/config.py`
-- `src/clipforge/render_clip.py`
-- `tests/test_download.py`
-- `tests/test_config.py`
+- `src/clipforge/media/download.py`
+- `src/clipforge/integrations/clipr.py`
+- `src/clipforge/core/config.py`
+- `src/clipforge/pipeline/render_clip.py`
+- `tests/media/test_download.py`
+- `tests/core/test_config.py`
 - `.env.example`
 - `README.md`
 
@@ -85,11 +85,11 @@ Goal: Add a `yt-dlp` provider so Clipforge can download Twitch clip URLs without
 
 Files likely touched:
 
-- `src/clipforge/download.py`
-- `src/clipforge/config.py`
-- `src/clipforge/render_clip.py`
-- `tests/test_download.py`
-- `tests/test_config.py`
+- `src/clipforge/media/download.py`
+- `src/clipforge/core/config.py`
+- `src/clipforge/pipeline/render_clip.py`
+- `tests/media/test_download.py`
+- `tests/core/test_config.py`
 - `.env.example`
 - `README.md`
 
@@ -123,10 +123,10 @@ Goal: Discover candidate clips from Twitch instead of requiring one URL at a tim
 
 Files likely touched:
 
-- `src/clipforge/twitch.py`
-- `src/clipforge/config.py`
-- `src/clipforge/render_clip.py`
-- `tests/test_twitch.py`
+- `src/clipforge/integrations/twitch.py`
+- `src/clipforge/core/config.py`
+- `src/clipforge/pipeline/render_clip.py`
+- `tests/integrations/test_twitch.py`
 - `.env.example`
 - `README.md`
 
@@ -156,9 +156,9 @@ Goal: Sort discovered clips into a useful review queue.
 
 Files likely touched:
 
-- `src/clipforge/twitch.py`
-- `src/clipforge/ranking.py`
-- `tests/test_ranking.py`
+- `src/clipforge/integrations/twitch.py`
+- `src/clipforge/pipeline/ranking.py`
+- `tests/pipeline/test_ranking.py`
 - `README.md`
 
 Acceptance criteria:
@@ -185,10 +185,10 @@ Goal: Let the user choose clips from discovery results and render only selected 
 
 Files likely touched:
 
-- `src/clipforge/render_clip.py`
-- `src/clipforge/twitch.py`
-- `src/clipforge/ranking.py`
-- `tests/test_render_clip.py`
+- `src/clipforge/pipeline/render_clip.py`
+- `src/clipforge/integrations/twitch.py`
+- `src/clipforge/pipeline/ranking.py`
+- `tests/pipeline/test_render_clip.py`
 - `README.md`
 
 Acceptance criteria:
@@ -218,10 +218,10 @@ Goal: Define the on-disk caption schema and helpers before wiring in transcripti
 
 Files likely touched:
 
-- `src/clipforge/captions.py`
-- `src/clipforge/render_clip.py`
-- `tests/test_captions.py`
-- `tests/test_render_clip.py`
+- `src/clipforge/media/captions.py`
+- `src/clipforge/pipeline/render_clip.py`
+- `tests/media/test_captions.py`
+- `tests/pipeline/test_render_clip.py`
 - `README.md`
 
 Acceptance criteria:
@@ -250,21 +250,24 @@ Goal: Transcribe the downloaded source clip into timed caption segments.
 
 Files likely touched:
 
-- `src/clipforge/captions.py`
-- `src/clipforge/config.py`
-- `src/clipforge/render_clip.py`
-- `tests/test_captions.py`
+- `src/clipforge/media/captions.py`
+- `src/clipforge/core/config.py`
+- `src/clipforge/pipeline/render_clip.py`
+- `tests/media/test_captions.py`
 - `.env.example`
 - `README.md`
 
 Acceptance criteria:
 
-- CLI can generate caption metadata for a local source clip.
+- CLI can generate caption metadata for a local source clip using the OpenAI transcription API.
+- OpenAI API configuration is environment-backed and documented, including the required API key and selected transcription model.
+- The transcription client is isolated behind a small adapter so tests can cover request/response handling without calling the live OpenAI API.
+- OpenAI responses are normalized into the caption schema from task 6, including segment start/end times and text.
 - Full pipeline can optionally generate captions after download and before rendering through an explicit opt-in flag or config setting.
-- Caption generation uses the schema from task 1 and saves metadata before rendering starts.
+- Caption generation uses the schema from task 6 and saves metadata before rendering starts.
 - If caption generation is requested and fails, the command exits with a clear error before rendering.
-- Secrets, source paths, backend names, and external-service failures are logged safely and usefully.
-- New dependencies, model downloads, or external services are documented before adoption.
+- Secrets, source paths, backend names, OpenAI request IDs when available, and external-service failures are logged safely and usefully.
+- Any new dependency introduced for OpenAI API access is justified before adoption; hand-written HTTP with `requests` remains acceptable if it keeps the surface small.
 
 Out of scope:
 
@@ -283,15 +286,15 @@ Goal: Overlay timed captions onto rendered vertical candidates.
 
 Files likely touched:
 
-- `src/clipforge/render.py`
-- `src/clipforge/captions.py`
-- `src/clipforge/render_clip.py`
-- `tests/test_render.py`
-- `tests/test_render_clip.py`
+- `src/clipforge/media/render.py`
+- `src/clipforge/media/captions.py`
+- `src/clipforge/pipeline/render_clip.py`
+- `tests/media/test_render.py`
+- `tests/pipeline/test_render_clip.py`
 
 Acceptance criteria:
 
-- Renderer accepts optional caption metadata produced by task 1 or task 2.
+- Renderer accepts optional caption metadata produced by task 6 or task 7.
 - FFmpeg command builder can include caption overlays without using shell strings.
 - Caption style is readable on mobile vertical video and can be tuned from one place.
 - Captions stay inside a safe area and avoid obvious layout collisions with known templates.
@@ -315,11 +318,11 @@ Goal: Print and record basic output diagnostics after rendering so bad outputs a
 
 Files likely touched:
 
-- `src/clipforge/render.py`
-- `src/clipforge/render_clip.py`
-- `src/clipforge/probe.py`
-- `tests/test_render_clip.py`
-- `tests/test_probe.py`
+- `src/clipforge/media/render.py`
+- `src/clipforge/pipeline/render_clip.py`
+- `src/clipforge/media/probe.py`
+- `tests/pipeline/test_render_clip.py`
+- `tests/media/test_probe.py`
 - `README.md`
 
 Acceptance criteria:
@@ -348,9 +351,9 @@ Goal: Extract representative frames that later layout logic can analyze.
 
 Files likely touched:
 
-- `src/clipforge/analyze.py`
-- `src/clipforge/render_clip.py`
-- `tests/test_analyze.py`
+- `src/clipforge/media/analyze.py`
+- `src/clipforge/pipeline/render_clip.py`
+- `tests/media/test_analyze.py`
 - `.gitignore`
 - `README.md`
 
@@ -379,9 +382,9 @@ Goal: Find a stable face or facecam area from sampled frames without training a 
 
 Files likely touched:
 
-- `src/clipforge/analyze.py`
-- `src/clipforge/layouts.py`
-- `tests/test_analyze.py`
+- `src/clipforge/media/analyze.py`
+- `src/clipforge/media/layouts.py`
+- `tests/media/test_analyze.py`
 - `README.md`
 
 Acceptance criteria:
@@ -410,11 +413,11 @@ Goal: Create layout JSON dynamically from detected facecam/gameplay regions.
 
 Files likely touched:
 
-- `src/clipforge/layouts.py`
-- `src/clipforge/analyze.py`
-- `src/clipforge/render_clip.py`
-- `tests/test_layouts.py`
-- `tests/test_render_clip.py`
+- `src/clipforge/media/layouts.py`
+- `src/clipforge/media/analyze.py`
+- `src/clipforge/pipeline/render_clip.py`
+- `tests/media/test_layouts.py`
+- `tests/pipeline/test_render_clip.py`
 
 Acceptance criteria:
 
@@ -443,10 +446,10 @@ Goal: Make failed or interrupted runs easier to continue.
 
 Files likely touched:
 
-- `src/clipforge/render_clip.py`
-- `src/clipforge/state.py`
-- `tests/test_render_clip.py`
-- `tests/test_state.py`
+- `src/clipforge/pipeline/render_clip.py`
+- `src/clipforge/storage/state.py`
+- `tests/pipeline/test_render_clip.py`
+- `tests/storage/test_state.py`
 
 Acceptance criteria:
 
