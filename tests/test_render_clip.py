@@ -14,6 +14,7 @@ from clipforge.render_clip import (
     render_all_candidates,
     render_candidate,
 )
+from clipforge.state import get_clip, upsert_discovered_clip
 from clipforge.twitch import TwitchClip
 from tests.constants import TWITCH_CLIP_SLUG, TWITCH_CLIP_URL
 
@@ -23,6 +24,7 @@ def _config(tmp_path: Path) -> ClipforgeConfig:
         downloads_dir=tmp_path / "downloads",
         renders_dir=tmp_path / "renders",
         metadata_dir=tmp_path / "metadata",
+        state_db_path=tmp_path / "state" / "clipforge.sqlite",
         example_layouts_dir=EXAMPLE_LAYOUTS_DIR,
     )
 
@@ -62,11 +64,12 @@ def test_main_routes_render_all_command(monkeypatch, capsys) -> None:
     assert capsys.readouterr().out.splitlines() == ["one.mp4", "two.mp4"]
 
 
-def test_main_routes_clips_command(monkeypatch, capsys) -> None:
+def test_main_routes_clips_command(tmp_path: Path, monkeypatch, capsys) -> None:
     calls: list[dict[str, object]] = []
     config = ClipforgeConfig(
         twitch_client_id="client-id",
         twitch_client_secret="client-secret",
+        state_db_path=tmp_path / "state" / "clipforge.sqlite",
     )
 
     def fake_list_channel_clips(
@@ -130,6 +133,12 @@ def test_main_routes_clips_command(monkeypatch, capsys) -> None:
     assert capsys.readouterr().out.splitlines() == [
         "2026-05-01T00:00:00Z\t42\t28.5s\thttps://clips.twitch.tv/clip-1\tgreat clip"
     ]
+    state = get_clip("clip-1", db_path=config.state_db_path)
+    assert state is not None
+    assert state.status == "discovered"
+    assert state.streamer_login == "example"
+    assert state.title == "great clip"
+    assert state.view_count == 42
 
 
 def test_main_exports_clips_command_as_json(
@@ -141,6 +150,7 @@ def test_main_exports_clips_command_as_json(
         twitch_client_id="client-id",
         twitch_client_secret="client-secret",
         metadata_dir=tmp_path / "metadata",
+        state_db_path=tmp_path / "state" / "clipforge.sqlite",
     )
 
     def fake_list_channel_clips(
@@ -221,6 +231,7 @@ def test_main_exports_clips_command_to_custom_json_path(
         twitch_client_id="client-id",
         twitch_client_secret="client-secret",
         metadata_dir=tmp_path / "metadata",
+        state_db_path=tmp_path / "state" / "clipforge.sqlite",
     )
     output_path = tmp_path / "queue.json"
 
@@ -440,9 +451,62 @@ def test_process_clip_writes_metadata(
     assert metadata["target_resolution"] == {"width": 1080, "height": 1920}
     assert metadata["created_at"].endswith("+00:00")
     assert metadata["rendered_at"].endswith("+00:00")
+    state = get_clip(TWITCH_CLIP_SLUG, db_path=config.state_db_path)
+    assert state is not None
+    assert state.status == "rendered"
+    assert state.url == TWITCH_CLIP_URL
+    assert state.metadata_path == str(metadata_path)
+    assert state.render_dir == str(tmp_path / "renders" / TWITCH_CLIP_SLUG / "clipr")
     output = capsys.readouterr().out
     assert "download_url: https://cdn.example.test/source.mp4" in output
     assert "metadata:" in output
+
+
+def test_process_clip_marks_existing_state_as_rendered(
+    tmp_path: Path,
+    monkeypatch,
+) -> None:
+    config = _config(tmp_path)
+    upsert_discovered_clip(
+        clip_id=TWITCH_CLIP_SLUG,
+        url=TWITCH_CLIP_URL,
+        streamer_login="example",
+        title="existing title",
+        view_count=10,
+        duration_seconds=12,
+        db_path=config.state_db_path,
+    )
+    source_path = tmp_path / "downloads" / TWITCH_CLIP_SLUG / "clipr" / f"{TWITCH_CLIP_SLUG}.mp4"
+
+    def fake_download_twitch_clip(
+        url: str,
+        *,
+        clip_id: str | None,
+        config: ClipforgeConfig,
+        on_media_url_resolved,
+    ) -> DownloadResult:
+        return DownloadResult(
+            source_path=source_path,
+            backend="clipr",
+            media_url="https://cdn.example.test/source.mp4",
+        )
+
+    monkeypatch.setattr(
+        "clipforge.render_clip.download_twitch_clip",
+        fake_download_twitch_clip,
+    )
+    monkeypatch.setattr(
+        "clipforge.render_clip.render_layout",
+        lambda source, output, layout: output,
+    )
+
+    metadata_path = process_clip(TWITCH_CLIP_URL, config=config)
+
+    state = get_clip(TWITCH_CLIP_SLUG, db_path=config.state_db_path)
+    assert state is not None
+    assert state.status == "rendered"
+    assert state.title == "existing title"
+    assert state.metadata_path == str(metadata_path)
 
 
 def test_render_candidate_accepts_layout_file_path(

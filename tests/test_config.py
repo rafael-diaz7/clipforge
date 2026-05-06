@@ -11,6 +11,7 @@ from clipforge.config import (
     METADATA_DIR,
     PROJECT_ROOT,
     RENDERS_DIR,
+    STATE_DB_PATH,
     load_config,
 )
 
@@ -102,6 +103,7 @@ def test_config_defines_project_paths_with_pathlib() -> None:
     assert config.downloads_dir == DOWNLOADS_DIR
     assert config.renders_dir == RENDERS_DIR
     assert config.metadata_dir == METADATA_DIR
+    assert config.state_db_path == STATE_DB_PATH
     assert config.example_layouts_dir == EXAMPLE_LAYOUTS_DIR
     assert all(
         isinstance(path, Path)
@@ -110,6 +112,7 @@ def test_config_defines_project_paths_with_pathlib() -> None:
             config.downloads_dir,
             config.renders_dir,
             config.metadata_dir,
+            config.state_db_path,
             config.example_layouts_dir,
         )
     )

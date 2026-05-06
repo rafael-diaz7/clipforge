@@ -7,12 +7,11 @@ from dataclasses import dataclass
 from pathlib import Path
 from typing import Any
 
-from clipforge.config import DATA_DIR
+from clipforge.config import STATE_DB_PATH, STATE_DIR
 from clipforge.utils import utc_timestamp
 
 
-STATE_DIR = DATA_DIR / "state"
-DEFAULT_STATE_DB_PATH = STATE_DIR / "clipforge.sqlite"
+DEFAULT_STATE_DB_PATH = STATE_DB_PATH
 
 CLIP_STATUSES = frozenset(
     {
