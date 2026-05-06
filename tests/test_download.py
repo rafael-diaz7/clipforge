@@ -5,7 +5,10 @@ from pathlib import Path
 import pytest
 import requests
 
+from clipforge.clipr import CliprDownloader
+from clipforge.config import ClipforgeConfig
 from clipforge.download import DownloadError, download_clip
+from clipforge.download import create_downloader
 
 
 class FakeResponse:
@@ -150,3 +153,17 @@ def test_download_clip_wraps_request_exceptions(tmp_path: Path) -> None:
 def test_download_clip_rejects_non_http_urls(tmp_path: Path) -> None:
     with pytest.raises(DownloadError, match="http or https"):
         download_clip("file:///tmp/source.mp4", downloads_dir=tmp_path)
+
+
+def test_create_downloader_selects_clipr_backend(tmp_path: Path) -> None:
+    config = ClipforgeConfig(
+        clipr_api_key="test-key",
+        downloader_backend="clipr",
+        downloads_dir=tmp_path,
+    )
+
+    downloader = create_downloader(config)
+
+    assert isinstance(downloader, CliprDownloader)
+    assert downloader.backend_name == "clipr"
+    assert downloader.downloads_dir == tmp_path

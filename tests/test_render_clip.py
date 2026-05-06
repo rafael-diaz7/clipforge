@@ -6,6 +6,7 @@ from pathlib import Path
 import pytest
 
 from clipforge.config import ClipforgeConfig, EXAMPLE_LAYOUTS_DIR
+from clipforge.download import DownloadResult
 from clipforge.layouts import load_example_layout
 from clipforge.render_clip import (
     main,
@@ -17,7 +18,6 @@ from clipforge.render_clip import (
 
 def _config(tmp_path: Path) -> ClipforgeConfig:
     return ClipforgeConfig(
-        clipr_api_key="test-key",
         downloads_dir=tmp_path / "downloads",
         renders_dir=tmp_path / "renders",
         metadata_dir=tmp_path / "metadata",
@@ -159,13 +159,24 @@ def test_process_clip_writes_metadata(
     config = _config(tmp_path)
     source_path = tmp_path / "downloads" / "TallHelpfulClipKappa.mp4"
 
+    def fake_download_twitch_clip(
+        url: str,
+        *,
+        clip_id: str | None,
+        config: ClipforgeConfig,
+        on_media_url_resolved,
+    ) -> DownloadResult:
+        assert clip_id == "TallHelpfulClipKappa"
+        on_media_url_resolved("https://cdn.example.test/source.mp4")
+        return DownloadResult(
+            source_path=source_path,
+            backend="clipr",
+            media_url="https://cdn.example.test/source.mp4",
+        )
+
     monkeypatch.setattr(
-        "clipforge.render_clip.resolve_download_url",
-        lambda url, *, config: "https://cdn.example.test/source.mp4",
-    )
-    monkeypatch.setattr(
-        "clipforge.render_clip.download_media_url",
-        lambda media_url, *, clip_id, config: source_path,
+        "clipforge.render_clip.download_twitch_clip",
+        fake_download_twitch_clip,
     )
 
     def fake_render(source: Path, output: Path, layout) -> Path:
@@ -181,7 +192,9 @@ def test_process_clip_writes_metadata(
 
     metadata = json.loads(metadata_path.read_text(encoding="utf-8"))
     assert metadata["clip_id"] == "TallHelpfulClipKappa"
-    assert metadata["clipr_download_url"] == "https://cdn.example.test/source.mp4"
+    assert metadata["downloader_backend"] == "clipr"
+    assert metadata["download_media_url"] == "https://cdn.example.test/source.mp4"
+    assert "clipr_download_url" not in metadata
     assert metadata["source_path"] == str(source_path)
     assert [output["layout"] for output in metadata["outputs"]] == [
         "center_gameplay",

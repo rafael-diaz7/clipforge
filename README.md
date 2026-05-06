@@ -53,6 +53,7 @@ Requirements:
 - Python 3.11+
 - FFmpeg installed and available in PATH
 - A Clipr API key in `CLIPR_API_KEY`
+- `CLIPFORGE_DOWNLOADER=clipr` or unset to use the default Clipr downloader
 
 ### FFmpeg
 
@@ -106,7 +107,12 @@ cp .env.example .env
 
 ```text
 CLIPR_API_KEY=your_key_here
+CLIPFORGE_DOWNLOADER=clipr
 ```
+
+`CLIPFORGE_DOWNLOADER` selects the Twitch clip downloader backend. The only
+supported backend today is `clipr`, which remains the default when the variable
+is unset.
 
 ## Running
 
@@ -125,7 +131,7 @@ clipforge --url "<twitch_clip_url>"
 The command:
 
 - validates the Twitch clip URL
-- resolves a direct media URL through Clipr
+- downloads through the configured downloader backend, defaulting to Clipr
 - downloads the source clip to `data/downloads/`
 - renders the `center_gameplay`, `facecam_focus`, and `hybrid` candidates to `data/renders/`
 - writes run metadata to `data/metadata/`

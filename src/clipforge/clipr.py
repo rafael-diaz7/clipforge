@@ -3,12 +3,14 @@
 from __future__ import annotations
 
 from dataclasses import dataclass
-from typing import Any
+from pathlib import Path
+from typing import Any, Callable
 from urllib.parse import urlparse
 
 import requests
 
 from clipforge.config import ClipforgeConfig
+from clipforge.download import DownloadResult, download_clip
 from clipforge.utils import twitch_clip_slug_from_url
 
 
@@ -55,7 +57,7 @@ class CliprClient:
 
     @classmethod
     def from_config(cls, config: ClipforgeConfig) -> "CliprClient":
-        return cls(api_key=config.require_clipr_api_key())
+        return cls(api_key=_require_clipr_api_key(config))
 
     def get_download_url(self, twitch_clip_url: str) -> str:
         """Return a direct downloadable media URL for a Twitch clip URL."""
@@ -96,6 +98,43 @@ class CliprClient:
             raise CliprResponseError("Clipr returned a malformed JSON response.") from exc
 
 
+@dataclass(frozen=True)
+class CliprDownloader:
+    """Clipr-backed downloader that resolves and downloads Twitch clips."""
+
+    client: CliprClient
+    downloads_dir: Path
+    backend_name: str = "clipr"
+
+    @classmethod
+    def from_config(cls, config: ClipforgeConfig) -> "CliprDownloader":
+        return cls(
+            client=CliprClient.from_config(config),
+            downloads_dir=config.downloads_dir,
+        )
+
+    def download(
+        self,
+        twitch_clip_url: str,
+        *,
+        clip_id: str | None = None,
+        on_media_url_resolved: Callable[[str], None] | None = None,
+    ) -> DownloadResult:
+        media_url = self.client.get_download_url(twitch_clip_url)
+        if on_media_url_resolved is not None:
+            on_media_url_resolved(media_url)
+        source_path = download_clip(
+            media_url,
+            downloads_dir=self.downloads_dir,
+            filename_stem=clip_id,
+        )
+        return DownloadResult(
+            source_path=source_path,
+            backend=self.backend_name,
+            media_url=media_url,
+        )
+
+
 def get_clip_download_url(
     twitch_clip_url: str,
     api_key: str,
@@ -111,6 +150,15 @@ def get_clip_download_url(
         timeout_seconds=timeout_seconds,
     )
     return client.get_download_url(twitch_clip_url)
+
+
+def _require_clipr_api_key(config: ClipforgeConfig) -> str:
+    if not config.clipr_api_key:
+        raise CliprError(
+            "Missing required configuration for Clipr downloader: CLIPR_API_KEY. "
+            "Set it in your environment or in a local .env file."
+        )
+    return config.clipr_api_key
 
 
 def extract_download_url(payload: Any) -> str:

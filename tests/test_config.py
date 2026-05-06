@@ -5,6 +5,7 @@ import pytest
 from clipforge.config import (
     ClipforgeConfig,
     ConfigError,
+    DEFAULT_DOWNLOADER_BACKEND,
     DOWNLOADS_DIR,
     EXAMPLE_LAYOUTS_DIR,
     METADATA_DIR,
@@ -22,8 +23,37 @@ def test_load_config_uses_env_for_clipr_api_key(monkeypatch: pytest.MonkeyPatch)
     assert config.clipr_api_key == "test-key"
 
 
+def test_load_config_defaults_to_clipr_downloader(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    monkeypatch.delenv("CLIPFORGE_DOWNLOADER", raising=False)
+
+    config = load_config()
+
+    assert config.downloader_backend == DEFAULT_DOWNLOADER_BACKEND
+
+
+def test_load_config_uses_env_for_downloader_backend(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    monkeypatch.setenv("CLIPFORGE_DOWNLOADER", "CLIPR")
+
+    config = load_config()
+
+    assert config.require_downloader_backend() == "clipr"
+
+
+def test_load_config_rejects_invalid_downloader_backend(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    monkeypatch.setenv("CLIPFORGE_DOWNLOADER", "missing")
+
+    with pytest.raises(ConfigError, match="Invalid downloader backend"):
+        load_config()
+
+
 def test_config_defines_project_paths_with_pathlib() -> None:
-    config = ClipforgeConfig(clipr_api_key=None)
+    config = ClipforgeConfig()
 
     assert config.project_root == PROJECT_ROOT
     assert config.downloads_dir == DOWNLOADS_DIR
@@ -43,7 +73,7 @@ def test_config_defines_project_paths_with_pathlib() -> None:
 
 
 def test_config_defaults_to_vertical_short_resolution() -> None:
-    config = ClipforgeConfig(clipr_api_key=None)
+    config = ClipforgeConfig()
 
     assert config.target_width == 1080
     assert config.target_height == 1920
@@ -51,8 +81,7 @@ def test_config_defaults_to_vertical_short_resolution() -> None:
     assert config.output_format == "mp4"
 
 
-def test_require_clipr_api_key_reports_missing_config() -> None:
-    config = ClipforgeConfig(clipr_api_key=None)
+def test_config_clipr_api_key_is_optional() -> None:
+    config = ClipforgeConfig()
 
-    with pytest.raises(ConfigError, match="CLIPR_API_KEY"):
-        config.require_clipr_api_key()
+    assert config.clipr_api_key is None

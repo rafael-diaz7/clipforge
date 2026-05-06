@@ -19,6 +19,8 @@ EXAMPLE_LAYOUTS_DIR = PROJECT_ROOT / "examples" / "layouts"
 TARGET_WIDTH = 1080
 TARGET_HEIGHT = 1920
 OUTPUT_FORMAT = "mp4"
+DEFAULT_DOWNLOADER_BACKEND = "clipr"
+SUPPORTED_DOWNLOADER_BACKENDS = frozenset({DEFAULT_DOWNLOADER_BACKEND})
 
 
 class ConfigError(RuntimeError):
@@ -29,7 +31,7 @@ class ConfigError(RuntimeError):
 class ClipforgeConfig:
     """Runtime settings shared across clipforge modules."""
 
-    clipr_api_key: str | None
+    clipr_api_key: str | None = None
     project_root: Path = PROJECT_ROOT
     downloads_dir: Path = DOWNLOADS_DIR
     renders_dir: Path = RENDERS_DIR
@@ -38,27 +40,35 @@ class ClipforgeConfig:
     target_width: int = TARGET_WIDTH
     target_height: int = TARGET_HEIGHT
     output_format: str = OUTPUT_FORMAT
+    downloader_backend: str = DEFAULT_DOWNLOADER_BACKEND
 
     @property
     def target_resolution(self) -> tuple[int, int]:
         return (self.target_width, self.target_height)
 
-    def require_clipr_api_key(self) -> str:
-        if not self.clipr_api_key:
+    def require_downloader_backend(self) -> str:
+        backend = self.downloader_backend.strip().lower()
+        if backend not in SUPPORTED_DOWNLOADER_BACKENDS:
+            supported = ", ".join(sorted(SUPPORTED_DOWNLOADER_BACKENDS))
             raise ConfigError(
-                "Missing required configuration: CLIPR_API_KEY. "
-                "Set it in your environment or in a local .env file."
+                "Invalid downloader backend: "
+                f"{self.downloader_backend!r}. Supported values: {supported}."
             )
-        return self.clipr_api_key
+        return backend
 
 
-def load_config(*, require_clipr_api_key: bool = False) -> ClipforgeConfig:
+def load_config() -> ClipforgeConfig:
     """Load environment-backed settings for the local project."""
 
     load_dotenv(PROJECT_ROOT / ".env")
-    config = ClipforgeConfig(clipr_api_key=os.getenv("CLIPR_API_KEY"))
+    config = ClipforgeConfig(
+        clipr_api_key=os.getenv("CLIPR_API_KEY"),
+        downloader_backend=os.getenv(
+            "CLIPFORGE_DOWNLOADER",
+            DEFAULT_DOWNLOADER_BACKEND,
+        ),
+    )
 
-    if require_clipr_api_key:
-        config.require_clipr_api_key()
+    config.require_downloader_backend()
 
     return config

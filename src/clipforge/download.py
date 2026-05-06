@@ -2,12 +2,14 @@
 
 from __future__ import annotations
 
+from dataclasses import dataclass
 from pathlib import Path
+from typing import Callable, Protocol
 from urllib.parse import unquote, urlparse
 
 import requests
 
-from clipforge.config import DOWNLOADS_DIR
+from clipforge.config import DOWNLOADS_DIR, ClipforgeConfig, ConfigError
 from clipforge.utils import ensure_directory, safe_filename
 
 
@@ -18,6 +20,58 @@ DEFAULT_EXTENSION = ".mp4"
 
 class DownloadError(RuntimeError):
     """Raised when a clip cannot be downloaded safely."""
+
+
+@dataclass(frozen=True)
+class DownloadResult:
+    """Result returned by a Twitch clip downloader backend."""
+
+    source_path: Path
+    backend: str
+    media_url: str | None = None
+
+
+class ClipDownloader(Protocol):
+    """Downloader backend that turns a Twitch clip URL into a local media file."""
+
+    backend_name: str
+
+    def download(
+        self,
+        twitch_clip_url: str,
+        *,
+        clip_id: str | None = None,
+        on_media_url_resolved: Callable[[str], None] | None = None,
+    ) -> DownloadResult:
+        """Download a Twitch clip URL and return the local output path."""
+
+
+def create_downloader(config: ClipforgeConfig) -> ClipDownloader:
+    """Create the configured Twitch clip downloader backend."""
+
+    backend = config.require_downloader_backend()
+    if backend == "clipr":
+        from clipforge.clipr import CliprDownloader
+
+        return CliprDownloader.from_config(config)
+
+    raise ConfigError(f"Unsupported downloader backend: {backend}")
+
+
+def download_twitch_clip(
+    twitch_clip_url: str,
+    *,
+    clip_id: str | None = None,
+    on_media_url_resolved: Callable[[str], None] | None = None,
+    config: ClipforgeConfig,
+) -> DownloadResult:
+    """Download a Twitch clip URL with the configured backend."""
+
+    return create_downloader(config).download(
+        twitch_clip_url,
+        clip_id=clip_id,
+        on_media_url_resolved=on_media_url_resolved,
+    )
 
 
 def download_clip(

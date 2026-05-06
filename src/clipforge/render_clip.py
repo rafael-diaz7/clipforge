@@ -16,7 +16,7 @@ from clipforge.config import (
     ConfigError,
     load_config,
 )
-from clipforge.download import download_clip
+from clipforge.download import DownloadResult, download_clip, download_twitch_clip
 from clipforge.layouts import Layout, load_example_layouts, load_layout
 from clipforge.render import render_layout
 from clipforge.utils import ensure_directory, twitch_clip_slug_from_url, utc_timestamp
@@ -150,7 +150,7 @@ def main(argv: Sequence[str] | None = None) -> int:
 def resolve_download_url(twitch_clip_url: str, *, config: ClipforgeConfig | None = None) -> str:
     """Resolve a Twitch clip URL to a direct downloadable media URL."""
 
-    config = config or load_config(require_clipr_api_key=True)
+    config = config or load_config()
     LOGGER.info("Resolving Twitch clip URL with Clipr.")
     return CliprClient.from_config(config).get_download_url(twitch_clip_url)
 
@@ -211,12 +211,16 @@ def process_clip(
 ) -> Path:
     """Run the full MVP pipeline and return the metadata path."""
 
-    config = config or load_config(require_clipr_api_key=True)
+    config = config or load_config()
     clip_id = twitch_clip_slug_from_url(twitch_clip_url)
     LOGGER.info("Starting clip pipeline for clip %s.", clip_id)
-    download_url = resolve_download_url(twitch_clip_url, config=config)
-    print(f"download_url: {download_url}")
-    source_path = download_media_url(download_url, clip_id=clip_id, config=config)
+    download_result = download_twitch_clip(
+        twitch_clip_url,
+        clip_id=clip_id,
+        config=config,
+        on_media_url_resolved=lambda media_url: print(f"download_url: {media_url}"),
+    )
+    source_path = download_result.source_path
     layouts = load_example_layouts(DEFAULT_LAYOUT_NAMES, layouts_dir=config.example_layouts_dir)
 
     outputs = []
@@ -232,7 +236,7 @@ def process_clip(
     metadata_path = write_metadata(
         clip_id=clip_id,
         twitch_clip_url=twitch_clip_url,
-        clipr_download_url=download_url,
+        download_result=download_result,
         source_path=source_path,
         layouts=layouts,
         outputs=outputs,
@@ -255,7 +259,7 @@ def write_metadata(
     *,
     clip_id: str,
     twitch_clip_url: str,
-    clipr_download_url: str,
+    download_result: DownloadResult,
     source_path: Path,
     layouts: Sequence[Layout],
     outputs: Sequence[dict[str, str]],
@@ -269,7 +273,8 @@ def write_metadata(
     payload: dict[str, Any] = {
         "clip_id": clip_id,
         "twitch_clip_url": twitch_clip_url,
-        "clipr_download_url": clipr_download_url,
+        "downloader_backend": download_result.backend,
+        "download_media_url": download_result.media_url,
         "source_path": str(source_path),
         "outputs": list(outputs),
         "layouts": [asdict(layout) for layout in layouts],

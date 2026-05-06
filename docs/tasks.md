@@ -40,7 +40,7 @@ Verification command:
 
 ## Milestone 1: Reliable Downloading
 
-### [ ] 1. feat: add pluggable downloader backend
+### [x] 1. feat: add pluggable downloader backend
 
 Goal: Let Clipforge select a downloader provider while preserving the existing Clipr-backed workflow.
 

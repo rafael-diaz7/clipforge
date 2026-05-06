@@ -1,5 +1,7 @@
 from __future__ import annotations
 
+from pathlib import Path
+
 import pytest
 import requests
 
@@ -7,6 +9,8 @@ from clipforge.clipr import (
     CLIPR_API_HOST,
     CliprAPIError,
     CliprClient,
+    CliprDownloader,
+    CliprError,
     CliprResponseError,
     extract_download_url,
     get_clip_download_url,
@@ -84,6 +88,52 @@ def test_client_can_be_created_from_config() -> None:
     client = CliprClient.from_config(config)
 
     assert client.api_key == "test-key"
+
+
+def test_client_from_config_requires_clipr_api_key_only_for_clipr_use() -> None:
+    with pytest.raises(CliprError, match="CLIPR_API_KEY"):
+        CliprClient.from_config(ClipforgeConfig())
+
+
+def test_clipr_downloader_resolves_and_downloads_with_callback(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    events: list[str] = []
+
+    class FakeClient:
+        def get_download_url(self, twitch_clip_url: str) -> str:
+            events.append(f"resolve:{twitch_clip_url}")
+            return "https://cdn.example.test/source.mp4"
+
+    def fake_download_clip(
+        media_url: str,
+        *,
+        downloads_dir: Path,
+        filename_stem: str | None,
+    ) -> Path:
+        events.append(f"download:{media_url}")
+        assert downloads_dir == tmp_path
+        assert filename_stem == "clip-123"
+        return tmp_path / "clip-123.mp4"
+
+    monkeypatch.setattr("clipforge.clipr.download_clip", fake_download_clip)
+    downloader = CliprDownloader(client=FakeClient(), downloads_dir=tmp_path)
+
+    result = downloader.download(
+        "https://clips.twitch.tv/TallHelpfulClipKappa",
+        clip_id="clip-123",
+        on_media_url_resolved=lambda media_url: events.append(f"callback:{media_url}"),
+    )
+
+    assert result.source_path == tmp_path / "clip-123.mp4"
+    assert result.backend == "clipr"
+    assert result.media_url == "https://cdn.example.test/source.mp4"
+    assert events == [
+        "resolve:https://clips.twitch.tv/TallHelpfulClipKappa",
+        "callback:https://cdn.example.test/source.mp4",
+        "download:https://cdn.example.test/source.mp4",
+    ]
 
 
 def test_extract_download_url_finds_nested_media_url() -> None:
