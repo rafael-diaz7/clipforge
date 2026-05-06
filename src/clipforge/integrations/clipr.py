@@ -10,7 +10,11 @@ from urllib.parse import urlparse
 import requests
 
 from clipforge.core.config import ClipforgeConfig
-from clipforge.core.utils import twitch_clip_slug_from_url
+from clipforge.core.utils import (
+    is_http_url,
+    response_text_excerpt,
+    twitch_clip_slug_from_url,
+)
 from clipforge.media.download import DownloadResult, backend_download_dir, download_clip
 
 
@@ -223,7 +227,7 @@ def _find_media_url(value: Any) -> str | None:
 
 
 def _url_from_value(value: Any) -> str | None:
-    if isinstance(value, str) and _is_http_url(value):
+    if isinstance(value, str) and is_http_url(value):
         return value
 
     if isinstance(value, dict) or isinstance(value, list):
@@ -235,14 +239,9 @@ def _url_from_value(value: Any) -> str | None:
 def _looks_like_media_url(value: str) -> bool:
     parsed = urlparse(value)
     path = parsed.path.lower()
-    return _is_http_url(value) and (
+    return is_http_url(value) and (
         path.endswith(".mp4") or path.endswith(".m3u8") or "/video" in path
     )
-
-
-def _is_http_url(value: str) -> bool:
-    parsed = urlparse(value)
-    return parsed.scheme in {"http", "https"} and bool(parsed.netloc)
 
 
 def _response_excerpt(
@@ -251,11 +250,10 @@ def _response_excerpt(
     secret: str | None = None,
     limit: int = 240,
 ) -> str:
-    text = response.text.strip().replace("\n", " ")
-    if secret:
-        text = text.replace(secret, "[redacted]")
-    if not text:
-        return "empty response body"
-    if len(text) > limit:
-        return f"{text[:limit]}..."
-    return text
+    secrets = (secret,) if secret is not None else ()
+    return response_text_excerpt(
+        response.text,
+        secrets=secrets,
+        limit=limit,
+        empty_fallback="empty response body",
+    )

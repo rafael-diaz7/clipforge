@@ -4,6 +4,9 @@ from clipforge.utils import (
     clip_slug_from_url,
     ensure_directory,
     ensure_project_subdir,
+    is_http_url,
+    normalized_host,
+    response_text_excerpt,
     safe_filename,
     utc_timestamp,
 )
@@ -48,3 +51,28 @@ def test_utc_timestamp_returns_utc_iso_string() -> None:
     timestamp = utc_timestamp()
 
     assert timestamp.endswith("+00:00")
+
+
+def test_is_http_url_requires_http_scheme_and_host() -> None:
+    assert is_http_url("https://example.test/video.mp4")
+    assert is_http_url("http://example.test/video.mp4")
+    assert not is_http_url("ftp://example.test/video.mp4")
+    assert not is_http_url("https:///missing-host.mp4")
+
+
+def test_normalized_host_strips_common_twitch_prefixes() -> None:
+    assert normalized_host("www.twitch.tv") == "twitch.tv"
+    assert normalized_host("m.twitch.tv:443") == "twitch.tv"
+
+
+def test_response_text_excerpt_redacts_and_compacts_text() -> None:
+    assert (
+        response_text_excerpt("bad\nsecret-value   body", secrets=("secret-value",))
+        == "bad [redacted] body"
+    )
+
+
+def test_response_text_excerpt_supports_empty_fallback() -> None:
+    assert response_text_excerpt("", empty_fallback="empty response body") == (
+        "empty response body"
+    )

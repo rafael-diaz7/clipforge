@@ -10,6 +10,7 @@ from urllib.parse import urlparse
 import requests
 
 from clipforge.core.config import ClipforgeConfig
+from clipforge.core.utils import normalized_host, response_text_excerpt
 
 
 TWITCH_TOKEN_URL = "https://id.twitch.tv/oauth2/token"
@@ -224,7 +225,7 @@ def twitch_channel_login_from_input(value: str) -> str:
 
     parsed = _parse_possible_twitch_url(candidate)
     if parsed.netloc:
-        host = _normalized_host(parsed.netloc)
+        host = normalized_host(parsed.netloc)
         if host == "clips.twitch.tv":
             raise TwitchResponseError(
                 "Twitch clip URLs do not include a channel login. "
@@ -260,15 +261,6 @@ def _parse_possible_twitch_url(value: str):
     return parsed
 
 
-def _normalized_host(netloc: str) -> str:
-    host = netloc.lower().split("@")[-1].split(":")[0]
-    if host.startswith("www."):
-        host = host[4:]
-    if host.startswith("m."):
-        host = host[2:]
-    return host
-
-
 def _parse_clip(payload: Any) -> TwitchClip:
     if not isinstance(payload, dict):
         raise TwitchResponseError("Twitch clips response contained a non-object item.")
@@ -295,6 +287,8 @@ def _response_data(payload: Any, *, context: str) -> list[Any]:
     return data
 
 
+# TODO: Consider shared JSON validation helpers with media.layouts once their
+# caller-specific error wording can be preserved.
 def _decode_json(response: requests.Response, *, context: str) -> dict[str, Any]:
     try:
         payload = response.json()
@@ -332,22 +326,7 @@ def _http_error_message(
     *,
     secrets: tuple[str, ...],
 ) -> str:
-    excerpt = _response_excerpt(_redact_secrets(response.text, secrets=secrets))
+    excerpt = response_text_excerpt(response.text, secrets=secrets)
     if excerpt:
         return f"{prefix}: HTTP {response.status_code}: {excerpt}"
     return f"{prefix}: HTTP {response.status_code}."
-
-
-def _redact_secrets(text: str, *, secrets: tuple[str, ...]) -> str:
-    redacted = text
-    for secret in secrets:
-        if secret:
-            redacted = redacted.replace(secret, "[redacted]")
-    return redacted
-
-
-def _response_excerpt(text: str, *, limit: int = 240) -> str:
-    cleaned = " ".join(text.split())
-    if len(cleaned) <= limit:
-        return cleaned
-    return f"{cleaned[:limit].rstrip()}..."

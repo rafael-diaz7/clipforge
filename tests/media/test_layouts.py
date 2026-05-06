@@ -6,6 +6,7 @@ from pathlib import Path
 import pytest
 
 from clipforge.layouts import (
+    DEFAULT_LAYOUT_NAMES,
     LayoutError,
     NormalizedRect,
     load_example_layouts,
@@ -61,11 +62,7 @@ def test_load_layout_returns_validated_layout(tmp_path: Path) -> None:
 def test_load_example_layouts_loads_three_mvp_templates() -> None:
     layouts = load_example_layouts()
 
-    assert [layout.name for layout in layouts] == [
-        "center_gameplay",
-        "facecam_focus",
-        "hybrid",
-    ]
+    assert [layout.name for layout in layouts] == list(DEFAULT_LAYOUT_NAMES)
     assert all(layout.output.width == 1080 for layout in layouts)
     assert all(layout.output.height == 1920 for layout in layouts)
     assert len(layouts[2].regions) == 2

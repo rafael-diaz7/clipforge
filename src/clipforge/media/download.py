@@ -14,7 +14,12 @@ from urllib.parse import unquote, urlparse
 import requests
 
 from clipforge.core.config import DOWNLOADS_DIR, ClipforgeConfig, ConfigError
-from clipforge.core.utils import ensure_directory, safe_filename, twitch_clip_slug_from_url
+from clipforge.core.utils import (
+    ensure_directory,
+    is_http_url,
+    safe_filename,
+    twitch_clip_slug_from_url,
+)
 
 
 DEFAULT_CHUNK_SIZE_BYTES = 1024 * 1024
@@ -127,8 +132,7 @@ def download_clip(
 
 
 def _validate_media_url(media_url: str) -> None:
-    parsed = urlparse(media_url)
-    if parsed.scheme not in {"http", "https"} or not parsed.netloc:
+    if not is_http_url(media_url):
         raise DownloadError("Media URL must be an http or https URL.")
 
 

@@ -15,6 +15,9 @@ class LayoutError(RuntimeError):
     """Raised when a layout file is missing, malformed, or invalid."""
 
 
+DEFAULT_LAYOUT_NAMES = ("center_gameplay", "facecam_focus", "hybrid")
+
+
 @dataclass(frozen=True)
 class NormalizedRect:
     """A rectangle described with normalized coordinates from 0 to 1."""
@@ -84,7 +87,7 @@ def load_example_layout(
 
 
 def load_example_layouts(
-    names: tuple[str, ...] = ("center_gameplay", "facecam_focus", "hybrid"),
+    names: tuple[str, ...] = DEFAULT_LAYOUT_NAMES,
     *,
     layouts_dir: Path = EXAMPLE_LAYOUTS_DIR,
 ) -> tuple[Layout, ...]:
@@ -183,6 +186,8 @@ def _validate_rect_bounds(rect: NormalizedRect, *, context: str) -> None:
         raise LayoutError(f"{context} y + height must be less than or equal to 1.")
 
 
+# TODO: Consider shared JSON validation helpers with integrations.twitch once
+# their caller-specific error wording can be preserved.
 def _required_object(payload: dict[str, Any], key: str, *, context: str) -> dict[str, Any]:
     value = _required_value(payload, key, context=context)
     if not isinstance(value, dict):

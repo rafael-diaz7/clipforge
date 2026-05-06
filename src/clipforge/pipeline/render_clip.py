@@ -29,12 +29,16 @@ from clipforge.integrations.twitch import (
     twitch_channel_login_from_input,
 )
 from clipforge.media.download import DownloadResult, download_clip, download_twitch_clip
-from clipforge.media.layouts import Layout, load_example_layouts, load_layout
+from clipforge.media.layouts import (
+    DEFAULT_LAYOUT_NAMES,
+    Layout,
+    load_example_layouts,
+    load_layout,
+)
 from clipforge.media.render import render_layout
 from clipforge.storage.state import get_clip, mark_clip_rendered, upsert_discovered_clip
 
 
-DEFAULT_LAYOUT_NAMES = ("center_gameplay", "facecam_focus", "hybrid")
 LOGGER = logging.getLogger("clipforge.render_clip")
 
 
