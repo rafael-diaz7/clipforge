@@ -189,6 +189,7 @@ def main(argv: Sequence[str] | None = None) -> int:
                 config=config,
             )
             if args.format == "json":
+                # TODO: Add more formats
                 export_path = write_clip_discovery_export(
                     clips=clips,
                     channel=args.channel,

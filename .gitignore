@@ -10,7 +10,14 @@ data/downloads/
 data/renders/
 data/clips/
 data/metadata/
+data/state/
 
 *.mp4
 *.mov
+*.sqlite
+*.sqlite3
+*.db
+*.db-journal
+*.sqlite-wal
+*.sqlite-shm
 *.log
