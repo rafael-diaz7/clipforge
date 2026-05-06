@@ -27,8 +27,8 @@ Current behavior:
 - Accepts a Twitch clip URL through `clipforge --url "<twitch_clip_url>"`.
 - Resolves a direct download URL through Clipr.
 - Prints the resolved download URL before downloading.
-- Downloads the source clip to `data/downloads/`.
-- Renders `center_gameplay`, `facecam_focus`, and `hybrid` candidates to `data/renders/`.
+- Downloads the source clip to `data/downloads/<clip_slug>/<backend>/`.
+- Renders `center_gameplay`, `facecam_focus`, and `hybrid` candidates to `data/renders/<clip_slug>/<backend>/`.
 - Writes run metadata to `data/metadata/`.
 - Keeps the workflow human-in-the-loop.
 
@@ -59,7 +59,7 @@ Acceptance criteria:
 
 - Existing `clipforge --url "<twitch_clip_url>"` workflow still works.
 - Current Clipr behavior is moved behind a `CliprDownloader`.
-- Downloader backend selection is centralized and config/env-backed, with Clipr as the default.
+- Downloader backend selection is centralized and config/env-backed, with yt-dlp as the default.
 - Invalid downloader backend names fail with a clear configuration error.
 - Downloaded output path is returned consistently through the downloader abstraction.
 - Existing render and metadata behavior still works after download.
@@ -79,7 +79,7 @@ Suggested commit message:
 feat: add pluggable clip downloader
 ```
 
-### [ ] 2. feat: add yt-dlp downloader backend
+### [x] 2. feat: add yt-dlp downloader backend
 
 Goal: Add a `yt-dlp` provider so Clipforge can download Twitch clip URLs without Clipr.
 
@@ -95,7 +95,7 @@ Files likely touched:
 
 Acceptance criteria:
 
-- New `YtDlpDownloader` can download a Twitch clip URL directly to `data/downloads/`.
+- New `YtDlpDownloader` can download a Twitch clip URL directly to `data/downloads/<clip_slug>/ytdlp/`.
 - Downloader backend is selected by config/env, e.g. `CLIPFORGE_DOWNLOADER=clipr|ytdlp`.
 - If `yt-dlp` is selected but missing, the command fails with a clear install/help message.
 - Downloaded output path is returned consistently regardless of backend.

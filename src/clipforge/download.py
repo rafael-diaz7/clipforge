@@ -2,6 +2,10 @@
 
 from __future__ import annotations
 
+import importlib.util
+import logging
+import subprocess
+import sys
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Callable, Protocol
@@ -10,12 +14,16 @@ from urllib.parse import unquote, urlparse
 import requests
 
 from clipforge.config import DOWNLOADS_DIR, ClipforgeConfig, ConfigError
-from clipforge.utils import ensure_directory, safe_filename
+from clipforge.utils import ensure_directory, safe_filename, twitch_clip_slug_from_url
 
 
 DEFAULT_CHUNK_SIZE_BYTES = 1024 * 1024
 DEFAULT_TIMEOUT_SECONDS = 60
 DEFAULT_EXTENSION = ".mp4"
+YTDLP_MODULE = "yt_dlp"
+LOGGER = logging.getLogger(__name__)
+
+SubprocessRunner = Callable[..., subprocess.CompletedProcess[str]]
 
 
 class DownloadError(RuntimeError):
@@ -54,6 +62,9 @@ def create_downloader(config: ClipforgeConfig) -> ClipDownloader:
         from clipforge.clipr import CliprDownloader
 
         return CliprDownloader.from_config(config)
+
+    if backend == "ytdlp":
+        return YtDlpDownloader.from_config(config)
 
     raise ConfigError(f"Unsupported downloader backend: {backend}")
 
@@ -197,3 +208,134 @@ def _remove_partial(partial_path: Path) -> None:
         partial_path.unlink(missing_ok=True)
     except OSError:
         pass
+
+
+def backend_download_dir(
+    downloads_dir: Path,
+    *,
+    clip_id: str,
+    backend: str,
+) -> Path:
+    """Return the backend-scoped download directory for a Twitch clip."""
+
+    return downloads_dir / safe_filename(clip_id) / safe_filename(backend)
+
+
+@dataclass(frozen=True)
+class YtDlpDownloader:
+    """yt-dlp-backed downloader for Twitch clip URLs."""
+
+    downloads_dir: Path
+    runner: SubprocessRunner = subprocess.run
+    module_resolver: Callable[[str], object | None] = importlib.util.find_spec
+    backend_name: str = "ytdlp"
+
+    @classmethod
+    def from_config(cls, config: ClipforgeConfig) -> "YtDlpDownloader":
+        return cls(downloads_dir=config.downloads_dir)
+
+    def download(
+        self,
+        twitch_clip_url: str,
+        *,
+        clip_id: str | None = None,
+        on_media_url_resolved: Callable[[str], None] | None = None,
+    ) -> DownloadResult:
+        del on_media_url_resolved
+
+        if self.module_resolver(YTDLP_MODULE) is None:
+            raise DownloadError(
+                "yt-dlp downloader selected, but the yt-dlp Python package is "
+                "not installed. Reinstall Clipforge with `python -m pip install -e .`."
+            )
+
+        if clip_id:
+            filename_stem = safe_filename(clip_id)
+        else:
+            filename_stem = twitch_clip_slug_from_url(twitch_clip_url)
+        downloads_dir = ensure_directory(
+            backend_download_dir(
+                self.downloads_dir,
+                clip_id=filename_stem,
+                backend=self.backend_name,
+            )
+        )
+        LOGGER.info("Starting yt-dlp processing for %s.", twitch_clip_url)
+        LOGGER.info("Starting yt-dlp download to %s.", downloads_dir)
+        command = _yt_dlp_command(
+            twitch_clip_url,
+            downloads_dir=downloads_dir,
+            filename_stem=filename_stem,
+        )
+
+        try:
+            completed = self.runner(
+                command,
+                check=True,
+                capture_output=True,
+                text=True,
+            )
+        except subprocess.CalledProcessError as exc:
+            raise DownloadError(
+                f"yt-dlp failed to download clip: {_process_error_excerpt(exc)}"
+            ) from exc
+
+        source_path = _yt_dlp_output_path(completed.stdout, downloads_dir=downloads_dir)
+        if not source_path.exists():
+            raise DownloadError(
+                f"yt-dlp reported output path that does not exist: {source_path}"
+            )
+
+        return DownloadResult(
+            source_path=source_path,
+            backend=self.backend_name,
+            media_url=None,
+        )
+
+
+def _yt_dlp_command(
+    twitch_clip_url: str,
+    *,
+    downloads_dir: Path,
+    filename_stem: str,
+) -> list[str]:
+    return [
+        sys.executable,
+        "-m",
+        YTDLP_MODULE,
+        "--quiet",
+        "--no-warnings",
+        "--no-playlist",
+        "--paths",
+        str(downloads_dir),
+        "--output",
+        f"{filename_stem}.%(ext)s",
+        "--print",
+        "after_move:filepath",
+        twitch_clip_url,
+    ]
+
+
+def _yt_dlp_output_path(stdout: str, *, downloads_dir: Path) -> Path:
+    for line in reversed(stdout.splitlines()):
+        candidate = line.strip()
+        if candidate:
+            path = Path(candidate)
+            if path.is_absolute():
+                return path
+            return downloads_dir / path
+
+    raise DownloadError("yt-dlp did not report a downloaded output path.")
+
+
+def _process_error_excerpt(
+    exc: subprocess.CalledProcessError,
+    *,
+    limit: int = 320,
+) -> str:
+    output = (exc.stderr or exc.stdout or "").strip().replace("\n", " ")
+    if not output:
+        output = f"exit code {exc.returncode}"
+    if len(output) > limit:
+        return f"{output[:limit]}..."
+    return output

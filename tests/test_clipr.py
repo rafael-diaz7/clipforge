@@ -16,6 +16,7 @@ from clipforge.clipr import (
     get_clip_download_url,
 )
 from clipforge.config import ClipforgeConfig
+from tests.constants import TWITCH_CLIP_SLUG, TWITCH_CLIP_URL
 
 
 class FakeResponse:
@@ -113,24 +114,26 @@ def test_clipr_downloader_resolves_and_downloads_with_callback(
         filename_stem: str | None,
     ) -> Path:
         events.append(f"download:{media_url}")
-        assert downloads_dir == tmp_path
-        assert filename_stem == "clip-123"
-        return tmp_path / "clip-123.mp4"
+        assert downloads_dir == tmp_path / TWITCH_CLIP_SLUG / "clipr"
+        assert filename_stem == TWITCH_CLIP_SLUG
+        return downloads_dir / f"{TWITCH_CLIP_SLUG}.mp4"
 
     monkeypatch.setattr("clipforge.clipr.download_clip", fake_download_clip)
     downloader = CliprDownloader(client=FakeClient(), downloads_dir=tmp_path)
 
     result = downloader.download(
-        "https://clips.twitch.tv/TallHelpfulClipKappa",
-        clip_id="clip-123",
+        TWITCH_CLIP_URL,
+        clip_id=TWITCH_CLIP_SLUG,
         on_media_url_resolved=lambda media_url: events.append(f"callback:{media_url}"),
     )
 
-    assert result.source_path == tmp_path / "clip-123.mp4"
+    assert result.source_path == (
+        tmp_path / TWITCH_CLIP_SLUG / "clipr" / f"{TWITCH_CLIP_SLUG}.mp4"
+    )
     assert result.backend == "clipr"
     assert result.media_url == "https://cdn.example.test/source.mp4"
     assert events == [
-        "resolve:https://clips.twitch.tv/TallHelpfulClipKappa",
+        f"resolve:{TWITCH_CLIP_URL}",
         "callback:https://cdn.example.test/source.mp4",
         "download:https://cdn.example.test/source.mp4",
     ]

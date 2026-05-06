@@ -23,7 +23,7 @@ def test_load_config_uses_env_for_clipr_api_key(monkeypatch: pytest.MonkeyPatch)
     assert config.clipr_api_key == "test-key"
 
 
-def test_load_config_defaults_to_clipr_downloader(
+def test_load_config_defaults_to_ytdlp_downloader(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     monkeypatch.delenv("CLIPFORGE_DOWNLOADER", raising=False)
@@ -31,6 +31,19 @@ def test_load_config_defaults_to_clipr_downloader(
     config = load_config()
 
     assert config.downloader_backend == DEFAULT_DOWNLOADER_BACKEND
+    assert config.require_downloader_backend() == "ytdlp"
+
+
+def test_load_config_defaults_to_ytdlp_even_with_clipr_api_key(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    monkeypatch.delenv("CLIPFORGE_DOWNLOADER", raising=False)
+    monkeypatch.setenv("CLIPR_API_KEY", "test-key")
+
+    config = load_config()
+
+    assert config.clipr_api_key == "test-key"
+    assert config.require_downloader_backend() == "ytdlp"
 
 
 def test_load_config_uses_env_for_downloader_backend(
@@ -41,6 +54,16 @@ def test_load_config_uses_env_for_downloader_backend(
     config = load_config()
 
     assert config.require_downloader_backend() == "clipr"
+
+
+def test_load_config_accepts_ytdlp_downloader_backend(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    monkeypatch.setenv("CLIPFORGE_DOWNLOADER", "YTDLP")
+
+    config = load_config()
+
+    assert config.require_downloader_backend() == "ytdlp"
 
 
 def test_load_config_rejects_invalid_downloader_backend(

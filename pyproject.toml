@@ -5,7 +5,8 @@ description = "Automated clip generation pipeline"
 requires-python = ">=3.11"
 dependencies = [
     "requests",
-    "python-dotenv"
+    "python-dotenv",
+    "yt-dlp"
 ]
 
 [project.scripts]

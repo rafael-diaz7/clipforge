@@ -14,6 +14,7 @@ from clipforge.render_clip import (
     render_all_candidates,
     render_candidate,
 )
+from tests.constants import TWITCH_CLIP_SLUG, TWITCH_CLIP_URL
 
 
 def _config(tmp_path: Path) -> ClipforgeConfig:
@@ -37,10 +38,10 @@ def test_main_supports_full_pipeline_url_shortcut(
 
     monkeypatch.setattr("clipforge.render_clip.process_clip", fake_process)
 
-    exit_code = main(["--url", "https://clips.twitch.tv/TallHelpfulClipKappa"])
+    exit_code = main(["--url", TWITCH_CLIP_URL])
 
     assert exit_code == 0
-    assert calls == ["https://clips.twitch.tv/TallHelpfulClipKappa"]
+    assert calls == [TWITCH_CLIP_URL]
     assert capsys.readouterr().err == ""
 
 
@@ -66,7 +67,7 @@ def test_main_returns_non_zero_for_missing_clipr_api_key(monkeypatch, capsys) ->
 
     monkeypatch.setattr("clipforge.render_clip.process_clip", fake_process)
 
-    exit_code = main(["--url", "https://clips.twitch.tv/TallHelpfulClipKappa"])
+    exit_code = main(["--url", TWITCH_CLIP_URL])
 
     captured = capsys.readouterr()
     assert exit_code == 1
@@ -157,7 +158,13 @@ def test_process_clip_writes_metadata(
     capsys,
 ) -> None:
     config = _config(tmp_path)
-    source_path = tmp_path / "downloads" / "TallHelpfulClipKappa.mp4"
+    source_path = (
+        tmp_path
+        / "downloads"
+        / TWITCH_CLIP_SLUG
+        / "clipr"
+        / f"{TWITCH_CLIP_SLUG}.mp4"
+    )
 
     def fake_download_twitch_clip(
         url: str,
@@ -166,7 +173,7 @@ def test_process_clip_writes_metadata(
         config: ClipforgeConfig,
         on_media_url_resolved,
     ) -> DownloadResult:
-        assert clip_id == "TallHelpfulClipKappa"
+        assert clip_id == TWITCH_CLIP_SLUG
         on_media_url_resolved("https://cdn.example.test/source.mp4")
         return DownloadResult(
             source_path=source_path,
@@ -186,12 +193,12 @@ def test_process_clip_writes_metadata(
     monkeypatch.setattr("clipforge.render_clip.render_layout", fake_render)
 
     metadata_path = process_clip(
-        "https://clips.twitch.tv/TallHelpfulClipKappa",
+        TWITCH_CLIP_URL,
         config=config,
     )
 
     metadata = json.loads(metadata_path.read_text(encoding="utf-8"))
-    assert metadata["clip_id"] == "TallHelpfulClipKappa"
+    assert metadata["clip_id"] == TWITCH_CLIP_SLUG
     assert metadata["downloader_backend"] == "clipr"
     assert metadata["download_media_url"] == "https://cdn.example.test/source.mp4"
     assert "clipr_download_url" not in metadata
@@ -200,6 +207,23 @@ def test_process_clip_writes_metadata(
         "center_gameplay",
         "facecam_focus",
         "hybrid",
+    ]
+    assert [output["path"] for output in metadata["outputs"]] == [
+        str(
+            tmp_path
+            / "renders"
+            / TWITCH_CLIP_SLUG
+            / "clipr"
+            / "center_gameplay.mp4"
+        ),
+        str(
+            tmp_path
+            / "renders"
+            / TWITCH_CLIP_SLUG
+            / "clipr"
+            / "facecam_focus.mp4"
+        ),
+        str(tmp_path / "renders" / TWITCH_CLIP_SLUG / "clipr" / "hybrid.mp4"),
     ]
     assert [layout["name"] for layout in metadata["layouts"]] == [
         "center_gameplay",

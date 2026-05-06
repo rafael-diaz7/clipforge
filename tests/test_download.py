@@ -1,14 +1,17 @@
 from __future__ import annotations
 
+import logging
 from pathlib import Path
+import subprocess
+import sys
 
 import pytest
 import requests
 
 from clipforge.clipr import CliprDownloader
 from clipforge.config import ClipforgeConfig
-from clipforge.download import DownloadError, download_clip
-from clipforge.download import create_downloader
+from clipforge.download import DownloadError, YtDlpDownloader, create_downloader, download_clip
+from tests.constants import TWITCH_CLIP_SLUG, TWITCH_CLIP_URL
 
 
 class FakeResponse:
@@ -167,3 +170,150 @@ def test_create_downloader_selects_clipr_backend(tmp_path: Path) -> None:
     assert isinstance(downloader, CliprDownloader)
     assert downloader.backend_name == "clipr"
     assert downloader.downloads_dir == tmp_path
+
+
+def test_create_downloader_selects_ytdlp_backend(tmp_path: Path) -> None:
+    config = ClipforgeConfig(
+        downloader_backend="ytdlp",
+        downloads_dir=tmp_path,
+    )
+
+    downloader = create_downloader(config)
+
+    assert isinstance(downloader, YtDlpDownloader)
+    assert downloader.backend_name == "ytdlp"
+    assert downloader.downloads_dir == tmp_path
+
+
+def test_ytdlp_downloader_builds_command_and_returns_output_path(
+    tmp_path: Path,
+    caplog: pytest.LogCaptureFixture,
+) -> None:
+    caplog.set_level(logging.INFO, logger="clipforge.download")
+    output_path = (
+        tmp_path
+        / "downloads"
+        / TWITCH_CLIP_SLUG
+        / "ytdlp"
+        / f"{TWITCH_CLIP_SLUG}.mp4"
+    )
+    calls: list[dict[str, object]] = []
+
+    def fake_runner(
+        command: list[str],
+        *,
+        check: bool,
+        capture_output: bool,
+        text: bool,
+    ) -> subprocess.CompletedProcess[str]:
+        calls.append(
+            {
+                "command": command,
+                "check": check,
+                "capture_output": capture_output,
+                "text": text,
+            }
+        )
+        output_path.write_bytes(b"video")
+        return subprocess.CompletedProcess(
+            command,
+            0,
+            stdout=f"{output_path}\n",
+            stderr="",
+        )
+
+    downloader = YtDlpDownloader(
+        downloads_dir=tmp_path / "downloads",
+        runner=fake_runner,
+        module_resolver=lambda module: object(),
+    )
+
+    result = downloader.download(
+        TWITCH_CLIP_URL,
+        clip_id=TWITCH_CLIP_SLUG,
+    )
+
+    assert result.source_path == output_path
+    assert result.backend == "ytdlp"
+    assert result.media_url is None
+    assert calls == [
+        {
+            "command": [
+                sys.executable,
+                "-m",
+                "yt_dlp",
+                "--quiet",
+                "--no-warnings",
+                "--no-playlist",
+                "--paths",
+                str(output_path.parent),
+                "--output",
+                f"{TWITCH_CLIP_SLUG}.%(ext)s",
+                "--print",
+                "after_move:filepath",
+                TWITCH_CLIP_URL,
+            ],
+            "check": True,
+            "capture_output": True,
+            "text": True,
+        }
+    ]
+    assert f"Starting yt-dlp processing for {TWITCH_CLIP_URL}." in caplog.text
+    assert f"Starting yt-dlp download to {output_path.parent}." in caplog.text
+
+
+def test_ytdlp_downloader_uses_safe_clip_id_for_output_template(tmp_path: Path) -> None:
+    output_path = tmp_path / "downloads" / "My_Clip" / "ytdlp" / "My_Clip.mp4"
+    commands: list[list[str]] = []
+
+    def fake_runner(
+        command: list[str],
+        *,
+        check: bool,
+        capture_output: bool,
+        text: bool,
+    ) -> subprocess.CompletedProcess[str]:
+        commands.append(command)
+        output_path.write_bytes(b"video")
+        return subprocess.CompletedProcess(command, 0, stdout=f"{output_path}\n")
+
+    downloader = YtDlpDownloader(
+        downloads_dir=tmp_path / "downloads",
+        runner=fake_runner,
+        module_resolver=lambda module: object(),
+    )
+
+    downloader.download(
+        TWITCH_CLIP_URL,
+        clip_id=" My Clip!? ",
+    )
+
+    assert commands[0][9] == "My_Clip.%(ext)s"
+
+
+def test_ytdlp_downloader_raises_clear_error_when_missing(tmp_path: Path) -> None:
+    downloader = YtDlpDownloader(
+        downloads_dir=tmp_path,
+        module_resolver=lambda module: None,
+    )
+
+    with pytest.raises(DownloadError, match="yt-dlp Python package"):
+        downloader.download(TWITCH_CLIP_URL)
+
+
+def test_ytdlp_downloader_wraps_process_failures(tmp_path: Path) -> None:
+    def fake_runner(*args: object, **kwargs: object) -> subprocess.CompletedProcess[str]:
+        raise subprocess.CalledProcessError(
+            1,
+            ["yt-dlp"],
+            stderr="Unsupported URL",
+        )
+
+    downloader = YtDlpDownloader(
+        downloads_dir=tmp_path,
+        runner=fake_runner,
+        module_resolver=lambda module: object(),
+    )
+
+    with pytest.raises(DownloadError, match="Unsupported URL"):
+        downloader.download(TWITCH_CLIP_URL)

@@ -19,7 +19,7 @@ from clipforge.config import (
 from clipforge.download import DownloadResult, download_clip, download_twitch_clip
 from clipforge.layouts import Layout, load_example_layouts, load_layout
 from clipforge.render import render_layout
-from clipforge.utils import ensure_directory, twitch_clip_slug_from_url, utc_timestamp
+from clipforge.utils import ensure_directory, safe_filename, twitch_clip_slug_from_url, utc_timestamp
 
 
 DEFAULT_LAYOUT_NAMES = ("center_gameplay", "facecam_focus", "hybrid")
@@ -229,6 +229,7 @@ def process_clip(
             source_path,
             layout,
             clip_id=clip_id,
+            backend=download_result.backend,
             config=config,
         )
         outputs.append({"layout": layout.name, "path": str(output_path)})
@@ -305,10 +306,17 @@ def _render_output_path(
     layout: Layout,
     *,
     clip_id: str | None,
+    backend: str | None = None,
     config: ClipforgeConfig,
 ) -> Path:
-    output_dir = ensure_directory(config.renders_dir)
     stem = clip_id or source_path.stem
+    if backend is not None:
+        output_dir = ensure_directory(
+            config.renders_dir / safe_filename(stem) / safe_filename(backend)
+        )
+        return output_dir / f"{layout.name}.{config.output_format}"
+
+    output_dir = ensure_directory(config.renders_dir)
     return output_dir / f"{stem}_{layout.name}.{config.output_format}"
 
 
@@ -317,9 +325,16 @@ def _render_candidate_layout(
     layout: Layout,
     *,
     clip_id: str | None,
+    backend: str | None = None,
     config: ClipforgeConfig,
 ) -> Path:
-    output_path = _render_output_path(source_path, layout, clip_id=clip_id, config=config)
+    output_path = _render_output_path(
+        source_path,
+        layout,
+        clip_id=clip_id,
+        backend=backend,
+        config=config,
+    )
     LOGGER.info("Rendering layout %s to %s.", layout.name, output_path)
     return render_layout(source_path, output_path, layout)
 

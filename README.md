@@ -52,8 +52,11 @@ Requirements:
 
 - Python 3.11+
 - FFmpeg installed and available in PATH
-- A Clipr API key in `CLIPR_API_KEY`
-- `CLIPFORGE_DOWNLOADER=clipr` or unset to use the default Clipr downloader
+- yt-dlp is installed with Clipforge as a Python dependency
+- A downloader backend:
+  - Clipr: `CLIPR_API_KEY` set and `CLIPFORGE_DOWNLOADER=clipr`
+  - yt-dlp: `CLIPFORGE_DOWNLOADER=ytdlp` or unset
+- `CLIPFORGE_DOWNLOADER` unset uses the default yt-dlp downloader
 
 ### FFmpeg
 
@@ -97,7 +100,8 @@ python -m pip install -e .
 
 ### Clipr API Key
 
-Copy `.env.example` to `.env` and replace the placeholder with your real key:
+Copy `.env.example` to `.env`. If you use Clipr, replace the placeholder with
+your real key:
 
 ```bash
 cp .env.example .env
@@ -111,8 +115,22 @@ CLIPFORGE_DOWNLOADER=clipr
 ```
 
 `CLIPFORGE_DOWNLOADER` selects the Twitch clip downloader backend. The only
-supported backend today is `clipr`, which remains the default when the variable
-is unset.
+supported backends are `clipr` and `ytdlp`. `ytdlp` remains the default when the
+variable is unset, even if `CLIPR_API_KEY` is present.
+
+### yt-dlp
+
+Clipforge installs `yt-dlp` as a Python dependency. To download Twitch clips
+directly without Clipr, leave `CLIPFORGE_DOWNLOADER` unset or select the backend:
+
+`.env`:
+
+```text
+CLIPFORGE_DOWNLOADER=ytdlp
+```
+
+When `ytdlp` is selected, `CLIPR_API_KEY` is not required. Clipforge runs
+`yt-dlp` from the active Python environment.
 
 ## Running
 
@@ -131,21 +149,33 @@ clipforge --url "<twitch_clip_url>"
 The command:
 
 - validates the Twitch clip URL
-- downloads through the configured downloader backend, defaulting to Clipr
-- downloads the source clip to `data/downloads/`
-- renders the `center_gameplay`, `facecam_focus`, and `hybrid` candidates to `data/renders/`
+- downloads through the configured downloader backend, defaulting to yt-dlp
+- downloads the source clip to `data/downloads/<clip_slug>/<backend>/`
+- renders the `center_gameplay`, `facecam_focus`, and `hybrid` candidates to `data/renders/<clip_slug>/<backend>/`
 - writes run metadata to `data/metadata/`
 - prints the source, render, and metadata paths
+
+Full pipeline render filenames are layout-only inside the scoped render
+directory, for example `data/renders/<clip_slug>/ytdlp/hybrid.mp4`. Direct
+`render` and `render-all` commands still write flat filenames based on the
+source clip stem.
+
+Use `--verbose` to show progress logs from Clipforge. For the `ytdlp` backend,
+verbose mode logs when URL processing starts and when the download begins.
 
 You can also run each pipeline step directly:
 
 ```bash
 python -m clipforge.render_clip resolve-url --url "<twitch_clip_url>"
 python -m clipforge.render_clip download --media-url "<direct_media_url>" --clip-id "<clip_id>"
-python -m clipforge.render_clip render --source "data/downloads/<clip_id>.mp4" --layout center_gameplay
-python -m clipforge.render_clip render-all --source "data/downloads/<clip_id>.mp4"
+python -m clipforge.render_clip render --source "data/downloads/<clip_slug>/<backend>/<clip_slug>.mp4" --layout center_gameplay
+python -m clipforge.render_clip render-all --source "data/downloads/<clip_slug>/<backend>/<clip_slug>.mp4"
 python -m clipforge.render_clip process --url "<twitch_clip_url>"
 ```
+
+`resolve-url` uses Clipr because it resolves a direct media URL without
+downloading. The full `process` flow and `clipforge --url` shortcut use the
+configured downloader backend.
 
 The same subcommands are available through the installed `clipforge` command:
 
@@ -153,8 +183,8 @@ The same subcommands are available through the installed `clipforge` command:
 clipforge --url "<twitch_clip_url>"
 clipforge resolve-url --url "<twitch_clip_url>"
 clipforge download --media-url "<direct_media_url>" --clip-id "<clip_id>"
-clipforge render --source "data/downloads/<clip_id>.mp4" --layout center_gameplay
-clipforge render-all --source "data/downloads/<clip_id>.mp4"
+clipforge render --source "data/downloads/<clip_slug>/<backend>/<clip_slug>.mp4" --layout center_gameplay
+clipforge render-all --source "data/downloads/<clip_slug>/<backend>/<clip_slug>.mp4"
 clipforge process --url "<twitch_clip_url>"
 ```
 

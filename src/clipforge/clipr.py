@@ -10,7 +10,7 @@ from urllib.parse import urlparse
 import requests
 
 from clipforge.config import ClipforgeConfig
-from clipforge.download import DownloadResult, download_clip
+from clipforge.download import DownloadResult, backend_download_dir, download_clip
 from clipforge.utils import twitch_clip_slug_from_url
 
 
@@ -120,13 +120,18 @@ class CliprDownloader:
         clip_id: str | None = None,
         on_media_url_resolved: Callable[[str], None] | None = None,
     ) -> DownloadResult:
+        clip_slug = clip_id or twitch_clip_slug_from_url(twitch_clip_url)
         media_url = self.client.get_download_url(twitch_clip_url)
         if on_media_url_resolved is not None:
             on_media_url_resolved(media_url)
         source_path = download_clip(
             media_url,
-            downloads_dir=self.downloads_dir,
-            filename_stem=clip_id,
+            downloads_dir=backend_download_dir(
+                self.downloads_dir,
+                clip_id=clip_slug,
+                backend=self.backend_name,
+            ),
+            filename_stem=clip_slug,
         )
         return DownloadResult(
             source_path=source_path,
