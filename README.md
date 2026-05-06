@@ -53,6 +53,9 @@ Requirements:
 - Python 3.11+
 - FFmpeg installed and available in PATH
 - yt-dlp is installed with Clipforge as a Python dependency
+- Twitch developer app credentials for clip discovery:
+  - `TWITCH_CLIENT_ID`
+  - `TWITCH_CLIENT_SECRET`
 - A downloader backend:
   - Clipr: `CLIPR_API_KEY` set and `CLIPFORGE_DOWNLOADER=clipr`
   - yt-dlp: `CLIPFORGE_DOWNLOADER=ytdlp` or unset
@@ -131,6 +134,57 @@ CLIPFORGE_DOWNLOADER=ytdlp
 
 When `ytdlp` is selected, `CLIPR_API_KEY` is not required. Clipforge runs
 `yt-dlp` from the active Python environment.
+
+### Twitch Clip Discovery
+
+Clip discovery uses the Twitch Helix API with app credentials. Add these values
+to `.env`:
+
+```text
+TWITCH_CLIENT_ID=your_twitch_client_id_here
+TWITCH_CLIENT_SECRET=your_twitch_client_secret_here
+```
+
+List clips for a channel without downloading or rendering:
+
+```bash
+clipforge clips --channel "<channel_login>" --limit 10
+```
+
+Without explicit dates, `clips` searches the last 7 days in UTC.
+
+You can narrow discovery with UTC ISO-8601 date filters:
+
+```bash
+clipforge clips \
+  --channel "<channel_login>" \
+  --limit 20 \
+  --started-at "2026-05-01T00:00:00Z" \
+  --ended-at "2026-05-06T00:00:00Z"
+```
+
+The command prints tab-separated `created_at`, `view_count`, `duration`, `url`,
+and `title` fields. Discovery is read-only and does not trigger downloads or
+renders.
+
+Pass `--format json` to write a queue-friendly discovery export instead of the
+tab-separated list:
+
+```bash
+clipforge clips --channel "<channel_login>" --limit 20 --format json
+```
+
+By default, JSON exports are written to
+`data/metadata/discovered_clips/<channel>/<date>-<channel>.json`. Use `--output`
+to choose a specific path:
+
+```bash
+clipforge clips \
+  --channel "<channel_login>" \
+  --limit 20 \
+  --format json \
+  --output "data/metadata/discovered_clips/review_queue.json"
+```
 
 ## Running
 

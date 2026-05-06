@@ -7,6 +7,7 @@ import json
 import logging
 import sys
 from dataclasses import asdict
+from datetime import UTC, datetime, timedelta
 from pathlib import Path
 from typing import Any, Sequence
 
@@ -19,6 +20,7 @@ from clipforge.config import (
 from clipforge.download import DownloadResult, download_clip, download_twitch_clip
 from clipforge.layouts import Layout, load_example_layouts, load_layout
 from clipforge.render import render_layout
+from clipforge.twitch import TwitchClip, list_channel_clips, twitch_channel_login_from_input
 from clipforge.utils import ensure_directory, safe_filename, twitch_clip_slug_from_url, utc_timestamp
 
 
@@ -98,6 +100,35 @@ def build_parser() -> argparse.ArgumentParser:
     )
     process_parser.add_argument("--url", required=True, help="Twitch clip URL.")
 
+    clips_parser = subparsers.add_parser(
+        "clips",
+        help="List Twitch clips for a channel without downloading or rendering.",
+    )
+    clips_parser.add_argument("--channel", required=True, help="Twitch channel login.")
+    clips_parser.add_argument(
+        "--limit",
+        type=int,
+        default=10,
+        help="Maximum clips to list, from 1 to 100. Defaults to 10.",
+    )
+    clips_parser.add_argument(
+        "--started-at",
+        help="Optional UTC ISO-8601 start timestamp, e.g. 2026-05-01T00:00:00Z.",
+    )
+    clips_parser.add_argument(
+        "--ended-at",
+        help="Optional UTC ISO-8601 end timestamp, e.g. 2026-05-06T00:00:00Z.",
+    )
+    clips_parser.add_argument(
+        "--format",
+        choices=("json",),
+        help="Export format. Passing this writes a discovery export file.",
+    )
+    clips_parser.add_argument(
+        "--output",
+        help="Optional JSON export path. Only used with --format json.",
+    )
+
     return parser
 
 
@@ -139,6 +170,49 @@ def main(argv: Sequence[str] | None = None) -> int:
 
         if args.command == "process":
             process_clip(args.url)
+            return 0
+
+        if args.command == "clips":
+            if args.output and not args.format:
+                raise CLIError("--output requires --format json.")
+
+            started_at, ended_at = _clip_date_filters(
+                started_at=args.started_at,
+                ended_at=args.ended_at,
+            )
+            config = load_config()
+            clips = list_channel_clips(
+                args.channel,
+                limit=args.limit,
+                started_at=started_at,
+                ended_at=ended_at,
+                config=config,
+            )
+            if args.format == "json":
+                export_path = write_clip_discovery_export(
+                    clips=clips,
+                    channel=args.channel,
+                    limit=args.limit,
+                    started_at=started_at,
+                    ended_at=ended_at,
+                    output_path=Path(args.output) if args.output else None,
+                    config=config,
+                )
+                print(f"export: {export_path}")
+                return 0
+
+            for clip in clips:
+                print(
+                    "\t".join(
+                        (
+                            clip.created_at,
+                            str(clip.view_count),
+                            f"{clip.duration:g}s",
+                            clip.url,
+                            clip.title,
+                        )
+                    )
+                )
             return 0
 
         raise CLIError(f"Unsupported command: {args.command}")
@@ -254,6 +328,86 @@ def process_clip(
 def _configure_logging(*, verbose: bool) -> None:
     level = logging.INFO if verbose else logging.WARNING
     logging.basicConfig(level=level, format="clipforge: %(levelname)s: %(message)s")
+
+
+def _clip_date_filters(
+    *,
+    started_at: str | None,
+    ended_at: str | None,
+) -> tuple[str | None, str | None]:
+    if ended_at and not started_at:
+        raise CLIError("--ended-at requires --started-at for Twitch clip discovery.")
+    if started_at:
+        return started_at, ended_at
+
+    now = datetime.now(UTC).replace(microsecond=0)
+    one_week_ago = now - timedelta(days=7)
+    return _format_twitch_timestamp(one_week_ago), _format_twitch_timestamp(now)
+
+
+def _format_twitch_timestamp(value: datetime) -> str:
+    return value.isoformat().replace("+00:00", "Z")
+
+
+def write_clip_discovery_export(
+    *,
+    clips: Sequence[TwitchClip],
+    channel: str,
+    limit: int,
+    started_at: str | None,
+    ended_at: str | None,
+    config: ClipforgeConfig,
+    output_path: Path | None = None,
+) -> Path:
+    """Persist discovered Twitch clips in a queue-friendly JSON shape."""
+
+    normalized_channel = twitch_channel_login_from_input(channel)
+    export_path = output_path or _default_clip_discovery_export_path(
+        normalized_channel,
+        started_at=started_at,
+        config=config,
+    )
+    ensure_directory(export_path.parent)
+    payload = {
+        "type": "clipforge.twitch_clip_discovery",
+        "version": 1,
+        "channel": normalized_channel,
+        "created_at": utc_timestamp(),
+        "filters": {
+            "limit": limit,
+            "started_at": started_at,
+            "ended_at": ended_at,
+        },
+        "clips": [asdict(clip) for clip in clips],
+    }
+    export_path.write_text(json.dumps(payload, indent=2), encoding="utf-8")
+    return export_path
+
+
+def _default_clip_discovery_export_path(
+    channel: str,
+    *,
+    started_at: str | None,
+    config: ClipforgeConfig,
+) -> Path:
+    safe_channel = safe_filename(channel)
+    date_prefix = _date_prefix_from_timestamp(started_at)
+    return (
+        config.metadata_dir
+        / "discovered_clips"
+        / safe_channel
+        / f"{date_prefix}-{safe_channel}.json"
+    )
+
+
+def _date_prefix_from_timestamp(value: str | None) -> str:
+    if value:
+        return safe_filename(value[:10], fallback=_utc_date_prefix())
+    return _utc_date_prefix()
+
+
+def _utc_date_prefix() -> str:
+    return datetime.now(UTC).date().isoformat()
 
 
 def write_metadata(

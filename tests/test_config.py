@@ -23,6 +23,26 @@ def test_load_config_uses_env_for_clipr_api_key(monkeypatch: pytest.MonkeyPatch)
     assert config.clipr_api_key == "test-key"
 
 
+def test_load_config_uses_env_for_twitch_credentials(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    monkeypatch.setenv("TWITCH_CLIENT_ID", "client-id")
+    monkeypatch.setenv("TWITCH_CLIENT_SECRET", "client-secret")
+
+    config = load_config()
+
+    assert config.twitch_client_id == "client-id"
+    assert config.twitch_client_secret == "client-secret"
+    assert config.require_twitch_credentials() == ("client-id", "client-secret")
+
+
+def test_config_requires_twitch_credentials() -> None:
+    config = ClipforgeConfig(twitch_client_id="client-id")
+
+    with pytest.raises(ConfigError, match="TWITCH_CLIENT_SECRET"):
+        config.require_twitch_credentials()
+
+
 def test_load_config_defaults_to_ytdlp_downloader(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:

@@ -32,6 +32,8 @@ class ClipforgeConfig:
     """Runtime settings shared across clipforge modules."""
 
     clipr_api_key: str | None = None
+    twitch_client_id: str | None = None
+    twitch_client_secret: str | None = None
     project_root: Path = PROJECT_ROOT
     downloads_dir: Path = DOWNLOADS_DIR
     renders_dir: Path = RENDERS_DIR
@@ -56,6 +58,21 @@ class ClipforgeConfig:
             )
         return backend
 
+    def require_twitch_credentials(self) -> tuple[str, str]:
+        client_id = (self.twitch_client_id or "").strip()
+        client_secret = (self.twitch_client_secret or "").strip()
+        missing = []
+        if not client_id:
+            missing.append("TWITCH_CLIENT_ID")
+        if not client_secret:
+            missing.append("TWITCH_CLIENT_SECRET")
+        if missing:
+            raise ConfigError(
+                "Missing required Twitch API configuration: "
+                f"{', '.join(missing)}. Set them in your environment or .env file."
+            )
+        return client_id, client_secret
+
 
 def load_config() -> ClipforgeConfig:
     """Load environment-backed settings for the local project."""
@@ -63,6 +80,8 @@ def load_config() -> ClipforgeConfig:
     load_dotenv(PROJECT_ROOT / ".env")
     config = ClipforgeConfig(
         clipr_api_key=os.getenv("CLIPR_API_KEY"),
+        twitch_client_id=os.getenv("TWITCH_CLIENT_ID"),
+        twitch_client_secret=os.getenv("TWITCH_CLIENT_SECRET"),
         downloader_backend=os.getenv(
             "CLIPFORGE_DOWNLOADER",
             DEFAULT_DOWNLOADER_BACKEND,

@@ -117,7 +117,7 @@ feat: add yt-dlp clip downloader
 
 ## Milestone 2: Clip Selection
 
-### [ ] 3. feat: add Twitch clip discovery client
+### [x] 3. feat: add Twitch clip discovery client
 
 Goal: Discover candidate clips from Twitch instead of requiring one URL at a time.
 
