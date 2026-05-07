@@ -214,11 +214,41 @@ def test_process_clip_marks_existing_state_as_rendered(
 
     metadata_path = process_clip(TWITCH_CLIP_URL, config=config)
 
+    metadata = json.loads(metadata_path.read_text(encoding="utf-8"))
     state = get_clip(TWITCH_CLIP_SLUG, db_path=config.state_db_path)
     assert state is not None
     assert state.status == "rendered"
     assert state.title == "existing title"
     assert state.metadata_path == str(metadata_path)
+    assert state.render_dir == str(
+        tmp_path / "renders" / "example" / TWITCH_CLIP_SLUG / "clipr"
+    )
+    assert [output["path"] for output in metadata["outputs"]] == [
+        str(
+            tmp_path
+            / "renders"
+            / "example"
+            / TWITCH_CLIP_SLUG
+            / "clipr"
+            / "center_gameplay.mp4"
+        ),
+        str(
+            tmp_path
+            / "renders"
+            / "example"
+            / TWITCH_CLIP_SLUG
+            / "clipr"
+            / "facecam_focus.mp4"
+        ),
+        str(
+            tmp_path
+            / "renders"
+            / "example"
+            / TWITCH_CLIP_SLUG
+            / "clipr"
+            / "hybrid.mp4"
+        ),
+    ]
 
 
 def test_render_candidate_accepts_layout_file_path(

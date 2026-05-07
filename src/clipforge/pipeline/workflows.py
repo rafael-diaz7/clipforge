@@ -18,6 +18,7 @@ from clipforge.media.layouts import (
 from clipforge.media.render import render_layout
 from clipforge.pipeline.artifacts import write_metadata
 from clipforge.pipeline.state_sync import record_rendered_clip
+from clipforge.storage.state import get_clip
 
 
 LOGGER = logging.getLogger("clipforge.pipeline.workflows")
@@ -89,6 +90,8 @@ def process_clip(
 
     config = config or load_config()
     clip_id = twitch_clip_slug_from_url(twitch_clip_url)
+    clip_state = get_clip(clip_id, db_path=config.state_db_path)
+    channel = clip_state.streamer_login if clip_state is not None else None
     LOGGER.info("Starting clip pipeline for clip %s.", clip_id)
     download_result = download_twitch_clip(
         twitch_clip_url,
@@ -106,6 +109,7 @@ def process_clip(
             layout,
             clip_id=clip_id,
             backend=download_result.backend,
+            channel=channel,
             config=config,
         )
         outputs.append({"layout": layout.name, "path": str(output_path)})
@@ -151,12 +155,16 @@ def _render_output_path(
     *,
     clip_id: str | None,
     backend: str | None = None,
+    channel: str | None = None,
     config: ClipforgeConfig,
 ) -> Path:
     stem = clip_id or source_path.stem
     if backend is not None:
+        output_dir = config.renders_dir
+        if channel:
+            output_dir = output_dir / safe_filename(channel)
         output_dir = ensure_directory(
-            config.renders_dir / safe_filename(stem) / safe_filename(backend)
+            output_dir / safe_filename(stem) / safe_filename(backend)
         )
         return output_dir / f"{layout.name}.{config.output_format}"
 
@@ -170,6 +178,7 @@ def _render_candidate_layout(
     *,
     clip_id: str | None,
     backend: str | None = None,
+    channel: str | None = None,
     config: ClipforgeConfig,
 ) -> Path:
     output_path = _render_output_path(
@@ -177,6 +186,7 @@ def _render_candidate_layout(
         layout,
         clip_id=clip_id,
         backend=backend,
+        channel=channel,
         config=config,
     )
     LOGGER.info("Rendering layout %s to %s.", layout.name, output_path)
