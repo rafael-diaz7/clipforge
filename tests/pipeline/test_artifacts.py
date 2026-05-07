@@ -108,5 +108,33 @@ def test_write_metadata_records_full_pipeline_artifacts(tmp_path: Path) -> None:
     assert payload["outputs"] == list(outputs)
     assert [layout["name"] for layout in payload["layouts"]] == ["center_gameplay"]
     assert payload["target_resolution"] == {"width": 1080, "height": 1920}
+    assert "caption_metadata_path" not in payload
     assert payload["created_at"].endswith("+00:00")
     assert payload["rendered_at"].endswith("+00:00")
+
+
+def test_write_metadata_optionally_references_caption_metadata(tmp_path: Path) -> None:
+    config = ClipforgeConfig(
+        metadata_dir=tmp_path / "metadata",
+        example_layouts_dir=EXAMPLE_LAYOUTS_DIR,
+    )
+    source_path = tmp_path / "downloads" / f"{TWITCH_CLIP_SLUG}.mp4"
+    caption_path = tmp_path / "metadata" / "captions" / f"{TWITCH_CLIP_SLUG}.json"
+
+    metadata_path = write_metadata(
+        clip_id=TWITCH_CLIP_SLUG,
+        twitch_clip_url=TWITCH_CLIP_URL,
+        download_result=DownloadResult(
+            source_path=source_path,
+            backend="clipr",
+            media_url="https://cdn.example.test/source.mp4",
+        ),
+        source_path=source_path,
+        layouts=(),
+        outputs=(),
+        config=config,
+        caption_metadata_path=caption_path,
+    )
+
+    payload = json.loads(metadata_path.read_text(encoding="utf-8"))
+    assert payload["caption_metadata_path"] == str(caption_path)

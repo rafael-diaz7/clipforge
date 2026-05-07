@@ -59,6 +59,7 @@ def write_metadata(
     layouts: Sequence[Layout],
     outputs: Sequence[dict[str, str]],
     config: ClipforgeConfig,
+    caption_metadata_path: Path | None = None,
 ) -> Path:
     """Persist metadata for a full pipeline run."""
 
@@ -80,6 +81,9 @@ def write_metadata(
         "created_at": created_at,
         "rendered_at": created_at,
     }
+    if caption_metadata_path is not None:
+        payload["caption_metadata_path"] = str(caption_metadata_path)
+
     metadata_path.write_text(json.dumps(payload, indent=2), encoding="utf-8")
     return metadata_path
 

@@ -160,6 +160,7 @@ def test_process_clip_writes_metadata(
         "facecam_focus",
         "hybrid",
     ]
+    assert "caption_metadata_path" not in metadata
     assert metadata["target_resolution"] == {"width": 1080, "height": 1920}
     assert metadata["created_at"].endswith("+00:00")
     assert metadata["rendered_at"].endswith("+00:00")

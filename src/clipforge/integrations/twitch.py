@@ -11,6 +11,9 @@ import requests
 
 from clipforge.core.config import ClipforgeConfig
 from clipforge.core.utils import normalized_host, response_text_excerpt
+from clipforge.json_validation import required_int
+from clipforge.json_validation import required_number
+from clipforge.json_validation import required_string
 
 
 TWITCH_TOKEN_URL = "https://id.twitch.tv/oauth2/token"
@@ -106,9 +109,19 @@ class TwitchClient:
 
         user = data[0]
         return TwitchUser(
-            id=_required_string(user, "id", context="Twitch user"),
-            login=_required_string(user, "login", context="Twitch user"),
-            display_name=_required_string(user, "display_name", context="Twitch user"),
+            id=required_string(user, "id", context="Twitch user", error_cls=TwitchResponseError),
+            login=required_string(
+                user,
+                "login",
+                context="Twitch user",
+                error_cls=TwitchResponseError,
+            ),
+            display_name=required_string(
+                user,
+                "display_name",
+                context="Twitch user",
+                error_cls=TwitchResponseError,
+            ),
         )
 
     def list_clips(
@@ -164,7 +177,12 @@ class TwitchClient:
             )
 
         payload = _decode_json(response, context="Twitch auth response")
-        token = _required_string(payload, "access_token", context="Twitch auth response")
+        token = required_string(
+            payload,
+            "access_token",
+            context="Twitch auth response",
+            error_cls=TwitchResponseError,
+        )
         self._access_token = token
         return token
 
@@ -266,14 +284,39 @@ def _parse_clip(payload: Any) -> TwitchClip:
         raise TwitchResponseError("Twitch clips response contained a non-object item.")
 
     return TwitchClip(
-        id=_required_string(payload, "id", context="Twitch clip"),
-        url=_required_string(payload, "url", context="Twitch clip"),
-        broadcaster_name=_required_string(payload, "broadcaster_name", context="Twitch clip"),
-        creator_name=_required_string(payload, "creator_name", context="Twitch clip"),
+        id=required_string(payload, "id", context="Twitch clip", error_cls=TwitchResponseError),
+        url=required_string(payload, "url", context="Twitch clip", error_cls=TwitchResponseError),
+        broadcaster_name=required_string(
+            payload,
+            "broadcaster_name",
+            context="Twitch clip",
+            error_cls=TwitchResponseError,
+        ),
+        creator_name=required_string(
+            payload,
+            "creator_name",
+            context="Twitch clip",
+            error_cls=TwitchResponseError,
+        ),
         title=str(payload.get("title") or ""),
-        view_count=_required_int(payload, "view_count", context="Twitch clip"),
-        created_at=_required_string(payload, "created_at", context="Twitch clip"),
-        duration=_required_number(payload, "duration", context="Twitch clip"),
+        view_count=required_int(
+            payload,
+            "view_count",
+            context="Twitch clip",
+            error_cls=TwitchResponseError,
+        ),
+        created_at=required_string(
+            payload,
+            "created_at",
+            context="Twitch clip",
+            error_cls=TwitchResponseError,
+        ),
+        duration=required_number(
+            payload,
+            "duration",
+            context="Twitch clip",
+            error_cls=TwitchResponseError,
+        ),
         thumbnail_url=str(payload.get("thumbnail_url") or ""),
     )
 
@@ -287,8 +330,6 @@ def _response_data(payload: Any, *, context: str) -> list[Any]:
     return data
 
 
-# TODO: Consider shared JSON validation helpers with media.layouts once their
-# caller-specific error wording can be preserved.
 def _decode_json(response: requests.Response, *, context: str) -> dict[str, Any]:
     try:
         payload = response.json()
@@ -297,27 +338,6 @@ def _decode_json(response: requests.Response, *, context: str) -> dict[str, Any]
     if not isinstance(payload, dict):
         raise TwitchResponseError(f"{context} was not a JSON object.")
     return payload
-
-
-def _required_string(payload: dict[str, Any], key: str, *, context: str) -> str:
-    value = payload.get(key)
-    if not isinstance(value, str) or not value:
-        raise TwitchResponseError(f"{context} missing required field: {key}.")
-    return value
-
-
-def _required_int(payload: dict[str, Any], key: str, *, context: str) -> int:
-    value = payload.get(key)
-    if not isinstance(value, int):
-        raise TwitchResponseError(f"{context} missing required integer field: {key}.")
-    return value
-
-
-def _required_number(payload: dict[str, Any], key: str, *, context: str) -> float:
-    value = payload.get(key)
-    if not isinstance(value, (int, float)):
-        raise TwitchResponseError(f"{context} missing required numeric field: {key}.")
-    return float(value)
 
 
 def _http_error_message(

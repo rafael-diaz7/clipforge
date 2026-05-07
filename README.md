@@ -32,6 +32,7 @@ clipforge/
     downloads/          # raw clips
     renders/            # final video outputs
     metadata/           # layout + edit configs (json)
+      captions/         # optional timed caption metadata
   examples/
     layouts/            # example layout templates
   README.md
@@ -208,6 +209,14 @@ The command:
 - renders the `center_gameplay`, `facecam_focus`, and `hybrid` candidates to `data/renders/<clip_slug>/<backend>/`
 - writes run metadata to `data/metadata/`
 - prints the source, render, and metadata paths
+
+Caption metadata uses the `clipforge.caption_metadata` JSON schema with a
+`clip_id` and ordered `segments`, where each segment has `start_time`,
+`end_time`, and `text`. Caption files are saved deterministically under
+`data/metadata/captions/<clip_id>.json`. Run metadata may reference a caption
+metadata file with `caption_metadata_path`; when that field is absent, the clip
+has no caption metadata. A caption file with an empty `segments` list is valid
+and means captions were intentionally saved as empty.
 
 Full pipeline render filenames are layout-only inside the scoped render
 directory, for example `data/renders/<clip_slug>/ytdlp/hybrid.mp4`. Direct

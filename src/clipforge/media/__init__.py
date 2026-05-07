@@ -1,1 +1,1 @@
-"""Media download, layout, and render utilities."""
+"""Media caption, download, layout, and render utilities."""

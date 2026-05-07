@@ -212,7 +212,7 @@ feat: process selected clips from queue
 
 ## Milestone 3: Captions and Render Polish
 
-### [ ] 6. feat: add caption metadata model
+### [x] 6. feat: add caption metadata model
 
 Goal: Define the on-disk caption schema and helpers before wiring in transcription or render overlays.
 
