@@ -8,7 +8,7 @@ from pathlib import Path
 from typing import Any
 
 from clipforge.core.config import STATE_DB_PATH, STATE_DIR
-from clipforge.core.utils import utc_timestamp
+from clipforge.utils import utc_timestamp
 
 
 DEFAULT_STATE_DB_PATH = STATE_DB_PATH

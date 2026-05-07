@@ -6,7 +6,7 @@ import logging
 from pathlib import Path
 
 from clipforge.core.config import ClipforgeConfig, load_config
-from clipforge.core.utils import ensure_directory, safe_filename, twitch_clip_slug_from_url
+from clipforge.utils import ensure_directory, safe_filename, twitch_clip_slug_from_url
 from clipforge.integrations.clipr import CliprClient
 from clipforge.media.download import download_clip, download_twitch_clip
 from clipforge.media.layouts import (

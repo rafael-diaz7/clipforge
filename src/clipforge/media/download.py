@@ -14,7 +14,7 @@ from urllib.parse import unquote, urlparse
 import requests
 
 from clipforge.core.config import DOWNLOADS_DIR, ClipforgeConfig, ConfigError
-from clipforge.core.utils import (
+from clipforge.utils import (
     ensure_directory,
     is_http_url,
     safe_filename,

@@ -9,11 +9,11 @@ from pathlib import Path
 from typing import Any
 
 from clipforge.core.config import EXAMPLE_LAYOUTS_DIR
-from clipforge.json_validation import required_int
-from clipforge.json_validation import required_list
-from clipforge.json_validation import required_number
-from clipforge.json_validation import required_object
-from clipforge.json_validation import required_string
+from clipforge.utils.json_validation import required_int
+from clipforge.utils.json_validation import required_list
+from clipforge.utils.json_validation import required_number
+from clipforge.utils.json_validation import required_object
+from clipforge.utils.json_validation import required_string
 
 
 class LayoutError(RuntimeError):
