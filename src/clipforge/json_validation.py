@@ -1,4 +1,5 @@
 """Small JSON payload validation helpers."""
+# TODO: move to a new /utils/ package
 
 from __future__ import annotations
 

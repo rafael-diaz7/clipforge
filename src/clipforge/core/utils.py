@@ -1,4 +1,5 @@
 """Small shared helpers for local paths, filenames, and timestamps."""
+# TODO: move to a new /utils/ package
 
 from __future__ import annotations
 

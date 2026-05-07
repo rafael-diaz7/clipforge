@@ -1,4 +1,5 @@
 """Compatibility wrapper for :mod:`clipforge.core.utils`."""
+# TODO: create a /utils/ package
 
 import sys as _sys
 
