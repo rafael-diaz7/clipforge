@@ -44,6 +44,7 @@ class ClipforgeConfig:
     openai_api_key: str | None = None
     openai_transcription_model: str = DEFAULT_OPENAI_TRANSCRIPTION_MODEL
     generate_captions: bool = False
+    caption_font_file: Path | None = None
     project_root: Path = PROJECT_ROOT
     downloads_dir: Path = DOWNLOADS_DIR
     renders_dir: Path = RENDERS_DIR
@@ -111,6 +112,7 @@ def load_config() -> ClipforgeConfig:
             DEFAULT_OPENAI_TRANSCRIPTION_MODEL,
         ),
         generate_captions=_env_bool("CLIPFORGE_GENERATE_CAPTIONS", default=False),
+        caption_font_file=_env_path("CLIPFORGE_CAPTION_FONT_FILE"),
         downloader_backend=os.getenv(
             "CLIPFORGE_DOWNLOADER",
             DEFAULT_DOWNLOADER_BACKEND,
@@ -120,6 +122,13 @@ def load_config() -> ClipforgeConfig:
     config.require_downloader_backend()
 
     return config
+
+
+def _env_path(name: str) -> Path | None:
+    value = os.getenv(name)
+    if value is None or not value.strip():
+        return None
+    return Path(value)
 
 
 def _env_bool(name: str, *, default: bool) -> bool:

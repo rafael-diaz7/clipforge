@@ -5,6 +5,7 @@ from pathlib import Path
 
 from clipforge.core.config import ClipforgeConfig, EXAMPLE_LAYOUTS_DIR
 from clipforge.media.download import DownloadResult
+from clipforge.media.captions import CaptionMetadata, CaptionSegment, save_captions
 from clipforge.media.layouts import load_example_layout
 from clipforge.pipeline.workflows import (
     process_clip,
@@ -53,6 +54,52 @@ def test_render_candidate_uses_layout_name_for_output_path(
             "center_gameplay",
         )
     ]
+
+
+def test_render_candidate_can_burn_caption_metadata(
+    tmp_path: Path,
+    monkeypatch,
+) -> None:
+    calls: list[dict[str, object]] = []
+    config = _config(tmp_path)
+    caption_path = save_captions(
+        clip_id="clip-123",
+        segments=(CaptionSegment(start_time=0, end_time=1, text="hello"),),
+        config=config,
+    )
+
+    def fake_render(
+        source_path: Path,
+        output_path: Path,
+        layout,
+        *,
+        caption_metadata: CaptionMetadata,
+    ) -> Path:
+        calls.append(
+            {
+                "source_path": source_path,
+                "output_path": output_path,
+                "layout": layout.name,
+                "caption_metadata": caption_metadata,
+            }
+        )
+        return output_path
+
+    monkeypatch.setattr("clipforge.pipeline.workflows.render_layout", fake_render)
+
+    output_path = render_candidate(
+        tmp_path / "source.mp4",
+        layout_ref="center_gameplay",
+        clip_id="clip-123",
+        caption_metadata_path=caption_path,
+        config=config,
+    )
+
+    assert output_path == tmp_path / "renders" / "clip-123_center_gameplay.mp4"
+    assert calls[0]["caption_metadata"] == CaptionMetadata(
+        clip_id="clip-123",
+        segments=(CaptionSegment(start_time=0, end_time=1, text="hello"),),
+    )
 
 
 def test_render_all_candidates_renders_default_layouts(
@@ -203,9 +250,21 @@ def test_process_clip_can_generate_captions_before_rendering(
         assert path == source_path
         assert clip_id == TWITCH_CLIP_SLUG
         events.append("captions")
-        return caption_path
+        return save_captions(
+            clip_id=clip_id,
+            segments=(CaptionSegment(start_time=0, end_time=1, text="hello"),),
+            output_path=caption_path,
+            config=config,
+        )
 
-    def fake_render(source: Path, output: Path, layout) -> Path:
+    def fake_render(
+        source: Path,
+        output: Path,
+        layout,
+        *,
+        caption_metadata: CaptionMetadata,
+    ) -> Path:
+        assert caption_metadata.clip_id == TWITCH_CLIP_SLUG
         events.append(f"render:{layout.name}")
         return output
 

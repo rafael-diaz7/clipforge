@@ -210,6 +210,7 @@ The command:
 - downloads through the configured downloader backend, defaulting to yt-dlp
 - downloads the source clip to `data/downloads/<clip_slug>/<backend>/`
 - optionally generates caption metadata before rendering
+- burns generated captions into the rendered candidates when caption generation is enabled
 - renders the `center_gameplay`, `facecam_focus`, and `hybrid` candidates to `data/renders/<clip_slug>/<backend>/`
 - writes run metadata to `data/metadata/`
 - prints the source, render, and metadata paths
@@ -221,6 +222,28 @@ Caption metadata uses the `clipforge.caption_metadata` JSON schema with a
 metadata file with `caption_metadata_path`; when that field is absent, the clip
 has no caption metadata. A caption file with an empty `segments` list is valid
 and means captions were intentionally saved as empty.
+Before upload, clipforge extracts temporary speech-optimized MP3 audio with
+FFmpeg instead of sending the full MP4 to OpenAI.
+Caption rendering uses a conservative vertical-safe style by default: smaller
+two-line captions, safe horizontal margins, and capped display time so short
+captions do not linger through long pauses in a transcription segment.
+
+Set `CLIPFORGE_CAPTION_FONT_FILE` to a local `.ttf` or `.otf` path to change the
+burned-in caption font:
+
+```text
+CLIPFORGE_CAPTION_FONT_FILE=C:/Windows/Fonts/arial.ttf
+```
+
+Use `--captions <caption_metadata.json>` with `render` or `render-all` to burn
+existing caption metadata into local renders:
+
+```bash
+clipforge render-all \
+  --source "data/downloads/<clip_slug>/<backend>/<clip_slug>.mp4" \
+  --clip-id "<clip_id>" \
+  --captions "data/metadata/captions/<clip_id>.json"
+```
 
 Full pipeline render filenames are layout-only inside the scoped render
 directory, for example `data/renders/<clip_slug>/ytdlp/hybrid.mp4`. Direct
@@ -236,8 +259,8 @@ You can also run each pipeline step directly:
 python -m clipforge.pipeline.cli resolve-url --url "<twitch_clip_url>"
 python -m clipforge.pipeline.cli download --media-url "<direct_media_url>" --clip-id "<clip_id>"
 python -m clipforge.pipeline.cli captions --source "data/downloads/<clip_slug>/<backend>/<clip_slug>.mp4" --clip-id "<clip_id>"
-python -m clipforge.pipeline.cli render --source "data/downloads/<clip_slug>/<backend>/<clip_slug>.mp4" --layout center_gameplay
-python -m clipforge.pipeline.cli render-all --source "data/downloads/<clip_slug>/<backend>/<clip_slug>.mp4"
+python -m clipforge.pipeline.cli render --source "data/downloads/<clip_slug>/<backend>/<clip_slug>.mp4" --layout center_gameplay --captions "data/metadata/captions/<clip_id>.json"
+python -m clipforge.pipeline.cli render-all --source "data/downloads/<clip_slug>/<backend>/<clip_slug>.mp4" --captions "data/metadata/captions/<clip_id>.json"
 python -m clipforge.pipeline.cli process --url "<twitch_clip_url>"
 ```
 
@@ -252,8 +275,8 @@ clipforge --url "<twitch_clip_url>"
 clipforge resolve-url --url "<twitch_clip_url>"
 clipforge download --media-url "<direct_media_url>" --clip-id "<clip_id>"
 clipforge captions --source "data/downloads/<clip_slug>/<backend>/<clip_slug>.mp4" --clip-id "<clip_id>"
-clipforge render --source "data/downloads/<clip_slug>/<backend>/<clip_slug>.mp4" --layout center_gameplay
-clipforge render-all --source "data/downloads/<clip_slug>/<backend>/<clip_slug>.mp4"
+clipforge render --source "data/downloads/<clip_slug>/<backend>/<clip_slug>.mp4" --layout center_gameplay --captions "data/metadata/captions/<clip_id>.json"
+clipforge render-all --source "data/downloads/<clip_slug>/<backend>/<clip_slug>.mp4" --captions "data/metadata/captions/<clip_id>.json"
 clipforge process --url "<twitch_clip_url>"
 ```
 

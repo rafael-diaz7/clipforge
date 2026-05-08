@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import logging
 import subprocess
+import tempfile
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Any, Callable
@@ -26,6 +27,7 @@ GPT_TRANSCRIBE_JSON_MODELS = ("gpt-4o-transcribe", "gpt-4o-mini-transcribe")
 LOGGER = logging.getLogger(__name__)
 
 DurationProbe = Callable[[Path], float]
+AudioExtractor = Callable[[Path, Path], None]
 SubprocessRunner = Callable[..., subprocess.CompletedProcess[str]]
 
 
@@ -38,6 +40,7 @@ class OpenAITranscriptionClient:
     session: requests.Session | None = None
     timeout_seconds: int = DEFAULT_TRANSCRIPTION_TIMEOUT_SECONDS
     duration_probe: DurationProbe | None = None
+    audio_extractor: AudioExtractor | None = None
 
     @classmethod
     def from_config(cls, config: ClipforgeConfig) -> "OpenAITranscriptionClient":
@@ -52,21 +55,27 @@ class OpenAITranscriptionClient:
 
         client = self.session or requests
         try:
-            with source_path.open("rb") as source_file:
-                response = client.post(
-                    OPENAI_TRANSCRIPTIONS_URL,
-                    headers={"Authorization": f"Bearer {self.api_key}"},
-                    data=_transcription_request_data(self.model),
-                    files={"file": (source_path.name, source_file)},
-                    timeout=self.timeout_seconds,
-                )
+            with tempfile.TemporaryDirectory(prefix="clipforge-transcription-") as temp_dir:
+                upload_path = Path(temp_dir) / f"{source_path.stem}.mp3"
+                extractor = self.audio_extractor or extract_transcription_audio
+                extractor(source_path, upload_path)
+                with upload_path.open("rb") as source_file:
+                    response = client.post(
+                        OPENAI_TRANSCRIPTIONS_URL,
+                        headers={"Authorization": f"Bearer {self.api_key}"},
+                        data=_transcription_request_data(self.model),
+                        files={"file": (upload_path.name, source_file)},
+                        timeout=self.timeout_seconds,
+                    )
+        except CaptionTranscriptionError:
+            raise
         except requests.RequestException as exc:
             raise CaptionTranscriptionError(
                 f"OpenAI transcription request failed for {source_path}: {exc}"
             ) from exc
         except OSError as exc:
             raise CaptionTranscriptionError(
-                f"Could not read caption source clip {source_path}: {exc}"
+                f"Could not prepare caption audio for {source_path}: {exc}"
             ) from exc
 
         request_id = response.headers.get("x-request-id")
@@ -103,6 +112,50 @@ class OpenAITranscriptionClient:
             clip_id=clip_id,
             fallback_duration_seconds=fallback_duration,
         )
+
+
+def extract_transcription_audio(
+    source_path: Path,
+    output_path: Path,
+    *,
+    runner: SubprocessRunner = subprocess.run,
+) -> Path:
+    """Extract compressed speech-oriented audio for transcription upload."""
+
+    command = [
+        "ffmpeg",
+        "-y",
+        "-i",
+        str(source_path),
+        "-vn",
+        "-ac",
+        "1",
+        "-ar",
+        "16000",
+        "-c:a",
+        "mp3",
+        "-b:a",
+        "32k",
+        str(output_path),
+    ]
+    try:
+        runner(command, check=True, capture_output=True, text=True)
+    except (OSError, subprocess.CalledProcessError) as exc:
+        raise CaptionTranscriptionError(
+            f"Could not extract transcription audio with FFmpeg for {source_path}: "
+            f"{_process_error_excerpt(exc)}"
+        ) from exc
+
+    try:
+        if output_path.stat().st_size <= 0:
+            raise CaptionTranscriptionError(
+                f"FFmpeg produced an empty transcription audio file for {source_path}."
+            )
+    except OSError as exc:
+        raise CaptionTranscriptionError(
+            f"FFmpeg did not create transcription audio for {source_path}: {exc}"
+        ) from exc
+    return output_path
 
 
 def normalize_openai_transcription_response(

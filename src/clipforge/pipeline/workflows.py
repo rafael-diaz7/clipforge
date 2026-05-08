@@ -9,7 +9,7 @@ from clipforge.core.config import ClipforgeConfig, load_config
 from clipforge.utils import ensure_directory, safe_filename, twitch_clip_slug_from_url
 from clipforge.integrations.clipr import CliprClient
 from clipforge.media.download import download_clip, download_twitch_clip
-from clipforge.media.captions import generate_caption_metadata
+from clipforge.media.captions import CaptionMetadata, generate_caption_metadata, load_caption_metadata
 from clipforge.media.layouts import (
     DEFAULT_LAYOUT_NAMES,
     Layout,
@@ -17,6 +17,7 @@ from clipforge.media.layouts import (
     load_layout,
 )
 from clipforge.media.render import render_layout
+from clipforge.media.render import CaptionStyle
 from clipforge.pipeline.artifacts import write_metadata
 from clipforge.pipeline.state_sync import record_rendered_clip
 from clipforge.storage.state import get_clip
@@ -55,6 +56,7 @@ def render_candidate(
     *,
     layout_ref: str,
     clip_id: str | None = None,
+    caption_metadata_path: Path | None = None,
     config: ClipforgeConfig | None = None,
 ) -> Path:
     """Render one local source clip with one example layout or layout file."""
@@ -62,22 +64,40 @@ def render_candidate(
     config = config or load_config()
     layout = _load_layout_ref(layout_ref, config=config)
     output_path = _render_output_path(source_path, layout, clip_id=clip_id, config=config)
+    caption_metadata = _load_optional_caption_metadata(caption_metadata_path)
+    caption_style = _caption_style_from_config(config)
     LOGGER.info("Rendering layout %s to %s.", layout.name, output_path)
-    return render_layout(source_path, output_path, layout)
+    return _render_layout_with_optional_captions(
+        source_path,
+        output_path,
+        layout,
+        caption_metadata=caption_metadata,
+        caption_style=caption_style,
+    )
 
 
 def render_all_candidates(
     source_path: Path,
     *,
     clip_id: str | None = None,
+    caption_metadata_path: Path | None = None,
     config: ClipforgeConfig | None = None,
 ) -> tuple[Path, ...]:
     """Render the default MVP candidate layouts for one source clip."""
 
     config = config or load_config()
     layouts = load_example_layouts(DEFAULT_LAYOUT_NAMES, layouts_dir=config.example_layouts_dir)
+    caption_metadata = _load_optional_caption_metadata(caption_metadata_path)
+    caption_style = _caption_style_from_config(config)
     return tuple(
-        _render_candidate_layout(source_path, layout, clip_id=clip_id, config=config)
+        _render_candidate_layout(
+            source_path,
+            layout,
+            clip_id=clip_id,
+            caption_metadata=caption_metadata,
+            caption_style=caption_style,
+            config=config,
+        )
         for layout in layouts
     )
 
@@ -110,6 +130,8 @@ def process_clip(
             clip_id=clip_id,
             config=config,
         )
+    caption_metadata = _load_optional_caption_metadata(caption_metadata_path)
+    caption_style = _caption_style_from_config(config)
 
     layouts = load_example_layouts(DEFAULT_LAYOUT_NAMES, layouts_dir=config.example_layouts_dir)
 
@@ -121,6 +143,8 @@ def process_clip(
             clip_id=clip_id,
             backend=download_result.backend,
             channel=channel,
+            caption_metadata=caption_metadata,
+            caption_style=caption_style,
             config=config,
         )
         outputs.append({"layout": layout.name, "path": str(output_path)})
@@ -203,6 +227,8 @@ def _render_candidate_layout(
     clip_id: str | None,
     backend: str | None = None,
     channel: str | None = None,
+    caption_metadata: CaptionMetadata | None = None,
+    caption_style: CaptionStyle = CaptionStyle(),
     config: ClipforgeConfig,
 ) -> Path:
     output_path = _render_output_path(
@@ -214,4 +240,48 @@ def _render_candidate_layout(
         config=config,
     )
     LOGGER.info("Rendering layout %s to %s.", layout.name, output_path)
-    return render_layout(source_path, output_path, layout)
+    return _render_layout_with_optional_captions(
+        source_path,
+        output_path,
+        layout,
+        caption_metadata=caption_metadata,
+        caption_style=caption_style,
+    )
+
+
+def _load_optional_caption_metadata(path: Path | None) -> CaptionMetadata | None:
+    if path is None:
+        return None
+    return load_caption_metadata(path)
+
+
+def _render_layout_with_optional_captions(
+    source_path: Path,
+    output_path: Path,
+    layout: Layout,
+    *,
+    caption_metadata: CaptionMetadata | None,
+    caption_style: CaptionStyle,
+) -> Path:
+    if caption_metadata is None:
+        return render_layout(source_path, output_path, layout)
+    if caption_style == CaptionStyle():
+        return render_layout(
+            source_path,
+            output_path,
+            layout,
+            caption_metadata=caption_metadata,
+        )
+    return render_layout(
+        source_path,
+        output_path,
+        layout,
+        caption_metadata=caption_metadata,
+        caption_style=caption_style,
+    )
+
+
+def _caption_style_from_config(config: ClipforgeConfig) -> CaptionStyle:
+    if config.caption_font_file is None:
+        return CaptionStyle()
+    return CaptionStyle(font_file=config.caption_font_file)

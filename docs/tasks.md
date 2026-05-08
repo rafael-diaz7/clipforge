@@ -280,7 +280,7 @@ Suggested commit message:
 feat: generate clip captions
 ```
 
-### [ ] 8. feat: burn captions into renders
+### [x] 8. feat: burn captions into renders
 
 Goal: Overlay timed captions onto rendered vertical candidates.
 

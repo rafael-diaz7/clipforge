@@ -83,6 +83,10 @@ def build_parser() -> argparse.ArgumentParser:
         "--clip-id",
         help="Output filename prefix. Defaults to the source filename stem.",
     )
+    render_parser.add_argument(
+        "--captions",
+        help="Optional caption metadata JSON path to burn into the render.",
+    )
 
     render_all_parser = subparsers.add_parser(
         "render-all",
@@ -96,6 +100,10 @@ def build_parser() -> argparse.ArgumentParser:
     render_all_parser.add_argument(
         "--clip-id",
         help="Output filename prefix. Defaults to the source filename stem.",
+    )
+    render_all_parser.add_argument(
+        "--captions",
+        help="Optional caption metadata JSON path to burn into each render.",
     )
 
     captions_parser = subparsers.add_parser(
@@ -186,16 +194,21 @@ def main(argv: Sequence[str] | None = None) -> int:
             return 0
 
         if args.command == "render":
-            output_path = render_candidate(
-                Path(args.source),
-                layout_ref=args.layout,
-                clip_id=args.clip_id,
-            )
+            render_kwargs = {
+                "layout_ref": args.layout,
+                "clip_id": args.clip_id,
+            }
+            if args.captions:
+                render_kwargs["caption_metadata_path"] = Path(args.captions)
+            output_path = render_candidate(Path(args.source), **render_kwargs)
             print(output_path)
             return 0
 
         if args.command == "render-all":
-            for output_path in render_all_candidates(Path(args.source), clip_id=args.clip_id):
+            render_kwargs = {"clip_id": args.clip_id}
+            if args.captions:
+                render_kwargs["caption_metadata_path"] = Path(args.captions)
+            for output_path in render_all_candidates(Path(args.source), **render_kwargs):
                 print(output_path)
             return 0
 

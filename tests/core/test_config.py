@@ -73,6 +73,16 @@ def test_load_config_defaults_openai_transcription_model(
     assert config.generate_captions is False
 
 
+def test_load_config_uses_env_for_caption_font_file(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    monkeypatch.setenv("CLIPFORGE_CAPTION_FONT_FILE", "C:/Windows/Fonts/arial.ttf")
+
+    config = load_config()
+
+    assert config.caption_font_file == Path("C:/Windows/Fonts/arial.ttf")
+
+
 def test_config_requires_openai_api_key() -> None:
     config = ClipforgeConfig()
 

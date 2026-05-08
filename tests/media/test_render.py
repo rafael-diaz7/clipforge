@@ -4,8 +4,10 @@ from pathlib import Path
 
 import pytest
 
+from clipforge.media.captions import CaptionMetadata, CaptionSegment
 from clipforge.media.layouts import Layout, LayoutRegion, NormalizedRect, OutputSize
 from clipforge.media.render import (
+    CaptionStyle,
     RenderError,
     build_ffmpeg_command,
     build_filter_complex,
@@ -85,6 +87,123 @@ def test_build_filter_complex_overlays_regions_in_layout_order() -> None:
     )
 
 
+def test_build_filter_complex_can_append_caption_overlays() -> None:
+    caption_metadata = CaptionMetadata(
+        clip_id="clip-123",
+        segments=(
+            CaptionSegment(start_time=0.5, end_time=1.75, text="Let's go: win now"),
+            CaptionSegment(start_time=2, end_time=3, text="Second caption"),
+        ),
+    )
+
+    filter_complex = build_filter_complex(
+        _layout(_region()),
+        caption_metadata=caption_metadata,
+        caption_style=CaptionStyle(
+            font_size=52,
+            safe_margin_bottom=180,
+            max_chars_per_line=16,
+        ),
+    )
+
+    assert "[base][region0]overlay=0:0:format=auto:shortest=1[captionbase]" in filter_complex
+    assert "drawtext=text=Let\\\\\\'s\\ go\\:\\ win" in filter_complex
+    assert "drawtext=text=now" in filter_complex
+    assert "\\n" not in filter_complex
+    assert "fontsize=52" in filter_complex
+    assert "y=max(96\\,h-112-180)" in filter_complex
+    assert "enable='between(t\\,0.5\\,1.75)'" in filter_complex
+    assert "enable='between(t\\,2\\,3)'" in filter_complex
+    assert filter_complex.endswith("[out]")
+
+
+def test_build_filter_complex_limits_long_caption_display_time() -> None:
+    caption_metadata = CaptionMetadata(
+        clip_id="clip-123",
+        segments=(
+            CaptionSegment(
+                start_time=4,
+                end_time=12,
+                text="short caption",
+            ),
+        ),
+    )
+
+    filter_complex = build_filter_complex(
+        _layout(_region()),
+        caption_metadata=caption_metadata,
+    )
+
+    assert "enable='between(t\\,4\\,5.17)'" in filter_complex
+
+
+def test_build_filter_complex_splits_long_caption_segments_into_multiple_cues() -> None:
+    caption_metadata = CaptionMetadata(
+        clip_id="clip-123",
+        segments=(
+            CaptionSegment(
+                start_time=0,
+                end_time=6,
+                text="Hey case happy Cinco de Mayo was wondering if you wanted to come over again like last",
+            ),
+        ),
+    )
+
+    filter_complex = build_filter_complex(
+        _layout(_region()),
+        caption_metadata=caption_metadata,
+    )
+
+    assert filter_complex.count("drawtext=") > 1
+    assert "wanted\\ to\\ come\\ over\\ again" in filter_complex
+    assert "drawtext=text=like\\ last" in filter_complex
+    assert "\\n" not in filter_complex
+    assert "..." not in filter_complex
+
+
+def test_build_filter_complex_can_use_custom_caption_font_file() -> None:
+    caption_metadata = CaptionMetadata(
+        clip_id="clip-123",
+        segments=(CaptionSegment(start_time=0, end_time=1, text="hello"),),
+    )
+
+    filter_complex = build_filter_complex(
+        _layout(_region()),
+        caption_metadata=caption_metadata,
+        caption_style=CaptionStyle(font_file=Path("C:/Windows/Fonts/arial.ttf")),
+    )
+
+    assert "fontfile='C\\:/Windows/Fonts/arial.ttf'" in filter_complex
+
+
+def test_build_filter_complex_normalizes_caption_apostrophes_for_drawtext() -> None:
+    caption_metadata = CaptionMetadata(
+        clip_id="clip-123",
+        segments=(
+            CaptionSegment(start_time=0, end_time=1, text="You'd win that true."),
+            CaptionSegment(start_time=1, end_time=2, text="But I don't have them."),
+        ),
+    )
+
+    filter_complex = build_filter_complex(
+        _layout(_region()),
+        caption_metadata=caption_metadata,
+    )
+
+    assert "You\\\\\\'d\\ win\\ that\\ true." in filter_complex
+    assert "But\\ I\\ don\\\\\\'t\\ have\\ them." in filter_complex
+
+
+def test_build_filter_complex_ignores_empty_caption_metadata() -> None:
+    filter_complex = build_filter_complex(
+        _layout(_region()),
+        caption_metadata=CaptionMetadata(clip_id="clip-123", segments=()),
+    )
+
+    assert "drawtext=" not in filter_complex
+    assert filter_complex.endswith("[out]")
+
+
 def test_build_ffmpeg_command_returns_argument_list(tmp_path: Path) -> None:
     source = tmp_path / "source.mp4"
     output = tmp_path / "render.mp4"
@@ -99,6 +218,27 @@ def test_build_ffmpeg_command_returns_argument_list(tmp_path: Path) -> None:
     assert "-shortest" in command
     assert "-s" in command
     assert "1080x1920" in command
+    assert command[-1] == str(output)
+    assert all(isinstance(part, str) for part in command)
+
+
+def test_build_ffmpeg_command_accepts_caption_metadata(tmp_path: Path) -> None:
+    source = tmp_path / "source.mp4"
+    output = tmp_path / "render.mp4"
+    caption_metadata = CaptionMetadata(
+        clip_id="clip-123",
+        segments=(CaptionSegment(start_time=0, end_time=1, text="hello"),),
+    )
+
+    command = build_ffmpeg_command(
+        source,
+        output,
+        _layout(_region()),
+        caption_metadata=caption_metadata,
+    )
+
+    filter_complex = command[command.index("-filter_complex") + 1]
+    assert "drawtext=" in filter_complex
     assert command[-1] == str(output)
     assert all(isinstance(part, str) for part in command)
 

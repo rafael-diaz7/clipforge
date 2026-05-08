@@ -7,6 +7,7 @@ import pytest
 
 from clipforge.integrations.openai import (
     OpenAITranscriptionClient,
+    extract_transcription_audio,
     media_duration_seconds,
     parse_openai_transcription_payload,
 )
@@ -123,6 +124,7 @@ def test_openai_transcription_client_uses_json_for_gpt_transcription_model(
         session=session,
         timeout_seconds=30,
         duration_probe=lambda path: 9.25,
+        audio_extractor=lambda source, output: output.write_bytes(b"audio bytes"),
     )
 
     metadata = client.transcribe(source_path, clip_id=CAPTION_CLIP_ID)
@@ -139,8 +141,8 @@ def test_openai_transcription_client_uses_json_for_gpt_transcription_model(
                 ("model", "gpt-4o-mini-transcribe"),
                 ("response_format", "json"),
             ],
-            "filename": "source.mp4",
-            "file_bytes": b"video bytes",
+            "filename": "source.mp3",
+            "file_bytes": b"audio bytes",
             "timeout": 30,
         }
     ]
@@ -164,6 +166,7 @@ def test_openai_transcription_client_uses_verbose_json_for_whisper(
         api_key="test-openai-key",
         model="whisper-1",
         session=session,
+        audio_extractor=lambda source, output: output.write_bytes(b"audio bytes"),
     )
 
     metadata = client.transcribe(source_path, clip_id=CAPTION_CLIP_ID)
@@ -177,6 +180,8 @@ def test_openai_transcription_client_uses_verbose_json_for_whisper(
         ("response_format", "verbose_json"),
         ("timestamp_granularities[]", "segment"),
     ]
+    assert session.calls[0]["filename"] == "source.mp3"
+    assert session.calls[0]["file_bytes"] == b"audio bytes"
 
 
 def test_openai_transcription_client_redacts_api_key_from_errors(
@@ -194,6 +199,7 @@ def test_openai_transcription_client_redacts_api_key_from_errors(
     client = OpenAITranscriptionClient(
         api_key="test-openai-key",
         session=session,
+        audio_extractor=lambda source, output: output.write_bytes(b"audio bytes"),
     )
 
     with pytest.raises(CaptionTranscriptionError) as exc_info:
@@ -204,6 +210,45 @@ def test_openai_transcription_client_redacts_api_key_from_errors(
     assert "request_id=req_401" in message
     assert "test-openai-key" not in message
     assert "[redacted]" in message
+
+
+def test_extract_transcription_audio_uses_speech_optimized_ffmpeg_command(
+    tmp_path: Path,
+) -> None:
+    source_path = tmp_path / "source.mp4"
+    output_path = tmp_path / "source.mp3"
+    calls: list[list[str]] = []
+
+    def fake_runner(
+        command: list[str],
+        *,
+        check: bool,
+        capture_output: bool,
+        text: bool,
+    ) -> subprocess.CompletedProcess[str]:
+        calls.append(command)
+        output_path.write_bytes(b"audio bytes")
+        return subprocess.CompletedProcess(command, 0)
+
+    assert extract_transcription_audio(source_path, output_path, runner=fake_runner) == output_path
+    assert calls == [
+        [
+            "ffmpeg",
+            "-y",
+            "-i",
+            str(source_path),
+            "-vn",
+            "-ac",
+            "1",
+            "-ar",
+            "16000",
+            "-c:a",
+            "mp3",
+            "-b:a",
+            "32k",
+            str(output_path),
+        ]
+    ]
 
 
 def test_media_duration_seconds_uses_ffprobe(tmp_path: Path) -> None:
