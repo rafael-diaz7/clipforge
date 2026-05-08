@@ -10,6 +10,8 @@ from clipforge.media.render import (
     CaptionCue,
     CaptionStyle,
     RenderError,
+    _caption_chunk_duration,
+    _caption_cues,
     build_ffmpeg_command,
     build_filter_complex,
     generate_ass_subtitle,
@@ -136,7 +138,7 @@ def test_build_filter_complex_limits_long_caption_display_time() -> None:
         caption_metadata=caption_metadata,
     )
 
-    assert "enable='between(t\\,4\\,5.17)'" in filter_complex
+    assert "enable='between(t\\,4\\,5.47)'" in filter_complex
 
 
 def test_build_filter_complex_splits_long_caption_segments_into_multiple_cues() -> None:
@@ -161,6 +163,79 @@ def test_build_filter_complex_splits_long_caption_segments_into_multiple_cues() 
     assert "drawtext=text=like\\ last" in filter_complex
     assert "\\n" not in filter_complex
     assert "..." not in filter_complex
+
+
+def test_caption_timing_uses_character_weighting() -> None:
+    cues = _caption_cues(
+        (
+            CaptionSegment(
+                start_time=0,
+                end_time=8,
+                text="short extraordinarilylongword",
+            ),
+        ),
+        caption_style=CaptionStyle(
+            max_chars_per_line=12,
+            max_lines=1,
+            max_hold_seconds=8,
+        ),
+        output_size=OutputSize(width=1080, height=1920),
+    )
+
+    assert len(cues) == 2
+    short_duration = cues[0].end_time - cues[0].start_time
+    long_duration = cues[1].end_time - cues[1].start_time
+    assert long_duration > short_duration
+
+
+def test_caption_timing_adds_punctuation_pause_weighting() -> None:
+    plain_duration = _caption_chunk_duration("wait really now", CaptionStyle())
+    punctuated_duration = _caption_chunk_duration("wait, really? now!", CaptionStyle())
+
+    assert punctuated_duration > plain_duration
+
+
+def test_caption_timing_enforces_minimum_cue_duration() -> None:
+    duration = _caption_chunk_duration(
+        "go",
+        CaptionStyle(
+            min_cue_seconds=1.25,
+            seconds_per_word=0,
+            seconds_per_character=0,
+            punctuation_pause_seconds=0,
+            display_padding_seconds=0,
+        ),
+    )
+
+    assert duration == 1.25
+
+
+def test_caption_timing_preserves_chunk_boundaries_inside_segment() -> None:
+    cues = _caption_cues(
+        (
+            CaptionSegment(
+                start_time=10,
+                end_time=11,
+                text="alpha beta gamma delta",
+            ),
+        ),
+        caption_style=CaptionStyle(
+            max_chars_per_line=6,
+            max_lines=1,
+            min_cue_seconds=0.4,
+            max_hold_seconds=3,
+        ),
+        output_size=OutputSize(width=1080, height=1920),
+    )
+
+    assert len(cues) == 4
+    assert cues[0].start_time == 10
+    assert cues[-1].end_time == 11
+    assert all(cue.end_time > cue.start_time for cue in cues)
+    assert all(
+        previous.end_time == current.start_time
+        for previous, current in zip(cues[:-1], cues[1:], strict=True)
+    )
 
 
 def test_build_filter_complex_can_use_custom_caption_font_file() -> None:

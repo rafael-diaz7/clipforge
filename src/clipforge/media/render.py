@@ -8,6 +8,11 @@ from dataclasses import dataclass
 from pathlib import Path
 from typing import Protocol
 
+from clipforge.media.caption_escaping import (
+    escape_ass_text,
+    escape_drawtext_option,
+    escape_drawtext_text,
+)
 from clipforge.media.captions import CaptionMetadata, CaptionSegment
 from clipforge.media.layouts import Layout, LayoutRegion, NormalizedRect, OutputSize
 
@@ -55,6 +60,10 @@ class CaptionStyle:
     min_display_seconds: float = 0.75
     max_display_seconds: float = 3.2
     seconds_per_word: float = 0.36
+    seconds_per_character: float = 0.025
+    punctuation_pause_seconds: float = 0.14
+    min_cue_seconds: float | None = None
+    max_hold_seconds: float | None = None
     display_padding_seconds: float = 0.45
     uppercase: bool = False
     ass_style_name: str = "Default"
@@ -112,7 +121,7 @@ class DrawtextCaptionRenderer:
                 )
                 filters.append(
                     f"[{current_input_label}]"
-                    f"drawtext=text={_escape_drawtext_text(line)}:"
+                    f"drawtext=text={escape_drawtext_text(line)}:"
                     f"x=max({caption_style.safe_margin_x}\\,(w-text_w)/2):"
                     f"y={_caption_line_y(cue.lines, line_index, caption_style)}:"
                     f"{_caption_font_option(caption_style)}"
@@ -403,16 +412,22 @@ def _caption_cues(
         if not chunks:
             continue
 
-        durations = [_caption_chunk_duration(chunk, caption_style) for chunk in chunks]
         available_duration = segment.end_time - segment.start_time
-        requested_duration = sum(durations)
-        if requested_duration > available_duration:
-            scale = available_duration / requested_duration
-            durations = [duration * scale for duration in durations]
+        durations = _caption_chunk_durations(
+            chunks,
+            available_duration=available_duration,
+            caption_style=caption_style,
+        )
+        fills_segment = sum(durations) >= available_duration
 
         cursor = segment.start_time
-        for chunk, duration in zip(chunks, durations, strict=True):
-            end_time = min(segment.end_time, cursor + duration)
+        for index, (chunk, duration) in enumerate(zip(chunks, durations, strict=True)):
+            is_last_chunk = index == len(chunks) - 1
+            end_time = (
+                segment.end_time
+                if fills_segment and is_last_chunk
+                else min(segment.end_time, cursor + duration)
+            )
             if end_time > cursor:
                 cues.append(
                     CaptionCue(
@@ -494,19 +509,72 @@ def _caption_chars_per_line(caption_style: CaptionStyle, output_size: OutputSize
     return max(8, int(text_width / average_character_width))
 
 
+def _caption_chunk_durations(
+    chunks: tuple[str, ...],
+    *,
+    available_duration: float,
+    caption_style: CaptionStyle,
+) -> tuple[float, ...]:
+    requested_durations = tuple(
+        _caption_chunk_duration(chunk, caption_style) for chunk in chunks
+    )
+    requested_duration = sum(requested_durations)
+    if requested_duration <= available_duration:
+        return requested_durations
+
+    cue_count = len(chunks)
+    min_duration = _min_caption_cue_seconds(caption_style)
+    if available_duration >= cue_count * min_duration:
+        flexible_weights = tuple(
+            max(0.0, duration - min_duration) for duration in requested_durations
+        )
+        flexible_duration = available_duration - cue_count * min_duration
+        flexible_total = sum(flexible_weights)
+        if flexible_total == 0:
+            extra_duration = flexible_duration / cue_count
+            return tuple(min_duration + extra_duration for _chunk in chunks)
+        return tuple(
+            min_duration + flexible_duration * weight / flexible_total
+            for weight in flexible_weights
+        )
+
+    if requested_duration == 0:
+        return tuple(available_duration / cue_count for _chunk in chunks)
+    return tuple(
+        available_duration * duration / requested_duration
+        for duration in requested_durations
+    )
+
+
 def _caption_chunk_duration(
     text: str,
     caption_style: CaptionStyle,
 ) -> float:
     word_count = len(text.split())
+    character_count = len("".join(text.split()))
+    punctuation_count = sum(1 for character in text if character in ",.;:!?")
     readable_duration = (
         word_count * caption_style.seconds_per_word
+        + character_count * caption_style.seconds_per_character
+        + punctuation_count * caption_style.punctuation_pause_seconds
         + caption_style.display_padding_seconds
     )
     return min(
-        caption_style.max_display_seconds,
-        max(caption_style.min_display_seconds, readable_duration),
+        _max_caption_hold_seconds(caption_style),
+        max(_min_caption_cue_seconds(caption_style), readable_duration),
     )
+
+
+def _min_caption_cue_seconds(caption_style: CaptionStyle) -> float:
+    if caption_style.min_cue_seconds is not None:
+        return caption_style.min_cue_seconds
+    return caption_style.min_display_seconds
+
+
+def _max_caption_hold_seconds(caption_style: CaptionStyle) -> float:
+    if caption_style.max_hold_seconds is not None:
+        return caption_style.max_hold_seconds
+    return caption_style.max_display_seconds
 
 
 def _require_caption_renderer_backend(caption_renderer_backend: str) -> None:
@@ -641,7 +709,7 @@ def _ass_dialogue_lines(
             f"{_ass_field(caption_style.ass_style_name)},,"
             f"{caption_style.safe_margin_x},{caption_style.safe_margin_x},"
             f"{caption_style.safe_margin_bottom},,"
-            f"{{\\an2\\pos({output_size.width // 2},{y})}}{_escape_ass_text(text)}"
+            f"{{\\an2\\pos({output_size.width // 2},{y})}}{escape_ass_text(text)}"
         )
     return tuple(dialogue_lines)
 
@@ -727,38 +795,11 @@ def _ffmpeg_path(path: Path) -> str:
 
 
 def _escape_ffmpeg_filter_option(value: str) -> str:
-    return _escape_drawtext_option(value)
+    return escape_drawtext_option(value)
 
 
 def _caption_font_option(caption_style: CaptionStyle) -> str:
     if caption_style.font_file is None:
         return ""
     font_file = str(caption_style.font_file).replace("\\", "/")
-    return f"fontfile='{_escape_drawtext_option(font_file)}':"
-
-
-def _escape_drawtext_option(value: str) -> str:
-    return (
-        value.replace("\\", "\\\\")
-        .replace("'", "\\'")
-        .replace(":", "\\:")
-        .replace(",", "\\,")
-        .replace(";", "\\;")
-        .replace("[", "\\[")
-        .replace("]", "\\]")
-    )
-
-
-def _escape_drawtext_text(value: str) -> str:
-    return (
-        value.replace("\\", "\\\\")
-        .replace(" ", "\\ ")
-        .replace("'", "\\\\\\'")
-        .replace(":", "\\:")
-        .replace(",", "\\,")
-        .replace(";", "\\;")
-        .replace("[", "\\[")
-        .replace("]", "\\]")
-        .replace("%", "\\%")
-        .replace("\n", "\\n")
-    )
+    return f"fontfile='{escape_drawtext_option(font_file)}':"
