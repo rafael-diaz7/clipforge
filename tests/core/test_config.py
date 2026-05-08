@@ -6,6 +6,7 @@ from clipforge.core.config import (
     ClipforgeConfig,
     ConfigError,
     DEFAULT_DOWNLOADER_BACKEND,
+    DEFAULT_CAPTION_RENDERER_BACKEND,
     DEFAULT_OPENAI_TRANSCRIPTION_MODEL,
     DOWNLOADS_DIR,
     EXAMPLE_LAYOUTS_DIR,
@@ -81,6 +82,42 @@ def test_load_config_uses_env_for_caption_font_file(
     config = load_config()
 
     assert config.caption_font_file == Path("C:/Windows/Fonts/arial.ttf")
+
+
+def test_load_config_uses_env_for_caption_renderer_options(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    monkeypatch.setenv("CLIPFORGE_CAPTION_RENDERER", "ASS")
+    monkeypatch.setenv("CLIPFORGE_ASS_TEMP_DIR", "data/tmp/ass")
+    monkeypatch.setenv("CLIPFORGE_CAPTION_FONT_FALLBACKS", "Inter, Segoe UI Emoji")
+
+    config = load_config()
+
+    assert config.require_caption_renderer_backend() == "ass"
+    assert config.ass_temp_dir == Path("data/tmp/ass")
+    assert config.caption_font_fallbacks == ("Inter", "Segoe UI Emoji")
+
+
+def test_load_config_defaults_caption_renderer_to_drawtext(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    monkeypatch.delenv("CLIPFORGE_CAPTION_RENDERER", raising=False)
+    monkeypatch.delenv("CLIPFORGE_CAPTION_FONT_FALLBACKS", raising=False)
+
+    config = load_config()
+
+    assert config.caption_renderer_backend == DEFAULT_CAPTION_RENDERER_BACKEND
+    assert config.require_caption_renderer_backend() == "drawtext"
+    assert config.caption_font_fallbacks == ("Arial",)
+
+
+def test_load_config_rejects_invalid_caption_renderer_backend(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    monkeypatch.setenv("CLIPFORGE_CAPTION_RENDERER", "missing")
+
+    with pytest.raises(ConfigError, match="Invalid caption renderer backend"):
+        load_config()
 
 
 def test_config_requires_openai_api_key() -> None:

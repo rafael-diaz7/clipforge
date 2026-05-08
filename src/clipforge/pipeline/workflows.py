@@ -73,6 +73,7 @@ def render_candidate(
         layout,
         caption_metadata=caption_metadata,
         caption_style=caption_style,
+        config=config,
     )
 
 
@@ -246,6 +247,7 @@ def _render_candidate_layout(
         layout,
         caption_metadata=caption_metadata,
         caption_style=caption_style,
+        config=config,
     )
 
 
@@ -262,6 +264,7 @@ def _render_layout_with_optional_captions(
     *,
     caption_metadata: CaptionMetadata | None,
     caption_style: CaptionStyle,
+    config: ClipforgeConfig,
 ) -> Path:
     if caption_metadata is None:
         return render_layout(source_path, output_path, layout)
@@ -271,6 +274,8 @@ def _render_layout_with_optional_captions(
             output_path,
             layout,
             caption_metadata=caption_metadata,
+            caption_renderer_backend=config.require_caption_renderer_backend(),
+            ass_temp_dir=config.ass_temp_dir,
         )
     return render_layout(
         source_path,
@@ -278,10 +283,18 @@ def _render_layout_with_optional_captions(
         layout,
         caption_metadata=caption_metadata,
         caption_style=caption_style,
+        caption_renderer_backend=config.require_caption_renderer_backend(),
+        ass_temp_dir=config.ass_temp_dir,
     )
 
 
 def _caption_style_from_config(config: ClipforgeConfig) -> CaptionStyle:
-    if config.caption_font_file is None:
+    if (
+        config.caption_font_file is None
+        and config.caption_font_fallbacks == CaptionStyle().font_fallbacks
+    ):
         return CaptionStyle()
-    return CaptionStyle(font_file=config.caption_font_file)
+    return CaptionStyle(
+        font_file=config.caption_font_file,
+        font_fallbacks=config.caption_font_fallbacks,
+    )

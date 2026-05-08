@@ -6,6 +6,7 @@ import subprocess
 import textwrap
 from dataclasses import dataclass
 from pathlib import Path
+from typing import Protocol
 
 from clipforge.media.captions import CaptionMetadata, CaptionSegment
 from clipforge.media.layouts import Layout, LayoutRegion, NormalizedRect, OutputSize
@@ -13,6 +14,14 @@ from clipforge.media.layouts import Layout, LayoutRegion, NormalizedRect, Output
 
 class RenderError(RuntimeError):
     """Raised when an FFmpeg command cannot be built or executed."""
+
+
+DEFAULT_CAPTION_RENDERER_BACKEND = "drawtext"
+CAPTION_RENDERER_ASS = "ass"
+CAPTION_RENDERER_DRAWTEXT = "drawtext"
+SUPPORTED_CAPTION_RENDERER_BACKENDS = frozenset(
+    {CAPTION_RENDERER_ASS, CAPTION_RENDERER_DRAWTEXT}
+)
 
 
 @dataclass(frozen=True)
@@ -29,12 +38,16 @@ class PixelRect:
 class CaptionStyle:
     """Caption overlay style for vertical mobile renders."""
 
+    font_family: str | None = None
     font_color: str = "white"
     font_size: int = 56
     font_file: Path | None = None
+    font_fallbacks: tuple[str, ...] = ("Arial",)
     box_color: str = "black@0.68"
     box_border_width: int = 20
     line_spacing: int = 8
+    outline_width: int = 4
+    shadow_offset: int = 2
     safe_margin_x: int = 96
     safe_margin_bottom: int = 220
     max_chars_per_line: int | None = None
@@ -43,6 +56,8 @@ class CaptionStyle:
     max_display_seconds: float = 3.2
     seconds_per_word: float = 0.36
     display_padding_seconds: float = 0.45
+    uppercase: bool = False
+    ass_style_name: str = "Default"
 
 
 @dataclass(frozen=True)
@@ -57,6 +72,94 @@ class CaptionCue:
 DEFAULT_CAPTION_STYLE = CaptionStyle()
 
 
+class CaptionRenderer(Protocol):
+    """Renderer backend that turns prepared cues into FFmpeg filter parts."""
+
+    def render_filter_parts(
+        self,
+        cues: tuple[CaptionCue, ...],
+        *,
+        caption_style: CaptionStyle,
+        output_size: OutputSize,
+        input_label: str,
+        output_label: str,
+    ) -> tuple[str, ...]:
+        """Return FFmpeg filter graph parts that burn the supplied cues."""
+
+
+@dataclass(frozen=True)
+class DrawtextCaptionRenderer:
+    """FFmpeg drawtext caption renderer."""
+
+    def render_filter_parts(
+        self,
+        cues: tuple[CaptionCue, ...],
+        *,
+        caption_style: CaptionStyle,
+        output_size: OutputSize,
+        input_label: str,
+        output_label: str,
+    ) -> tuple[str, ...]:
+        filters = []
+        current_input_label = input_label
+        for index, cue in enumerate(cues):
+            for line_index, line in enumerate(cue.lines):
+                is_last_filter = index == len(cues) - 1 and line_index == len(cue.lines) - 1
+                current_output_label = (
+                    output_label
+                    if is_last_filter
+                    else f"caption{index}_{line_index}"
+                )
+                filters.append(
+                    f"[{current_input_label}]"
+                    f"drawtext=text={_escape_drawtext_text(line)}:"
+                    f"x=max({caption_style.safe_margin_x}\\,(w-text_w)/2):"
+                    f"y={_caption_line_y(cue.lines, line_index, caption_style)}:"
+                    f"{_caption_font_option(caption_style)}"
+                    f"fontcolor={caption_style.font_color}:"
+                    f"fontsize={caption_style.font_size}:"
+                    "box=1:"
+                    f"boxcolor={caption_style.box_color}:"
+                    f"boxborderw={caption_style.box_border_width}:"
+                    f"enable='between(t\\,{_fmt(cue.start_time)}\\,{_fmt(cue.end_time)})'"
+                    f"[{current_output_label}]"
+                )
+                current_input_label = current_output_label
+        return tuple(filters)
+
+
+@dataclass(frozen=True)
+class AssCaptionRenderer:
+    """FFmpeg libass caption renderer backed by a temporary ASS subtitle file."""
+
+    subtitle_path: Path
+
+    def render_filter_parts(
+        self,
+        cues: tuple[CaptionCue, ...],
+        *,
+        caption_style: CaptionStyle,
+        output_size: OutputSize,
+        input_label: str,
+        output_label: str,
+    ) -> tuple[str, ...]:
+        self.subtitle_path.parent.mkdir(parents=True, exist_ok=True)
+        self.subtitle_path.write_text(
+            generate_ass_subtitle(
+                cues,
+                caption_style=caption_style,
+                output_size=output_size,
+            ),
+            encoding="utf-8",
+        )
+        return (
+            f"[{input_label}]"
+            f"ass=filename='{_escape_ffmpeg_filter_option(_ffmpeg_path(self.subtitle_path))}'"
+            f"{_ass_fontsdir_option(caption_style)}"
+            f"[{output_label}]",
+        )
+
+
 def build_ffmpeg_command(
     source_path: Path,
     output_path: Path,
@@ -64,15 +167,25 @@ def build_ffmpeg_command(
     *,
     caption_metadata: CaptionMetadata | None = None,
     caption_style: CaptionStyle = DEFAULT_CAPTION_STYLE,
+    caption_renderer_backend: str = DEFAULT_CAPTION_RENDERER_BACKEND,
+    ass_temp_dir: Path | None = None,
     ffmpeg_binary: str = "ffmpeg",
 ) -> list[str]:
     """Build an FFmpeg argv list that renders one layout to an MP4."""
 
     output_size = layout.output
+    ass_subtitle_path = _ass_subtitle_path(
+        output_path,
+        ass_temp_dir=ass_temp_dir,
+        caption_metadata=caption_metadata,
+        caption_renderer_backend=caption_renderer_backend,
+    )
     filter_complex = build_filter_complex(
         layout,
         caption_metadata=caption_metadata,
         caption_style=caption_style,
+        caption_renderer_backend=caption_renderer_backend,
+        ass_subtitle_path=ass_subtitle_path,
     )
 
     return [
@@ -108,11 +221,15 @@ def build_filter_complex(
     *,
     caption_metadata: CaptionMetadata | None = None,
     caption_style: CaptionStyle = DEFAULT_CAPTION_STYLE,
+    caption_renderer_backend: str = DEFAULT_CAPTION_RENDERER_BACKEND,
+    ass_subtitle_path: Path | None = None,
 ) -> str:
     """Build the FFmpeg filter graph for a layout."""
 
     if not layout.regions:
         raise RenderError(f"Layout {layout.name!r} must contain at least one region.")
+
+    _require_caption_renderer_backend(caption_renderer_backend)
 
     output_size = layout.output
     caption_segments = caption_metadata.segments if caption_metadata is not None else ()
@@ -145,6 +262,8 @@ def build_filter_complex(
                 caption_segments,
                 caption_style=caption_style,
                 output_size=output_size,
+                caption_renderer_backend=caption_renderer_backend,
+                ass_subtitle_path=ass_subtitle_path,
             )
         )
 
@@ -199,6 +318,8 @@ def render_layout(
     *,
     caption_metadata: CaptionMetadata | None = None,
     caption_style: CaptionStyle = DEFAULT_CAPTION_STYLE,
+    caption_renderer_backend: str = DEFAULT_CAPTION_RENDERER_BACKEND,
+    ass_temp_dir: Path | None = None,
     ffmpeg_binary: str = "ffmpeg",
 ) -> Path:
     """Render one layout and return the output path."""
@@ -212,6 +333,8 @@ def render_layout(
         layout,
         caption_metadata=caption_metadata,
         caption_style=caption_style,
+        caption_renderer_backend=caption_renderer_backend,
+        ass_temp_dir=ass_temp_dir,
         ffmpeg_binary=ffmpeg_binary,
     )
     try:
@@ -250,34 +373,21 @@ def _caption_filters(
     *,
     caption_style: CaptionStyle,
     output_size: OutputSize,
-) -> list[str]:
-    filters = []
-    input_label = "captionbase"
+    caption_renderer_backend: str,
+    ass_subtitle_path: Path | None,
+) -> tuple[str, ...]:
     cues = _caption_cues(segments, caption_style=caption_style, output_size=output_size)
-    for index, cue in enumerate(cues):
-        for line_index, line in enumerate(cue.lines):
-            is_last_filter = index == len(cues) - 1 and line_index == len(cue.lines) - 1
-            output_label = (
-                "out"
-                if is_last_filter
-                else f"caption{index}_{line_index}"
-            )
-            filters.append(
-                f"[{input_label}]"
-                f"drawtext=text={_escape_drawtext_text(line)}:"
-                f"x=max({caption_style.safe_margin_x}\\,(w-text_w)/2):"
-                f"y={_caption_line_y(cue.lines, line_index, caption_style)}:"
-                f"{_caption_font_option(caption_style)}"
-                f"fontcolor={caption_style.font_color}:"
-                f"fontsize={caption_style.font_size}:"
-                "box=1:"
-                f"boxcolor={caption_style.box_color}:"
-                f"boxborderw={caption_style.box_border_width}:"
-                f"enable='between(t\\,{_fmt(cue.start_time)}\\,{_fmt(cue.end_time)})'"
-                f"[{output_label}]"
-            )
-            input_label = output_label
-    return filters
+    renderer = _caption_renderer(
+        caption_renderer_backend,
+        ass_subtitle_path=ass_subtitle_path,
+    )
+    return renderer.render_filter_parts(
+        cues,
+        caption_style=caption_style,
+        output_size=output_size,
+        input_label="captionbase",
+        output_label="out",
+    )
 
 
 def _caption_cues(
@@ -288,7 +398,8 @@ def _caption_cues(
 ) -> tuple[CaptionCue, ...]:
     cues: list[CaptionCue] = []
     for segment in segments:
-        chunks = _caption_chunks(segment.text, caption_style, output_size)
+        segment_text = segment.text.upper() if caption_style.uppercase else segment.text
+        chunks = _caption_chunks(segment_text, caption_style, output_size)
         if not chunks:
             continue
 
@@ -396,6 +507,227 @@ def _caption_chunk_duration(
         caption_style.max_display_seconds,
         max(caption_style.min_display_seconds, readable_duration),
     )
+
+
+def _require_caption_renderer_backend(caption_renderer_backend: str) -> None:
+    if caption_renderer_backend not in SUPPORTED_CAPTION_RENDERER_BACKENDS:
+        supported = ", ".join(sorted(SUPPORTED_CAPTION_RENDERER_BACKENDS))
+        raise RenderError(
+            "Invalid caption renderer backend: "
+            f"{caption_renderer_backend!r}. Supported values: {supported}."
+        )
+
+
+def _caption_renderer(
+    caption_renderer_backend: str,
+    *,
+    ass_subtitle_path: Path | None,
+) -> CaptionRenderer:
+    _require_caption_renderer_backend(caption_renderer_backend)
+    if caption_renderer_backend == CAPTION_RENDERER_DRAWTEXT:
+        return DrawtextCaptionRenderer()
+    if ass_subtitle_path is None:
+        raise RenderError("ASS caption rendering requires an ASS subtitle path.")
+    return AssCaptionRenderer(ass_subtitle_path)
+
+
+def _ass_subtitle_path(
+    output_path: Path,
+    *,
+    ass_temp_dir: Path | None,
+    caption_metadata: CaptionMetadata | None,
+    caption_renderer_backend: str,
+) -> Path | None:
+    if caption_renderer_backend != CAPTION_RENDERER_ASS:
+        return None
+    if caption_metadata is None or not caption_metadata.segments:
+        return None
+
+    subtitle_dir = ass_temp_dir or output_path.parent
+    return subtitle_dir / f"{output_path.stem}.ass"
+
+
+def generate_ass_subtitle(
+    cues: tuple[CaptionCue, ...],
+    *,
+    caption_style: CaptionStyle,
+    output_size: OutputSize,
+) -> str:
+    """Build an Advanced SubStation Alpha subtitle file for render-ready cues."""
+
+    parts = [
+        _ass_script_info(output_size),
+        _ass_style_block(caption_style),
+        _ass_events_block(cues, caption_style=caption_style, output_size=output_size),
+    ]
+    return "\n\n".join(parts) + "\n"
+
+
+def _ass_script_info(output_size: OutputSize) -> str:
+    return "\n".join(
+        (
+            "[Script Info]",
+            "ScriptType: v4.00+",
+            "WrapStyle: 0",
+            "ScaledBorderAndShadow: yes",
+            f"PlayResX: {output_size.width}",
+            f"PlayResY: {output_size.height}",
+        )
+    )
+
+
+def _ass_style_block(caption_style: CaptionStyle) -> str:
+    return "\n".join(
+        (
+            "[V4+ Styles]",
+            (
+                "Format: Name, Fontname, Fontsize, PrimaryColour, SecondaryColour, "
+                "OutlineColour, BackColour, Bold, Italic, Underline, StrikeOut, "
+                "ScaleX, ScaleY, Spacing, Angle, BorderStyle, Outline, Shadow, "
+                "Alignment, MarginL, MarginR, MarginV, Encoding"
+            ),
+            (
+                "Style: "
+                f"{_ass_field(caption_style.ass_style_name)},"
+                f"{_ass_field(_ass_font_name(caption_style))},"
+                f"{caption_style.font_size},"
+                f"{_ass_color(caption_style.font_color, default='&H00FFFFFF')},"
+                f"{_ass_color(caption_style.font_color, default='&H00FFFFFF')},"
+                "&H00000000,"
+                "&H80000000,"
+                "1,0,0,0,"
+                "100,100,0,0,"
+                "1,"
+                f"{caption_style.outline_width},"
+                f"{caption_style.shadow_offset},"
+                "2,"
+                f"{caption_style.safe_margin_x},"
+                f"{caption_style.safe_margin_x},"
+                f"{caption_style.safe_margin_bottom},"
+                "1"
+            ),
+        )
+    )
+
+
+def _ass_events_block(
+    cues: tuple[CaptionCue, ...],
+    *,
+    caption_style: CaptionStyle,
+    output_size: OutputSize,
+) -> str:
+    lines = [
+        "[Events]",
+        "Format: Layer, Start, End, Style, Name, MarginL, MarginR, MarginV, Effect, Text",
+    ]
+    for cue in cues:
+        lines.extend(_ass_dialogue_lines(cue, caption_style, output_size))
+    return "\n".join(lines)
+
+
+def _ass_dialogue_lines(
+    cue: CaptionCue,
+    caption_style: CaptionStyle,
+    output_size: OutputSize,
+) -> tuple[str, ...]:
+    dialogue_lines = []
+    line_count = len(cue.lines)
+    for line_index, line in enumerate(cue.lines):
+        y = _ass_caption_line_y(line_count, line_index, caption_style, output_size)
+        text = line.upper() if caption_style.uppercase else line
+        dialogue_lines.append(
+            "Dialogue: "
+            f"0,{_format_ass_time(cue.start_time)},{_format_ass_time(cue.end_time)},"
+            f"{_ass_field(caption_style.ass_style_name)},,"
+            f"{caption_style.safe_margin_x},{caption_style.safe_margin_x},"
+            f"{caption_style.safe_margin_bottom},,"
+            f"{{\\an2\\pos({output_size.width // 2},{y})}}{_escape_ass_text(text)}"
+        )
+    return tuple(dialogue_lines)
+
+
+def _ass_caption_line_y(
+    line_count: int,
+    line_index: int,
+    caption_style: CaptionStyle,
+    output_size: OutputSize,
+) -> int:
+    line_step = caption_style.font_size + caption_style.line_spacing
+    bottom_y = output_size.height - caption_style.safe_margin_bottom
+    return bottom_y - (line_count - line_index - 1) * line_step
+
+
+def _format_ass_time(seconds: float) -> str:
+    total_centiseconds = max(0, int(round(seconds * 100)))
+    centiseconds = total_centiseconds % 100
+    total_seconds = total_centiseconds // 100
+    seconds_part = total_seconds % 60
+    total_minutes = total_seconds // 60
+    minutes = total_minutes % 60
+    hours = total_minutes // 60
+    return f"{hours}:{minutes:02d}:{seconds_part:02d}.{centiseconds:02d}"
+
+
+def _ass_font_name(caption_style: CaptionStyle) -> str:
+    if caption_style.font_family is not None and caption_style.font_family.strip():
+        return caption_style.font_family.strip()
+    if caption_style.font_file is not None:
+        return caption_style.font_file.stem
+    if caption_style.font_fallbacks:
+        first_fallback = caption_style.font_fallbacks[0].strip()
+        if first_fallback:
+            return first_fallback
+    return "Arial"
+
+
+def _ass_field(value: str) -> str:
+    return value.replace(",", " ").strip()
+
+
+def _ass_color(value: str, *, default: str) -> str:
+    normalized = value.strip().lower()
+    named_colors = {
+        "white": "&H00FFFFFF",
+        "black": "&H00000000",
+        "yellow": "&H0000FFFF",
+        "red": "&H000000FF",
+        "green": "&H00008000",
+        "blue": "&H00FF0000",
+    }
+    if normalized in named_colors:
+        return named_colors[normalized]
+    if normalized.startswith("#") and len(normalized) == 7:
+        red = normalized[1:3]
+        green = normalized[3:5]
+        blue = normalized[5:7]
+        return f"&H00{blue}{green}{red}".upper()
+    return default
+
+
+def _escape_ass_text(value: str) -> str:
+    return (
+        value.replace("\\", "\\\\")
+        .replace("{", "\\{")
+        .replace("}", "\\}")
+        .replace("\r\n", "\n")
+        .replace("\r", "\n")
+        .replace("\n", "\\N")
+    )
+
+
+def _ass_fontsdir_option(caption_style: CaptionStyle) -> str:
+    if caption_style.font_file is None:
+        return ""
+    fonts_dir = _ffmpeg_path(caption_style.font_file.parent)
+    return f":fontsdir='{_escape_ffmpeg_filter_option(fonts_dir)}'"
+
+
+def _ffmpeg_path(path: Path) -> str:
+    return str(path).replace("\\", "/")
+
+
+def _escape_ffmpeg_filter_option(value: str) -> str:
+    return _escape_drawtext_option(value)
 
 
 def _caption_font_option(caption_style: CaptionStyle) -> str:

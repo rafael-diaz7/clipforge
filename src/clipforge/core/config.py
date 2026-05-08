@@ -26,6 +26,12 @@ OUTPUT_FORMAT = "mp4"
 DEFAULT_DOWNLOADER_BACKEND = "ytdlp"
 SUPPORTED_DOWNLOADER_BACKENDS = frozenset({DEFAULT_DOWNLOADER_BACKEND, "clipr"})
 DEFAULT_OPENAI_TRANSCRIPTION_MODEL = "whisper-1"
+DEFAULT_CAPTION_RENDERER_BACKEND = "drawtext"
+SUPPORTED_CAPTION_RENDERER_BACKENDS = frozenset(
+    {DEFAULT_CAPTION_RENDERER_BACKEND, "ass"}
+)
+ASS_TEMP_DIR = DATA_DIR / "metadata" / "ass"
+DEFAULT_CAPTION_FONT_FALLBACKS = ("Arial",)
 _TRUE_ENV_VALUES = frozenset({"1", "true", "yes", "on"})
 _FALSE_ENV_VALUES = frozenset({"0", "false", "no", "off"})
 
@@ -45,6 +51,9 @@ class ClipforgeConfig:
     openai_transcription_model: str = DEFAULT_OPENAI_TRANSCRIPTION_MODEL
     generate_captions: bool = False
     caption_font_file: Path | None = None
+    caption_renderer_backend: str = DEFAULT_CAPTION_RENDERER_BACKEND
+    ass_temp_dir: Path = ASS_TEMP_DIR
+    caption_font_fallbacks: tuple[str, ...] = DEFAULT_CAPTION_FONT_FALLBACKS
     project_root: Path = PROJECT_ROOT
     downloads_dir: Path = DOWNLOADS_DIR
     renders_dir: Path = RENDERS_DIR
@@ -67,6 +76,16 @@ class ClipforgeConfig:
             raise ConfigError(
                 "Invalid downloader backend: "
                 f"{self.downloader_backend!r}. Supported values: {supported}."
+            )
+        return backend
+
+    def require_caption_renderer_backend(self) -> str:
+        backend = self.caption_renderer_backend.strip().lower()
+        if backend not in SUPPORTED_CAPTION_RENDERER_BACKENDS:
+            supported = ", ".join(sorted(SUPPORTED_CAPTION_RENDERER_BACKENDS))
+            raise ConfigError(
+                "Invalid caption renderer backend: "
+                f"{self.caption_renderer_backend!r}. Supported values: {supported}."
             )
         return backend
 
@@ -113,6 +132,15 @@ def load_config() -> ClipforgeConfig:
         ),
         generate_captions=_env_bool("CLIPFORGE_GENERATE_CAPTIONS", default=False),
         caption_font_file=_env_path("CLIPFORGE_CAPTION_FONT_FILE"),
+        caption_renderer_backend=os.getenv(
+            "CLIPFORGE_CAPTION_RENDERER",
+            DEFAULT_CAPTION_RENDERER_BACKEND,
+        ),
+        ass_temp_dir=_env_path("CLIPFORGE_ASS_TEMP_DIR") or ASS_TEMP_DIR,
+        caption_font_fallbacks=_env_list(
+            "CLIPFORGE_CAPTION_FONT_FALLBACKS",
+            default=DEFAULT_CAPTION_FONT_FALLBACKS,
+        ),
         downloader_backend=os.getenv(
             "CLIPFORGE_DOWNLOADER",
             DEFAULT_DOWNLOADER_BACKEND,
@@ -120,6 +148,7 @@ def load_config() -> ClipforgeConfig:
     )
 
     config.require_downloader_backend()
+    config.require_caption_renderer_backend()
 
     return config
 
@@ -146,3 +175,12 @@ def _env_bool(name: str, *, default: bool) -> bool:
         f"Invalid boolean configuration for {name}: {value!r}. "
         "Use one of: true, false, 1, 0, yes, no, on, off."
     )
+
+
+def _env_list(name: str, *, default: tuple[str, ...]) -> tuple[str, ...]:
+    value = os.getenv(name)
+    if value is None:
+        return default
+
+    items = tuple(item.strip() for item in value.split(",") if item.strip())
+    return items or default

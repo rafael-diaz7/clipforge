@@ -227,6 +227,10 @@ FFmpeg instead of sending the full MP4 to OpenAI.
 Caption rendering uses a conservative vertical-safe style by default: smaller
 two-line captions, safe horizontal margins, and capped display time so short
 captions do not linger through long pauses in a transcription segment.
+The default caption renderer is FFmpeg `drawtext`. Set
+`CLIPFORGE_CAPTION_RENDERER=ass` to render from generated `.ass` subtitle files
+under `CLIPFORGE_ASS_TEMP_DIR`; rerenders still use existing caption JSON and do
+not require new transcription or download work.
 
 Set `CLIPFORGE_CAPTION_FONT_FILE` to a local `.ttf` or `.otf` path to change the
 burned-in caption font:

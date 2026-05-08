@@ -7,10 +7,12 @@ import pytest
 from clipforge.media.captions import CaptionMetadata, CaptionSegment
 from clipforge.media.layouts import Layout, LayoutRegion, NormalizedRect, OutputSize
 from clipforge.media.render import (
+    CaptionCue,
     CaptionStyle,
     RenderError,
     build_ffmpeg_command,
     build_filter_complex,
+    generate_ass_subtitle,
     rect_to_pixels,
     render_layout,
     run_ffmpeg_command,
@@ -241,6 +243,129 @@ def test_build_ffmpeg_command_accepts_caption_metadata(tmp_path: Path) -> None:
     assert "drawtext=" in filter_complex
     assert command[-1] == str(output)
     assert all(isinstance(part, str) for part in command)
+
+
+def test_build_ffmpeg_command_can_use_ass_caption_backend(tmp_path: Path) -> None:
+    source = tmp_path / "source.mp4"
+    output = tmp_path / "render.mp4"
+    ass_temp_dir = tmp_path / "ass"
+    caption_metadata = CaptionMetadata(
+        clip_id="clip-123",
+        segments=(
+            CaptionSegment(
+                start_time=0.5,
+                end_time=1.75,
+                text="Hello Twitch chat, café time",
+            ),
+        ),
+    )
+
+    command = build_ffmpeg_command(
+        source,
+        output,
+        _layout(_region()),
+        caption_metadata=caption_metadata,
+        caption_style=CaptionStyle(
+            font_family="Inter",
+            font_size=48,
+            line_spacing=12,
+            safe_margin_x=80,
+            safe_margin_bottom=200,
+            max_chars_per_line=18,
+        ),
+        caption_renderer_backend="ass",
+        ass_temp_dir=ass_temp_dir,
+    )
+
+    filter_complex = command[command.index("-filter_complex") + 1]
+    assert "drawtext=" not in filter_complex
+    assert "ass=filename=" in filter_complex
+    assert "[base][region0]overlay=0:0:format=auto:shortest=1[captionbase]" in filter_complex
+    assert filter_complex.endswith("[out]")
+
+    ass_path = ass_temp_dir / "render.ass"
+    assert ass_path.is_file()
+    ass_text = ass_path.read_text(encoding="utf-8")
+    assert "[Script Info]" in ass_text
+    assert "Style: Default,Inter,48" in ass_text
+    assert "Dialogue: 0,0:00:00.50,0:00:01.75,Default" in ass_text
+    assert "café" in ass_text
+
+
+def test_generate_ass_subtitle_builds_structure_and_style_block() -> None:
+    ass_text = generate_ass_subtitle(
+        (
+            CaptionCue(
+                start_time=61.234,
+                end_time=62.999,
+                lines=("First line", "Unicode snowman ☃"),
+            ),
+        ),
+        caption_style=CaptionStyle(
+            font_family="Aptos",
+            font_size=42,
+            font_color="#ffee00",
+            line_spacing=10,
+            outline_width=5,
+            shadow_offset=3,
+            safe_margin_x=72,
+            safe_margin_bottom=180,
+        ),
+        output_size=OutputSize(width=1080, height=1920),
+    )
+
+    assert "PlayResX: 1080" in ass_text
+    assert "PlayResY: 1920" in ass_text
+    assert "Format: Name, Fontname, Fontsize" in ass_text
+    assert "Style: Default,Aptos,42,&H0000EEFF,&H0000EEFF,&H00000000" in ass_text
+    assert ",5,3,2,72,72,180,1" in ass_text
+    assert "Dialogue: 0,0:01:01.23,0:01:03.00,Default" in ass_text
+    assert "{\\an2\\pos(540,1688)}First line" in ass_text
+    assert "{\\an2\\pos(540,1740)}Unicode snowman ☃" in ass_text
+
+
+def test_generate_ass_subtitle_escapes_text_and_can_uppercase() -> None:
+    ass_text = generate_ass_subtitle(
+        (
+            CaptionCue(
+                start_time=0,
+                end_time=1,
+                lines=("slash \\ and {tag}", "emoji 😀"),
+            ),
+        ),
+        caption_style=CaptionStyle(uppercase=True),
+        output_size=OutputSize(width=1080, height=1920),
+    )
+
+    assert "SLASH \\\\ AND \\{TAG\\}" in ass_text
+    assert "EMOJI 😀" in ass_text
+
+
+def test_generate_ass_subtitle_uses_custom_font_references() -> None:
+    ass_text = generate_ass_subtitle(
+        (CaptionCue(start_time=0, end_time=1, lines=("hello",)),),
+        caption_style=CaptionStyle(
+            font_file=Path("C:/Windows/Fonts/arial.ttf"),
+            font_fallbacks=("Segoe UI Emoji", "Arial"),
+        ),
+        output_size=OutputSize(width=1080, height=1920),
+    )
+
+    assert "Style: Default,arial,56" in ass_text
+
+
+def test_build_filter_complex_requires_ass_subtitle_path_for_ass_backend() -> None:
+    caption_metadata = CaptionMetadata(
+        clip_id="clip-123",
+        segments=(CaptionSegment(start_time=0, end_time=1, text="hello"),),
+    )
+
+    with pytest.raises(RenderError, match="ASS subtitle path"):
+        build_filter_complex(
+            _layout(_region()),
+            caption_metadata=caption_metadata,
+            caption_renderer_backend="ass",
+        )
 
 
 def test_run_ffmpeg_command_raises_clear_error_when_binary_is_missing(

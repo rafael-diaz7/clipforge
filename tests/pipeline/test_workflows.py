@@ -74,6 +74,8 @@ def test_render_candidate_can_burn_caption_metadata(
         layout,
         *,
         caption_metadata: CaptionMetadata,
+        caption_renderer_backend: str,
+        ass_temp_dir: Path,
     ) -> Path:
         calls.append(
             {
@@ -81,6 +83,8 @@ def test_render_candidate_can_burn_caption_metadata(
                 "output_path": output_path,
                 "layout": layout.name,
                 "caption_metadata": caption_metadata,
+                "caption_renderer_backend": caption_renderer_backend,
+                "ass_temp_dir": ass_temp_dir,
             }
         )
         return output_path
@@ -100,6 +104,8 @@ def test_render_candidate_can_burn_caption_metadata(
         clip_id="clip-123",
         segments=(CaptionSegment(start_time=0, end_time=1, text="hello"),),
     )
+    assert calls[0]["caption_renderer_backend"] == "drawtext"
+    assert calls[0]["ass_temp_dir"] == config.ass_temp_dir
 
 
 def test_render_all_candidates_renders_default_layouts(
@@ -263,8 +269,12 @@ def test_process_clip_can_generate_captions_before_rendering(
         layout,
         *,
         caption_metadata: CaptionMetadata,
+        caption_renderer_backend: str,
+        ass_temp_dir: Path,
     ) -> Path:
         assert caption_metadata.clip_id == TWITCH_CLIP_SLUG
+        assert caption_renderer_backend == "drawtext"
+        assert ass_temp_dir == config.ass_temp_dir
         events.append(f"render:{layout.name}")
         return output
 
