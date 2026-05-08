@@ -5,8 +5,8 @@ from typing import Any
 import pytest
 import requests
 
-from clipforge.config import ClipforgeConfig, ConfigError
-from clipforge.twitch import (
+from clipforge.core.config import ClipforgeConfig, ConfigError
+from clipforge.integrations.twitch import (
     TwitchAPIError,
     TwitchClient,
     TwitchResponseError,
@@ -248,7 +248,7 @@ def test_list_channel_clips_uses_config(monkeypatch: pytest.MonkeyPatch) -> None
             assert ended_at is None
             return ("clip",)
 
-    monkeypatch.setattr("clipforge.twitch.TwitchClient", FakeClient)
+    monkeypatch.setattr("clipforge.integrations.twitch.TwitchClient", FakeClient)
     config = ClipforgeConfig(
         twitch_client_id="client-id",
         twitch_client_secret="client-secret",

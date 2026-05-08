@@ -2,10 +2,10 @@ from __future__ import annotations
 
 from pathlib import Path
 
-from clipforge.config import ClipforgeConfig
+from clipforge.core.config import ClipforgeConfig
 from clipforge.pipeline.state_sync import record_discovered_clips, record_rendered_clip
-from clipforge.state import get_clip, upsert_discovered_clip
-from clipforge.twitch import TwitchClip
+from clipforge.storage.state import get_clip, upsert_discovered_clip
+from clipforge.integrations.twitch import TwitchClip
 from tests.constants import TWITCH_CLIP_SLUG, TWITCH_CLIP_URL
 
 

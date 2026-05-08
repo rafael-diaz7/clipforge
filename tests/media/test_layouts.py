@@ -5,7 +5,7 @@ from pathlib import Path
 
 import pytest
 
-from clipforge.layouts import (
+from clipforge.media.layouts import (
     DEFAULT_LAYOUT_NAMES,
     LayoutError,
     NormalizedRect,

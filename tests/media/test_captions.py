@@ -5,7 +5,7 @@ from pathlib import Path
 
 import pytest
 
-from clipforge.config import ClipforgeConfig
+from clipforge.core.config import ClipforgeConfig
 from clipforge.media.captions import (
     CAPTION_METADATA_TYPE,
     CAPTION_METADATA_VERSION,

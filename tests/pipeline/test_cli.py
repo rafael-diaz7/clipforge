@@ -4,9 +4,9 @@ from pathlib import Path
 
 import pytest
 
-from clipforge.config import ClipforgeConfig
+from clipforge.core.config import ClipforgeConfig
 from clipforge.pipeline.cli import main
-from clipforge.twitch import TwitchClip
+from clipforge.integrations.twitch import TwitchClip
 from tests.constants import TWITCH_CLIP_URL
 
 
@@ -287,7 +287,7 @@ def test_main_returns_non_zero_for_invalid_twitch_clip_url(
         raise AssertionError("network call should not be reached")
 
     monkeypatch.setenv("CLIPR_API_KEY", "test-key")
-    monkeypatch.setattr("clipforge.clipr.CliprClient._get", fake_get)
+    monkeypatch.setattr("clipforge.integrations.clipr.CliprClient._get", fake_get)
 
     exit_code = main(["resolve-url", "--url", "https://example.com/not-a-clip"])
 

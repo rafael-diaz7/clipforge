@@ -26,7 +26,7 @@ DEFAULT_CHUNK_SIZE_BYTES = 1024 * 1024
 DEFAULT_TIMEOUT_SECONDS = 60
 DEFAULT_EXTENSION = ".mp4"
 YTDLP_MODULE = "yt_dlp"
-LOGGER = logging.getLogger("clipforge.download")
+LOGGER = logging.getLogger(__name__)
 
 SubprocessRunner = Callable[..., subprocess.CompletedProcess[str]]
 

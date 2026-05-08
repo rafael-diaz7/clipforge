@@ -2,7 +2,7 @@ from pathlib import Path
 
 import pytest
 
-from clipforge.config import (
+from clipforge.core.config import (
     ClipforgeConfig,
     ConfigError,
     DEFAULT_DOWNLOADER_BACKEND,

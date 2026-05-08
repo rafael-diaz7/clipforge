@@ -4,8 +4,8 @@ from pathlib import Path
 
 import pytest
 
-from clipforge.layouts import Layout, LayoutRegion, NormalizedRect, OutputSize
-from clipforge.render import (
+from clipforge.media.layouts import Layout, LayoutRegion, NormalizedRect, OutputSize
+from clipforge.media.render import (
     RenderError,
     build_ffmpeg_command,
     build_filter_complex,
@@ -109,7 +109,7 @@ def test_run_ffmpeg_command_raises_clear_error_when_binary_is_missing(
     def fake_run(*args: object, **kwargs: object) -> object:
         raise FileNotFoundError
 
-    monkeypatch.setattr("clipforge.render.subprocess.run", fake_run)
+    monkeypatch.setattr("clipforge.media.render.subprocess.run", fake_run)
 
     with pytest.raises(RenderError, match="not found"):
         run_ffmpeg_command(["ffmpeg", "-version"])
@@ -125,7 +125,7 @@ def test_run_ffmpeg_command_raises_clear_error_for_non_zero_exit(
     def fake_run(*args: object, **kwargs: object) -> Completed:
         return Completed()
 
-    monkeypatch.setattr("clipforge.render.subprocess.run", fake_run)
+    monkeypatch.setattr("clipforge.media.render.subprocess.run", fake_run)
 
     with pytest.raises(RenderError, match="bad filter"):
         run_ffmpeg_command(["ffmpeg", "-i", "source.mp4"])
@@ -142,7 +142,7 @@ def test_render_layout_runs_command_and_returns_output_path(
     def fake_run(command: list[str]) -> None:
         calls.append(command)
 
-    monkeypatch.setattr("clipforge.render.run_ffmpeg_command", fake_run)
+    monkeypatch.setattr("clipforge.media.render.run_ffmpeg_command", fake_run)
 
     output_path = tmp_path / "render.mp4"
 
@@ -166,7 +166,7 @@ def test_render_layout_adds_context_to_ffmpeg_errors(
     def fake_run(command: list[str]) -> None:
         raise RenderError("bad filter")
 
-    monkeypatch.setattr("clipforge.render.run_ffmpeg_command", fake_run)
+    monkeypatch.setattr("clipforge.media.render.run_ffmpeg_command", fake_run)
 
     with pytest.raises(RenderError) as exc_info:
         render_layout(source_path, output_path, _layout(_region()))

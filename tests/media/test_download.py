@@ -8,9 +8,14 @@ import sys
 import pytest
 import requests
 
-from clipforge.clipr import CliprDownloader
-from clipforge.config import ClipforgeConfig
-from clipforge.download import DownloadError, YtDlpDownloader, create_downloader, download_clip
+from clipforge.core.config import ClipforgeConfig
+from clipforge.integrations.clipr import CliprDownloader
+from clipforge.media.download import (
+    DownloadError,
+    YtDlpDownloader,
+    create_downloader,
+    download_clip,
+)
 from tests.constants import TWITCH_CLIP_SLUG, TWITCH_CLIP_URL
 
 
@@ -189,7 +194,7 @@ def test_ytdlp_downloader_builds_command_and_returns_output_path(
     tmp_path: Path,
     caplog: pytest.LogCaptureFixture,
 ) -> None:
-    caplog.set_level(logging.INFO, logger="clipforge.download")
+    caplog.set_level(logging.INFO, logger="clipforge.media.download")
     output_path = (
         tmp_path
         / "downloads"

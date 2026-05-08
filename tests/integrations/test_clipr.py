@@ -5,7 +5,7 @@ from pathlib import Path
 import pytest
 import requests
 
-from clipforge.clipr import (
+from clipforge.integrations.clipr import (
     CLIPR_API_HOST,
     CliprAPIError,
     CliprClient,
@@ -15,7 +15,7 @@ from clipforge.clipr import (
     extract_download_url,
     get_clip_download_url,
 )
-from clipforge.config import ClipforgeConfig
+from clipforge.core.config import ClipforgeConfig
 from tests.constants import TWITCH_CLIP_SLUG, TWITCH_CLIP_URL
 
 
@@ -118,7 +118,7 @@ def test_clipr_downloader_resolves_and_downloads_with_callback(
         assert filename_stem == TWITCH_CLIP_SLUG
         return downloads_dir / f"{TWITCH_CLIP_SLUG}.mp4"
 
-    monkeypatch.setattr("clipforge.clipr.download_clip", fake_download_clip)
+    monkeypatch.setattr("clipforge.integrations.clipr.download_clip", fake_download_clip)
     downloader = CliprDownloader(client=FakeClient(), downloads_dir=tmp_path)
 
     result = downloader.download(

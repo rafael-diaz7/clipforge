@@ -3,15 +3,15 @@ from __future__ import annotations
 import json
 from pathlib import Path
 
-from clipforge.config import ClipforgeConfig, EXAMPLE_LAYOUTS_DIR
-from clipforge.download import DownloadResult
-from clipforge.layouts import load_example_layout
+from clipforge.core.config import ClipforgeConfig, EXAMPLE_LAYOUTS_DIR
+from clipforge.media.download import DownloadResult
+from clipforge.media.layouts import load_example_layout
 from clipforge.pipeline.workflows import (
     process_clip,
     render_all_candidates,
     render_candidate,
 )
-from clipforge.state import get_clip, upsert_discovered_clip
+from clipforge.storage.state import get_clip, upsert_discovered_clip
 from tests.constants import TWITCH_CLIP_SLUG, TWITCH_CLIP_URL
 
 

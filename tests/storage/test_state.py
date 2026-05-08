@@ -4,7 +4,7 @@ from pathlib import Path
 
 import pytest
 
-from clipforge.state import (
+from clipforge.storage.state import (
     ClipStateError,
     get_clip,
     get_unprocessed_clips,

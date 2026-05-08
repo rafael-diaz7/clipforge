@@ -3,11 +3,11 @@ from __future__ import annotations
 import json
 from pathlib import Path
 
-from clipforge.config import ClipforgeConfig, EXAMPLE_LAYOUTS_DIR
-from clipforge.download import DownloadResult
-from clipforge.layouts import load_example_layouts
+from clipforge.core.config import ClipforgeConfig, EXAMPLE_LAYOUTS_DIR
+from clipforge.media.download import DownloadResult
+from clipforge.media.layouts import load_example_layouts
 from clipforge.pipeline.artifacts import write_clip_discovery_export, write_metadata
-from clipforge.twitch import TwitchClip
+from clipforge.integrations.twitch import TwitchClip
 from tests.constants import TWITCH_CLIP_SLUG, TWITCH_CLIP_URL
 
 
