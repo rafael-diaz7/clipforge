@@ -1,5 +1,4 @@
 """Small shared helpers for local paths, filenames, and timestamps."""
-# TODO: move to a new /utils/ package
 
 from __future__ import annotations
 
@@ -8,53 +7,45 @@ from datetime import UTC, datetime
 from pathlib import Path
 from urllib.parse import urlparse
 
-
 _SAFE_FILENAME_PATTERN = re.compile(r"[^A-Za-z0-9._-]+")
 HTTP_URL_SCHEMES = frozenset({"http", "https"})
 
 
 def ensure_directory(path: Path) -> Path:
     """Create a directory if needed and return it."""
-
     path.mkdir(parents=True, exist_ok=True)
     return path
 
 
 def resolve_project_path(root: Path, *parts: str | Path) -> Path:
     """Resolve a path under the project root."""
-
     return root.joinpath(*parts).resolve()
 
 
 def ensure_project_subdir(root: Path, *parts: str | Path) -> Path:
     """Create and return a project-local subdirectory."""
-
     return ensure_directory(resolve_project_path(root, *parts))
 
 
 def safe_filename(value: str, *, fallback: str = "clip") -> str:
     """Return a filesystem-safe filename stem or filename."""
-
     cleaned = _SAFE_FILENAME_PATTERN.sub("_", value.strip()).strip("._-")
     return cleaned or fallback
 
 
 def utc_timestamp() -> str:
     """Return an ISO-8601 UTC timestamp suitable for metadata."""
-
     return datetime.now(UTC).isoformat()
 
 
 def is_http_url(value: str) -> bool:
     """Return whether a value is an absolute HTTP(S) URL."""
-
     parsed = urlparse(value)
     return parsed.scheme in HTTP_URL_SCHEMES and bool(parsed.netloc)
 
 
 def normalized_host(netloc: str) -> str:
     """Normalize a URL netloc for host comparisons."""
-
     host = netloc.lower().split("@")[-1].split(":")[0]
     if host.startswith("www."):
         host = host[4:]
@@ -65,7 +56,6 @@ def normalized_host(netloc: str) -> str:
 
 def redact_secrets(text: str, *, secrets: tuple[str, ...]) -> str:
     """Replace secret values in a text fragment with a stable marker."""
-
     redacted = text
     for secret in secrets:
         if secret:
@@ -81,7 +71,6 @@ def response_text_excerpt(
     empty_fallback: str | None = None,
 ) -> str:
     """Return a compact, redacted response body excerpt for error messages."""
-
     cleaned = " ".join(redact_secrets(text, secrets=secrets).split())
     if not cleaned:
         return empty_fallback or ""
@@ -92,7 +81,6 @@ def response_text_excerpt(
 
 def clip_slug_from_url(url: str) -> str:
     """Extract a stable slug from a Twitch clip URL, falling back safely."""
-
     parsed = urlparse(url)
     path_parts = [part for part in parsed.path.split("/") if part]
 
@@ -109,7 +97,6 @@ def clip_slug_from_url(url: str) -> str:
 
 def twitch_clip_slug_from_url(url: str) -> str:
     """Extract a Twitch clip slug from a supported Twitch clip URL."""
-
     parsed = urlparse(url)
     host = normalized_host(parsed.netloc)
 
