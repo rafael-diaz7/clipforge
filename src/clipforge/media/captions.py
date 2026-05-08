@@ -6,7 +6,7 @@ import json
 import math
 from dataclasses import dataclass
 from pathlib import Path
-from typing import Any, Sequence
+from typing import Any, Protocol, Sequence
 
 from clipforge.core.config import ClipforgeConfig
 from clipforge.utils import ensure_directory, safe_filename
@@ -22,6 +22,17 @@ CAPTION_METADATA_VERSION = 1
 
 class CaptionError(RuntimeError):
     """Raised when caption metadata is missing, malformed, or invalid."""
+
+
+class CaptionTranscriptionError(CaptionError):
+    """Raised when caption generation cannot complete."""
+
+
+class CaptionTranscriber(Protocol):
+    """Adapter that transcribes one source clip into caption metadata."""
+
+    def transcribe(self, source_path: Path, *, clip_id: str) -> "CaptionMetadata":
+        """Return caption metadata for one local source clip."""
 
 
 @dataclass(frozen=True)
@@ -115,6 +126,23 @@ def save_captions(
         config=config,
         output_path=output_path,
     )
+
+
+def generate_caption_metadata(
+    source_path: Path,
+    *,
+    clip_id: str,
+    config: ClipforgeConfig,
+    transcriber: CaptionTranscriber | None = None,
+    output_path: Path | None = None,
+) -> Path:
+    """Transcribe one local source clip and save caption metadata."""
+
+    from clipforge.integrations.openai import OpenAITranscriptionClient
+
+    client = transcriber or OpenAITranscriptionClient.from_config(config)
+    metadata = client.transcribe(source_path, clip_id=clip_id)
+    return save_caption_metadata(metadata, config=config, output_path=output_path)
 
 
 def load_caption_metadata(path: Path) -> CaptionMetadata:

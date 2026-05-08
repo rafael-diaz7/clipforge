@@ -13,6 +13,7 @@ from clipforge.media.captions import (
     CaptionMetadata,
     CaptionSegment,
     caption_metadata_path,
+    generate_caption_metadata,
     load_caption_metadata,
     parse_caption_metadata,
     save_caption_metadata,
@@ -87,6 +88,31 @@ def test_empty_caption_segments_are_valid_metadata(tmp_path: Path) -> None:
         segments=(),
     )
     assert json.loads(output_path.read_text(encoding="utf-8"))["segments"] == []
+
+
+def test_generate_caption_metadata_saves_transcriber_output(tmp_path: Path) -> None:
+    class FakeTranscriber:
+        def transcribe(self, source_path: Path, *, clip_id: str) -> CaptionMetadata:
+            assert source_path == tmp_path / "source.mp4"
+            assert clip_id == CAPTION_CLIP_ID
+            return CaptionMetadata(
+                clip_id=clip_id,
+                segments=(CaptionSegment(start_time=0, end_time=1, text="hello"),),
+            )
+
+    config = ClipforgeConfig(metadata_dir=tmp_path / "metadata")
+
+    output_path = generate_caption_metadata(
+        tmp_path / "source.mp4",
+        clip_id=CAPTION_CLIP_ID,
+        config=config,
+        transcriber=FakeTranscriber(),
+    )
+
+    assert output_path == tmp_path / "metadata" / "captions" / f"{CAPTION_CLIP_ID}.json"
+    assert load_caption_metadata(output_path).segments == (
+        CaptionSegment(start_time=0, end_time=1, text="hello"),
+    )
 
 
 def test_caption_metadata_path_sanitizes_clip_id(tmp_path: Path) -> None:

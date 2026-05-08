@@ -11,6 +11,7 @@ from typing import Sequence
 
 from clipforge.core.config import ConfigError, load_config
 from clipforge.integrations.twitch import list_channel_clips
+from clipforge.media.captions import generate_caption_metadata
 from clipforge.pipeline.artifacts import write_clip_discovery_export, write_metadata
 from clipforge.pipeline.state_sync import record_discovered_clips, record_rendered_clip
 from clipforge.pipeline.workflows import (
@@ -42,6 +43,12 @@ def build_parser() -> argparse.ArgumentParser:
         "--verbose",
         action="store_true",
         help="Enable progress logging on stderr.",
+    )
+    parser.add_argument(
+        "--generate-captions",
+        action="store_true",
+        default=None,
+        help="Generate caption metadata after download and before rendering.",
     )
 
     subparsers = parser.add_subparsers(dest="command")
@@ -91,11 +98,35 @@ def build_parser() -> argparse.ArgumentParser:
         help="Output filename prefix. Defaults to the source filename stem.",
     )
 
+    captions_parser = subparsers.add_parser(
+        "captions",
+        help="Generate caption metadata for a local source clip.",
+    )
+    captions_parser.add_argument(
+        "--source",
+        required=True,
+        help="Local source video path.",
+    )
+    captions_parser.add_argument(
+        "--clip-id",
+        help="Caption metadata clip ID. Defaults to the source filename stem.",
+    )
+    captions_parser.add_argument(
+        "--output",
+        help="Optional caption metadata JSON output path.",
+    )
+
     process_parser = subparsers.add_parser(
         "process",
         help="Run the full Twitch URL to rendered candidates pipeline.",
     )
     process_parser.add_argument("--url", required=True, help="Twitch clip URL.")
+    process_parser.add_argument(
+        "--generate-captions",
+        action="store_true",
+        default=None,
+        help="Generate caption metadata after download and before rendering.",
+    )
 
     clips_parser = subparsers.add_parser(
         "clips",
@@ -136,7 +167,10 @@ def main(argv: Sequence[str] | None = None) -> int:
 
     try:
         if args.url and args.command is None:
-            process_clip(args.url)
+            if args.generate_captions is None:
+                process_clip(args.url)
+            else:
+                process_clip(args.url, generate_captions=args.generate_captions)
             return 0
 
         if args.command is None:
@@ -165,8 +199,21 @@ def main(argv: Sequence[str] | None = None) -> int:
                 print(output_path)
             return 0
 
+        if args.command == "captions":
+            caption_path = generate_caption_metadata(
+                Path(args.source),
+                clip_id=args.clip_id or Path(args.source).stem,
+                output_path=Path(args.output) if args.output else None,
+                config=load_config(),
+            )
+            print(caption_path)
+            return 0
+
         if args.command == "process":
-            process_clip(args.url)
+            if args.generate_captions is None:
+                process_clip(args.url)
+            else:
+                process_clip(args.url, generate_captions=args.generate_captions)
             return 0
 
         if args.command == "clips":

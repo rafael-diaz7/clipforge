@@ -57,6 +57,9 @@ Requirements:
 - Twitch developer app credentials for clip discovery:
   - `TWITCH_CLIENT_ID`
   - `TWITCH_CLIENT_SECRET`
+- OpenAI API credentials for optional caption generation:
+  - `OPENAI_API_KEY`
+  - `OPENAI_TRANSCRIPTION_MODEL` defaults to `whisper-1`
 - A downloader backend:
   - Clipr: `CLIPR_API_KEY` set and `CLIPFORGE_DOWNLOADER=clipr`
   - yt-dlp: `CLIPFORGE_DOWNLOADER=ytdlp` or unset
@@ -206,6 +209,7 @@ The command:
 - validates the Twitch clip URL
 - downloads through the configured downloader backend, defaulting to yt-dlp
 - downloads the source clip to `data/downloads/<clip_slug>/<backend>/`
+- optionally generates caption metadata before rendering
 - renders the `center_gameplay`, `facecam_focus`, and `hybrid` candidates to `data/renders/<clip_slug>/<backend>/`
 - writes run metadata to `data/metadata/`
 - prints the source, render, and metadata paths
@@ -231,6 +235,7 @@ You can also run each pipeline step directly:
 ```bash
 python -m clipforge.pipeline.cli resolve-url --url "<twitch_clip_url>"
 python -m clipforge.pipeline.cli download --media-url "<direct_media_url>" --clip-id "<clip_id>"
+python -m clipforge.pipeline.cli captions --source "data/downloads/<clip_slug>/<backend>/<clip_slug>.mp4" --clip-id "<clip_id>"
 python -m clipforge.pipeline.cli render --source "data/downloads/<clip_slug>/<backend>/<clip_slug>.mp4" --layout center_gameplay
 python -m clipforge.pipeline.cli render-all --source "data/downloads/<clip_slug>/<backend>/<clip_slug>.mp4"
 python -m clipforge.pipeline.cli process --url "<twitch_clip_url>"
@@ -246,6 +251,7 @@ The same subcommands are available through the installed `clipforge` command:
 clipforge --url "<twitch_clip_url>"
 clipforge resolve-url --url "<twitch_clip_url>"
 clipforge download --media-url "<direct_media_url>" --clip-id "<clip_id>"
+clipforge captions --source "data/downloads/<clip_slug>/<backend>/<clip_slug>.mp4" --clip-id "<clip_id>"
 clipforge render --source "data/downloads/<clip_slug>/<backend>/<clip_slug>.mp4" --layout center_gameplay
 clipforge render-all --source "data/downloads/<clip_slug>/<backend>/<clip_slug>.mp4"
 clipforge process --url "<twitch_clip_url>"

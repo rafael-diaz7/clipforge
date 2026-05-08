@@ -29,6 +29,36 @@ def test_main_supports_full_pipeline_url_shortcut(
     assert capsys.readouterr().err == ""
 
 
+def test_main_routes_url_shortcut_caption_flag(monkeypatch) -> None:
+    calls: list[dict[str, object]] = []
+
+    def fake_process(url: str, *, generate_captions: bool) -> Path:
+        calls.append({"url": url, "generate_captions": generate_captions})
+        return Path("metadata.json")
+
+    monkeypatch.setattr("clipforge.pipeline.cli.process_clip", fake_process)
+
+    exit_code = main(["--url", TWITCH_CLIP_URL, "--generate-captions"])
+
+    assert exit_code == 0
+    assert calls == [{"url": TWITCH_CLIP_URL, "generate_captions": True}]
+
+
+def test_main_routes_process_caption_flag(monkeypatch) -> None:
+    calls: list[dict[str, object]] = []
+
+    def fake_process(url: str, *, generate_captions: bool) -> Path:
+        calls.append({"url": url, "generate_captions": generate_captions})
+        return Path("metadata.json")
+
+    monkeypatch.setattr("clipforge.pipeline.cli.process_clip", fake_process)
+
+    exit_code = main(["process", "--url", TWITCH_CLIP_URL, "--generate-captions"])
+
+    assert exit_code == 0
+    assert calls == [{"url": TWITCH_CLIP_URL, "generate_captions": True}]
+
+
 def test_main_routes_render_all_command(monkeypatch, capsys) -> None:
     def fake_render_all(source_path: Path, *, clip_id: str | None = None) -> tuple[Path, ...]:
         assert source_path == Path("source.mp4")
@@ -43,6 +73,58 @@ def test_main_routes_render_all_command(monkeypatch, capsys) -> None:
 
     assert exit_code == 0
     assert capsys.readouterr().out.splitlines() == ["one.mp4", "two.mp4"]
+
+
+def test_main_routes_captions_command(monkeypatch, capsys, tmp_path: Path) -> None:
+    config = ClipforgeConfig(openai_api_key="test-key", metadata_dir=tmp_path / "metadata")
+    caption_path = tmp_path / "metadata" / "captions" / "clip-123.json"
+    calls: list[dict[str, object]] = []
+
+    def fake_generate_caption_metadata(
+        source_path: Path,
+        *,
+        clip_id: str,
+        output_path: Path | None,
+        config: ClipforgeConfig,
+    ) -> Path:
+        calls.append(
+            {
+                "source_path": source_path,
+                "clip_id": clip_id,
+                "output_path": output_path,
+                "config": config,
+            }
+        )
+        return caption_path
+
+    monkeypatch.setattr("clipforge.pipeline.cli.load_config", lambda: config)
+    monkeypatch.setattr(
+        "clipforge.pipeline.cli.generate_caption_metadata",
+        fake_generate_caption_metadata,
+    )
+
+    exit_code = main(
+        [
+            "captions",
+            "--source",
+            "source.mp4",
+            "--clip-id",
+            "clip-123",
+            "--output",
+            str(caption_path),
+        ]
+    )
+
+    assert exit_code == 0
+    assert calls == [
+        {
+            "source_path": Path("source.mp4"),
+            "clip_id": "clip-123",
+            "output_path": caption_path,
+            "config": config,
+        }
+    ]
+    assert capsys.readouterr().out.splitlines() == [str(caption_path)]
 
 
 def test_main_routes_clips_command(monkeypatch, capsys, tmp_path: Path) -> None:

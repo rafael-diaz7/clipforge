@@ -8,6 +8,8 @@ from pathlib import Path
 
 from dotenv import load_dotenv
 
+from clipforge.utils import require_config_value, require_config_values
+
 
 PROJECT_ROOT = Path(__file__).resolve().parents[3]
 DATA_DIR = PROJECT_ROOT / "data"
@@ -23,6 +25,9 @@ TARGET_HEIGHT = 1920
 OUTPUT_FORMAT = "mp4"
 DEFAULT_DOWNLOADER_BACKEND = "ytdlp"
 SUPPORTED_DOWNLOADER_BACKENDS = frozenset({DEFAULT_DOWNLOADER_BACKEND, "clipr"})
+DEFAULT_OPENAI_TRANSCRIPTION_MODEL = "whisper-1"
+_TRUE_ENV_VALUES = frozenset({"1", "true", "yes", "on"})
+_FALSE_ENV_VALUES = frozenset({"0", "false", "no", "off"})
 
 
 class ConfigError(RuntimeError):
@@ -36,6 +41,9 @@ class ClipforgeConfig:
     clipr_api_key: str | None = None
     twitch_client_id: str | None = None
     twitch_client_secret: str | None = None
+    openai_api_key: str | None = None
+    openai_transcription_model: str = DEFAULT_OPENAI_TRANSCRIPTION_MODEL
+    generate_captions: bool = False
     project_root: Path = PROJECT_ROOT
     downloads_dir: Path = DOWNLOADS_DIR
     renders_dir: Path = RENDERS_DIR
@@ -62,19 +70,31 @@ class ClipforgeConfig:
         return backend
 
     def require_twitch_credentials(self) -> tuple[str, str]:
-        client_id = (self.twitch_client_id or "").strip()
-        client_secret = (self.twitch_client_secret or "").strip()
-        missing = []
-        if not client_id:
-            missing.append("TWITCH_CLIENT_ID")
-        if not client_secret:
-            missing.append("TWITCH_CLIENT_SECRET")
-        if missing:
-            raise ConfigError(
-                "Missing required Twitch API configuration: "
-                f"{', '.join(missing)}. Set them in your environment or .env file."
-            )
+        client_id, client_secret = require_config_values(
+            (
+                ("TWITCH_CLIENT_ID", self.twitch_client_id),
+                ("TWITCH_CLIENT_SECRET", self.twitch_client_secret),
+            ),
+            context="Twitch API",
+            error_cls=ConfigError,
+        )
         return client_id, client_secret
+
+    def require_openai_api_key(self) -> str:
+        return require_config_value(
+            self.openai_api_key,
+            "OPENAI_API_KEY",
+            context="OpenAI API",
+            error_cls=ConfigError,
+        )
+
+    def require_openai_transcription_model(self) -> str:
+        return require_config_value(
+            self.openai_transcription_model,
+            "OPENAI_TRANSCRIPTION_MODEL",
+            context="OpenAI API",
+            error_cls=ConfigError,
+        )
 
 
 def load_config() -> ClipforgeConfig:
@@ -85,6 +105,12 @@ def load_config() -> ClipforgeConfig:
         clipr_api_key=os.getenv("CLIPR_API_KEY"),
         twitch_client_id=os.getenv("TWITCH_CLIENT_ID"),
         twitch_client_secret=os.getenv("TWITCH_CLIENT_SECRET"),
+        openai_api_key=os.getenv("OPENAI_API_KEY"),
+        openai_transcription_model=os.getenv(
+            "OPENAI_TRANSCRIPTION_MODEL",
+            DEFAULT_OPENAI_TRANSCRIPTION_MODEL,
+        ),
+        generate_captions=_env_bool("CLIPFORGE_GENERATE_CAPTIONS", default=False),
         downloader_backend=os.getenv(
             "CLIPFORGE_DOWNLOADER",
             DEFAULT_DOWNLOADER_BACKEND,
@@ -94,3 +120,20 @@ def load_config() -> ClipforgeConfig:
     config.require_downloader_backend()
 
     return config
+
+
+def _env_bool(name: str, *, default: bool) -> bool:
+    value = os.getenv(name)
+    if value is None:
+        return default
+
+    normalized = value.strip().lower()
+    if normalized in _TRUE_ENV_VALUES:
+        return True
+    if normalized in _FALSE_ENV_VALUES:
+        return False
+
+    raise ConfigError(
+        f"Invalid boolean configuration for {name}: {value!r}. "
+        "Use one of: true, false, 1, 0, yes, no, on, off."
+    )

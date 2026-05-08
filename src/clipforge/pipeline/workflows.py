@@ -9,6 +9,7 @@ from clipforge.core.config import ClipforgeConfig, load_config
 from clipforge.utils import ensure_directory, safe_filename, twitch_clip_slug_from_url
 from clipforge.integrations.clipr import CliprClient
 from clipforge.media.download import download_clip, download_twitch_clip
+from clipforge.media.captions import generate_caption_metadata
 from clipforge.media.layouts import (
     DEFAULT_LAYOUT_NAMES,
     Layout,
@@ -84,6 +85,7 @@ def render_all_candidates(
 def process_clip(
     twitch_clip_url: str,
     *,
+    generate_captions: bool | None = None,
     config: ClipforgeConfig | None = None,
 ) -> Path:
     """Run the full MVP pipeline and return the metadata path."""
@@ -100,6 +102,15 @@ def process_clip(
         on_media_url_resolved=lambda media_url: print(f"download_url: {media_url}"),
     )
     source_path = download_result.source_path
+    caption_metadata_path = None
+    if _should_generate_captions(generate_captions, config=config):
+        LOGGER.info("Generating captions for clip %s from %s.", clip_id, source_path)
+        caption_metadata_path = generate_caption_metadata(
+            source_path,
+            clip_id=clip_id,
+            config=config,
+        )
+
     layouts = load_example_layouts(DEFAULT_LAYOUT_NAMES, layouts_dir=config.example_layouts_dir)
 
     outputs = []
@@ -122,6 +133,7 @@ def process_clip(
         layouts=layouts,
         outputs=outputs,
         config=config,
+        caption_metadata_path=caption_metadata_path,
     )
     record_rendered_clip(
         clip_id=clip_id,
@@ -132,10 +144,22 @@ def process_clip(
     )
 
     print(f"source: {source_path}")
+    if caption_metadata_path is not None:
+        print(f"captions: {caption_metadata_path}")
     for output in outputs:
         print(f"{output['layout']}: {output['path']}")
     print(f"metadata: {metadata_path}")
     return metadata_path
+
+
+def _should_generate_captions(
+    generate_captions: bool | None,
+    *,
+    config: ClipforgeConfig,
+) -> bool:
+    if generate_captions is not None:
+        return generate_captions
+    return config.generate_captions
 
 
 def _load_layout_ref(layout_ref: str, *, config: ClipforgeConfig) -> Layout:

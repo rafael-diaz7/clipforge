@@ -244,7 +244,7 @@ Suggested commit message:
 feat: add caption metadata model
 ```
 
-### [ ] 7. feat: generate captions from downloaded clips
+### [x] 7. feat: generate captions from downloaded clips
 
 Goal: Transcribe the downloaded source clip into timed caption segments.
 

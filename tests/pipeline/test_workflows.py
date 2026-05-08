@@ -175,6 +175,66 @@ def test_process_clip_writes_metadata(
     assert "metadata:" in output
 
 
+def test_process_clip_can_generate_captions_before_rendering(
+    tmp_path: Path,
+    monkeypatch,
+) -> None:
+    config = _config(tmp_path)
+    source_path = tmp_path / "downloads" / TWITCH_CLIP_SLUG / "ytdlp" / f"{TWITCH_CLIP_SLUG}.mp4"
+    caption_path = tmp_path / "metadata" / "captions" / f"{TWITCH_CLIP_SLUG}.json"
+    events: list[str] = []
+
+    def fake_download_twitch_clip(
+        url: str,
+        *,
+        clip_id: str | None,
+        config: ClipforgeConfig,
+        on_media_url_resolved,
+    ) -> DownloadResult:
+        events.append("download")
+        return DownloadResult(source_path=source_path, backend="ytdlp")
+
+    def fake_generate_caption_metadata(
+        path: Path,
+        *,
+        clip_id: str,
+        config: ClipforgeConfig,
+    ) -> Path:
+        assert path == source_path
+        assert clip_id == TWITCH_CLIP_SLUG
+        events.append("captions")
+        return caption_path
+
+    def fake_render(source: Path, output: Path, layout) -> Path:
+        events.append(f"render:{layout.name}")
+        return output
+
+    monkeypatch.setattr(
+        "clipforge.pipeline.workflows.download_twitch_clip",
+        fake_download_twitch_clip,
+    )
+    monkeypatch.setattr(
+        "clipforge.pipeline.workflows.generate_caption_metadata",
+        fake_generate_caption_metadata,
+    )
+    monkeypatch.setattr("clipforge.pipeline.workflows.render_layout", fake_render)
+
+    metadata_path = process_clip(
+        TWITCH_CLIP_URL,
+        generate_captions=True,
+        config=config,
+    )
+
+    metadata = json.loads(metadata_path.read_text(encoding="utf-8"))
+    assert metadata["caption_metadata_path"] == str(caption_path)
+    assert events[:2] == ["download", "captions"]
+    assert events[2:] == [
+        "render:center_gameplay",
+        "render:facecam_focus",
+        "render:hybrid",
+    ]
+
+
 def test_process_clip_marks_existing_state_as_rendered(
     tmp_path: Path,
     monkeypatch,

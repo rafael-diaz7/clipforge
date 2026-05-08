@@ -1,0 +1,327 @@
+"""OpenAI API integration helpers."""
+
+from __future__ import annotations
+
+import logging
+import subprocess
+from dataclasses import dataclass
+from pathlib import Path
+from typing import Any, Callable
+
+import requests
+
+from clipforge.core.config import DEFAULT_OPENAI_TRANSCRIPTION_MODEL, ClipforgeConfig
+from clipforge.media.captions import (
+    CaptionMetadata,
+    CaptionSegment,
+    CaptionTranscriptionError,
+)
+from clipforge.utils import response_text_excerpt
+from clipforge.utils.json_validation import required_list, required_number
+
+
+OPENAI_TRANSCRIPTIONS_URL = "https://api.openai.com/v1/audio/transcriptions"
+DEFAULT_TRANSCRIPTION_TIMEOUT_SECONDS = 120
+GPT_TRANSCRIBE_JSON_MODELS = ("gpt-4o-transcribe", "gpt-4o-mini-transcribe")
+LOGGER = logging.getLogger(__name__)
+
+DurationProbe = Callable[[Path], float]
+SubprocessRunner = Callable[..., subprocess.CompletedProcess[str]]
+
+
+@dataclass(frozen=True)
+class OpenAITranscriptionClient:
+    """Small OpenAI transcription adapter focused on caption metadata."""
+
+    api_key: str
+    model: str = DEFAULT_OPENAI_TRANSCRIPTION_MODEL
+    session: requests.Session | None = None
+    timeout_seconds: int = DEFAULT_TRANSCRIPTION_TIMEOUT_SECONDS
+    duration_probe: DurationProbe | None = None
+
+    @classmethod
+    def from_config(cls, config: ClipforgeConfig) -> "OpenAITranscriptionClient":
+        return cls(
+            api_key=config.require_openai_api_key(),
+            model=config.require_openai_transcription_model(),
+        )
+
+    def transcribe(self, source_path: Path, *, clip_id: str) -> CaptionMetadata:
+        if not source_path.is_file():
+            raise CaptionTranscriptionError(f"Caption source clip not found: {source_path}")
+
+        client = self.session or requests
+        try:
+            with source_path.open("rb") as source_file:
+                response = client.post(
+                    OPENAI_TRANSCRIPTIONS_URL,
+                    headers={"Authorization": f"Bearer {self.api_key}"},
+                    data=_transcription_request_data(self.model),
+                    files={"file": (source_path.name, source_file)},
+                    timeout=self.timeout_seconds,
+                )
+        except requests.RequestException as exc:
+            raise CaptionTranscriptionError(
+                f"OpenAI transcription request failed for {source_path}: {exc}"
+            ) from exc
+        except OSError as exc:
+            raise CaptionTranscriptionError(
+                f"Could not read caption source clip {source_path}: {exc}"
+            ) from exc
+
+        request_id = response.headers.get("x-request-id")
+        if response.status_code >= 400:
+            LOGGER.warning(
+                "OpenAI transcription failed for %s with HTTP %s%s.",
+                source_path,
+                response.status_code,
+                f" (request_id={request_id})" if request_id else "",
+            )
+            raise CaptionTranscriptionError(
+                _openai_error_message(
+                    response,
+                    source_path=source_path,
+                    api_key=self.api_key,
+                    request_id=request_id,
+                )
+            )
+
+        if request_id:
+            LOGGER.info(
+                "OpenAI transcription completed for %s (request_id=%s).",
+                source_path,
+                request_id,
+            )
+        payload = _decode_openai_transcription_response(response)
+        fallback_duration = _fallback_duration_seconds(
+            payload,
+            source_path=source_path,
+            duration_probe=self.duration_probe,
+        )
+        return parse_openai_transcription_payload(
+            payload,
+            clip_id=clip_id,
+            fallback_duration_seconds=fallback_duration,
+        )
+
+
+def normalize_openai_transcription_response(
+    response: requests.Response,
+    *,
+    clip_id: str,
+    fallback_duration_seconds: float | None = None,
+) -> CaptionMetadata:
+    """Normalize an OpenAI transcription response object."""
+
+    payload = _decode_openai_transcription_response(response)
+    return parse_openai_transcription_payload(
+        payload,
+        clip_id=clip_id,
+        fallback_duration_seconds=fallback_duration_seconds,
+    )
+
+
+def parse_openai_transcription_payload(
+    payload: Any,
+    *,
+    clip_id: str,
+    fallback_duration_seconds: float | None = None,
+) -> CaptionMetadata:
+    """Normalize a decoded OpenAI transcription payload into caption metadata."""
+
+    if not isinstance(payload, dict):
+        raise CaptionTranscriptionError("OpenAI transcription response must be an object.")
+
+    if "segments" in payload:
+        segments_payload = required_list(
+            payload,
+            "segments",
+            context="OpenAI transcription response",
+            error_cls=CaptionTranscriptionError,
+        )
+        segments = tuple(
+            segment
+            for index, segment_payload in enumerate(segments_payload)
+            if (
+                segment := _parse_openai_transcription_segment(
+                    segment_payload,
+                    index=index,
+                )
+            )
+            is not None
+        )
+        return CaptionMetadata(clip_id=clip_id, segments=segments)
+
+    text = payload.get("text")
+    if not isinstance(text, str) or not text.strip():
+        raise CaptionTranscriptionError(
+            "OpenAI transcription response did not include timestamp segments or text."
+        )
+    if fallback_duration_seconds is None:
+        raise CaptionTranscriptionError(
+            "OpenAI transcription response did not include timestamp segments."
+        )
+    return CaptionMetadata(
+        clip_id=clip_id,
+        segments=(
+            CaptionSegment(
+                start_time=0.0,
+                end_time=fallback_duration_seconds,
+                text=text,
+            ),
+        ),
+    )
+
+
+def media_duration_seconds(
+    source_path: Path,
+    *,
+    runner: SubprocessRunner = subprocess.run,
+) -> float:
+    """Return source media duration using ffprobe."""
+
+    command = [
+        "ffprobe",
+        "-v",
+        "error",
+        "-show_entries",
+        "format=duration",
+        "-of",
+        "default=noprint_wrappers=1:nokey=1",
+        str(source_path),
+    ]
+    try:
+        completed = runner(command, check=True, capture_output=True, text=True)
+    except (OSError, subprocess.CalledProcessError) as exc:
+        raise CaptionTranscriptionError(
+            f"Could not determine source clip duration with ffprobe for {source_path}: "
+            f"{_process_error_excerpt(exc)}"
+        ) from exc
+
+    try:
+        duration = float(completed.stdout.strip())
+    except ValueError as exc:
+        raise CaptionTranscriptionError(
+            f"ffprobe returned an invalid duration for {source_path}: "
+            f"{completed.stdout.strip()!r}."
+        ) from exc
+    if duration <= 0:
+        raise CaptionTranscriptionError(
+            f"ffprobe returned a non-positive duration for {source_path}: {duration}."
+        )
+    return duration
+
+
+def _transcription_request_data(model: str) -> list[tuple[str, str]]:
+    model = model.strip()
+    if _json_only_transcription_model(model):
+        return [
+            ("model", model),
+            ("response_format", "json"),
+        ]
+    return [
+        ("model", model),
+        ("response_format", "verbose_json"),
+        ("timestamp_granularities[]", "segment"),
+    ]
+
+
+def _json_only_transcription_model(model: str) -> bool:
+    if model.startswith("gpt-4o-transcribe-diarize"):
+        return False
+    return any(model.startswith(prefix) for prefix in GPT_TRANSCRIBE_JSON_MODELS)
+
+
+def _decode_openai_transcription_response(response: requests.Response) -> dict[str, Any]:
+    try:
+        payload = response.json()
+    except ValueError as exc:
+        raise CaptionTranscriptionError(
+            "OpenAI transcription response was not valid JSON."
+        ) from exc
+    if not isinstance(payload, dict):
+        raise CaptionTranscriptionError("OpenAI transcription response must be an object.")
+    return payload
+
+
+def _fallback_duration_seconds(
+    payload: dict[str, Any],
+    *,
+    source_path: Path,
+    duration_probe: DurationProbe | None,
+) -> float | None:
+    if "segments" in payload:
+        return None
+    if not isinstance(payload.get("text"), str) or not payload["text"].strip():
+        return None
+    probe = duration_probe or media_duration_seconds
+    return probe(source_path)
+
+
+def _parse_openai_transcription_segment(
+    payload: Any,
+    *,
+    index: int,
+) -> CaptionSegment | None:
+    context = f"OpenAI transcription response.segments[{index}]"
+    if not isinstance(payload, dict):
+        raise CaptionTranscriptionError(f"{context} must be an object.")
+
+    text = payload.get("text")
+    if not isinstance(text, str):
+        raise CaptionTranscriptionError(f"{context}.text must be a string.")
+    if not text.strip():
+        return None
+
+    return CaptionSegment(
+        start_time=required_number(
+            payload,
+            "start",
+            context=context,
+            error_cls=CaptionTranscriptionError,
+        ),
+        end_time=required_number(
+            payload,
+            "end",
+            context=context,
+            error_cls=CaptionTranscriptionError,
+        ),
+        text=text,
+    )
+
+
+def _openai_error_message(
+    response: requests.Response,
+    *,
+    source_path: Path,
+    api_key: str,
+    request_id: str | None,
+) -> str:
+    excerpt = response_text_excerpt(response.text, secrets=(api_key,))
+    message = (
+        f"OpenAI transcription failed for {source_path} with "
+        f"HTTP {response.status_code}"
+    )
+    if request_id:
+        message = f"{message} (request_id={request_id})"
+    if excerpt:
+        message = f"{message}: {excerpt}"
+    else:
+        message = f"{message}."
+    return message
+
+
+def _process_error_excerpt(
+    exc: OSError | subprocess.CalledProcessError,
+    *,
+    limit: int = 320,
+) -> str:
+    if isinstance(exc, subprocess.CalledProcessError):
+        output = (exc.stderr or exc.stdout or "").strip().replace("\n", " ")
+        if not output:
+            output = f"exit code {exc.returncode}"
+    else:
+        output = str(exc)
+    if len(output) > limit:
+        return f"{output[:limit]}..."
+    return output

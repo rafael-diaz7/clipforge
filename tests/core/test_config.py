@@ -6,6 +6,7 @@ from clipforge.core.config import (
     ClipforgeConfig,
     ConfigError,
     DEFAULT_DOWNLOADER_BACKEND,
+    DEFAULT_OPENAI_TRANSCRIPTION_MODEL,
     DOWNLOADS_DIR,
     EXAMPLE_LAYOUTS_DIR,
     METADATA_DIR,
@@ -42,6 +43,50 @@ def test_config_requires_twitch_credentials() -> None:
 
     with pytest.raises(ConfigError, match="TWITCH_CLIENT_SECRET"):
         config.require_twitch_credentials()
+
+
+def test_load_config_uses_env_for_openai_transcription(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    monkeypatch.setenv("OPENAI_API_KEY", "openai-key")
+    monkeypatch.setenv("OPENAI_TRANSCRIPTION_MODEL", "whisper-test")
+    monkeypatch.setenv("CLIPFORGE_GENERATE_CAPTIONS", "true")
+
+    config = load_config()
+
+    assert config.openai_api_key == "openai-key"
+    assert config.openai_transcription_model == "whisper-test"
+    assert config.generate_captions is True
+    assert config.require_openai_api_key() == "openai-key"
+    assert config.require_openai_transcription_model() == "whisper-test"
+
+
+def test_load_config_defaults_openai_transcription_model(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    monkeypatch.delenv("OPENAI_TRANSCRIPTION_MODEL", raising=False)
+    monkeypatch.delenv("CLIPFORGE_GENERATE_CAPTIONS", raising=False)
+
+    config = load_config()
+
+    assert config.openai_transcription_model == DEFAULT_OPENAI_TRANSCRIPTION_MODEL
+    assert config.generate_captions is False
+
+
+def test_config_requires_openai_api_key() -> None:
+    config = ClipforgeConfig()
+
+    with pytest.raises(ConfigError, match="OPENAI_API_KEY"):
+        config.require_openai_api_key()
+
+
+def test_load_config_rejects_invalid_generate_captions_bool(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    monkeypatch.setenv("CLIPFORGE_GENERATE_CAPTIONS", "sometimes")
+
+    with pytest.raises(ConfigError, match="CLIPFORGE_GENERATE_CAPTIONS"):
+        load_config()
 
 
 def test_load_config_defaults_to_ytdlp_downloader(
