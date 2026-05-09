@@ -5,6 +5,8 @@ from pathlib import Path
 import pytest
 
 from clipforge.core.config import ClipforgeConfig
+from clipforge.media.captions import CaptionMetadata, CaptionSegment, save_captions
+from clipforge.media.download import DownloadResult
 from clipforge.pipeline.cli import main
 from clipforge.integrations.twitch import TwitchClip
 from clipforge.storage.state import get_clip, mark_clip_rendered, upsert_discovered_clip
@@ -45,6 +47,40 @@ def test_main_routes_url_shortcut_caption_flag(monkeypatch) -> None:
     assert calls == [{"url": TWITCH_CLIP_URL, "generate_captions": True}]
 
 
+def test_main_routes_url_shortcut_force_caption_flag(monkeypatch) -> None:
+    calls: list[dict[str, object]] = []
+
+    def fake_process(
+        url: str,
+        *,
+        generate_captions: bool,
+        force_captions: bool,
+    ) -> Path:
+        calls.append(
+            {
+                "url": url,
+                "generate_captions": generate_captions,
+                "force_captions": force_captions,
+            }
+        )
+        return Path("metadata.json")
+
+    monkeypatch.setattr("clipforge.pipeline.cli.process_clip", fake_process)
+
+    exit_code = main(
+        ["--url", TWITCH_CLIP_URL, "--generate-captions", "--force-captions"]
+    )
+
+    assert exit_code == 0
+    assert calls == [
+        {
+            "url": TWITCH_CLIP_URL,
+            "generate_captions": True,
+            "force_captions": True,
+        }
+    ]
+
+
 def test_main_routes_process_caption_flag(monkeypatch) -> None:
     calls: list[dict[str, object]] = []
 
@@ -58,6 +94,46 @@ def test_main_routes_process_caption_flag(monkeypatch) -> None:
 
     assert exit_code == 0
     assert calls == [{"url": TWITCH_CLIP_URL, "generate_captions": True}]
+
+
+def test_main_routes_process_force_caption_flag(monkeypatch) -> None:
+    calls: list[dict[str, object]] = []
+
+    def fake_process(
+        url: str,
+        *,
+        generate_captions: bool,
+        force_captions: bool,
+    ) -> Path:
+        calls.append(
+            {
+                "url": url,
+                "generate_captions": generate_captions,
+                "force_captions": force_captions,
+            }
+        )
+        return Path("metadata.json")
+
+    monkeypatch.setattr("clipforge.pipeline.cli.process_clip", fake_process)
+
+    exit_code = main(
+        [
+            "process",
+            "--url",
+            TWITCH_CLIP_URL,
+            "--generate-captions",
+            "--force-captions",
+        ]
+    )
+
+    assert exit_code == 0
+    assert calls == [
+        {
+            "url": TWITCH_CLIP_URL,
+            "generate_captions": True,
+            "force_captions": True,
+        }
+    ]
 
 
 def test_main_routes_render_all_command(monkeypatch, capsys) -> None:
@@ -1067,6 +1143,156 @@ def test_main_reprocesses_rendered_clip_with_force_and_captions(
             "generate_captions": True,
             "config": config,
         }
+    ]
+
+
+def test_main_routes_clips_process_force_caption_flag(
+    monkeypatch,
+    tmp_path: Path,
+) -> None:
+    config = ClipforgeConfig(state_db_path=tmp_path / "state" / "clipforge.sqlite")
+    upsert_discovered_clip(
+        clip_id="clip-rendered",
+        url="https://clips.twitch.tv/clip-rendered",
+        rank_score=1.0,
+        db_path=config.state_db_path,
+    )
+    mark_clip_rendered(
+        "clip-rendered",
+        render_dir=tmp_path / "renders" / "clip-rendered",
+        db_path=config.state_db_path,
+    )
+    calls: list[dict[str, object]] = []
+
+    def fake_process(
+        url: str,
+        *,
+        generate_captions: bool,
+        force_captions: bool,
+        config: ClipforgeConfig,
+    ) -> Path:
+        calls.append(
+            {
+                "url": url,
+                "generate_captions": generate_captions,
+                "force_captions": force_captions,
+                "config": config,
+            }
+        )
+        return tmp_path / "metadata" / "captions.json"
+
+    monkeypatch.setattr("clipforge.pipeline.cli.load_config", lambda: config)
+    monkeypatch.setattr("clipforge.pipeline.cli.process_clip", fake_process)
+
+    exit_code = main(
+        [
+            "clips",
+            "process",
+            "--clip-id",
+            "clip-rendered",
+            "--force",
+            "--generate-captions",
+            "--force-captions",
+        ]
+    )
+
+    assert exit_code == 0
+    assert calls == [
+        {
+            "url": "https://clips.twitch.tv/clip-rendered",
+            "generate_captions": True,
+            "force_captions": True,
+            "config": config,
+        }
+    ]
+
+
+def test_main_reprocesses_rendered_clip_reuses_existing_captions_by_default(
+    monkeypatch,
+    capsys,
+    tmp_path: Path,
+) -> None:
+    config = ClipforgeConfig(
+        downloads_dir=tmp_path / "downloads",
+        renders_dir=tmp_path / "renders",
+        metadata_dir=tmp_path / "metadata",
+        state_db_path=tmp_path / "state" / "clipforge.sqlite",
+    )
+    upsert_discovered_clip(
+        clip_id="clip-rendered",
+        url="https://clips.twitch.tv/clip-rendered",
+        rank_score=1.0,
+        db_path=config.state_db_path,
+    )
+    mark_clip_rendered(
+        "clip-rendered",
+        render_dir=tmp_path / "renders" / "old",
+        db_path=config.state_db_path,
+    )
+    caption_path = save_captions(
+        clip_id="clip-rendered",
+        segments=(CaptionSegment(start_time=0, end_time=1, text="existing"),),
+        config=config,
+    )
+    source_path = tmp_path / "downloads" / "clip-rendered" / "ytdlp" / "clip-rendered.mp4"
+    events: list[str] = []
+
+    def fake_download_twitch_clip(
+        url: str,
+        *,
+        clip_id: str | None,
+        config: ClipforgeConfig,
+        on_media_url_resolved,
+    ) -> DownloadResult:
+        events.append("download")
+        return DownloadResult(source_path=source_path, backend="ytdlp")
+
+    def fail_generate_caption_metadata(*args, **kwargs) -> Path:
+        raise AssertionError("Forced clip reprocessing should reuse captions by default.")
+
+    def fake_render(
+        source: Path,
+        output: Path,
+        layout,
+        *,
+        caption_metadata: CaptionMetadata,
+        caption_renderer_backend: str,
+        ass_temp_dir: Path,
+    ) -> Path:
+        assert caption_metadata.clip_id == "clip-rendered"
+        events.append(f"render:{layout.name}")
+        return output
+
+    monkeypatch.setattr("clipforge.pipeline.cli.load_config", lambda: config)
+    monkeypatch.setattr(
+        "clipforge.pipeline.workflows.download_twitch_clip",
+        fake_download_twitch_clip,
+    )
+    monkeypatch.setattr(
+        "clipforge.pipeline.workflows.generate_caption_metadata",
+        fail_generate_caption_metadata,
+    )
+    monkeypatch.setattr("clipforge.pipeline.workflows.render_layout", fake_render)
+
+    exit_code = main(
+        [
+            "clips",
+            "process",
+            "--clip-id",
+            "clip-rendered",
+            "--force",
+            "--generate-captions",
+        ]
+    )
+
+    output = capsys.readouterr().out
+    assert exit_code == 0
+    assert f"captions: reusing existing {caption_path}" in output
+    assert events == [
+        "download",
+        "render:center_gameplay",
+        "render:facecam_focus",
+        "render:hybrid",
     ]
 
 

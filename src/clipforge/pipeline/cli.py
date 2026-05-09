@@ -64,6 +64,11 @@ def build_parser() -> argparse.ArgumentParser:
         help="Generate caption metadata after download and before rendering.",
     )
     parser.add_argument(
+        "--force-captions",
+        action="store_true",
+        help="Regenerate caption metadata even when deterministic metadata already exists.",
+    )
+    parser.add_argument(
         "--static-layouts",
         action="store_true",
         help="With --url, ignore generated analysis layouts and render static layouts.",
@@ -159,6 +164,11 @@ def build_parser() -> argparse.ArgumentParser:
         help="Generate caption metadata after download and before rendering.",
     )
     process_parser.add_argument(
+        "--force-captions",
+        action="store_true",
+        help="Regenerate caption metadata even when deterministic metadata already exists.",
+    )
+    process_parser.add_argument(
         "--static-layouts",
         action="store_true",
         help="Ignore generated analysis layouts and render static layouts.",
@@ -237,6 +247,11 @@ def build_parser() -> argparse.ArgumentParser:
         action="store_true",
         default=None,
         help="Generate caption metadata before rendering.",
+    )
+    clips_process_parser.add_argument(
+        "--force-captions",
+        action="store_true",
+        help="Regenerate caption metadata even when deterministic metadata already exists.",
     )
     clips_process_parser.add_argument(
         "--static-layouts",
@@ -329,6 +344,8 @@ def main(argv: Sequence[str] | None = None) -> int:
             process_kwargs = {}
             if args.generate_captions is not None:
                 process_kwargs["generate_captions"] = args.generate_captions
+            if args.force_captions:
+                process_kwargs["force_captions"] = True
             if args.static_layouts:
                 process_kwargs["use_generated_layouts"] = False
             if process_kwargs:
@@ -384,6 +401,8 @@ def main(argv: Sequence[str] | None = None) -> int:
             process_kwargs = {}
             if args.generate_captions is not None:
                 process_kwargs["generate_captions"] = args.generate_captions
+            if args.force_captions:
+                process_kwargs["force_captions"] = True
             if args.static_layouts:
                 process_kwargs["use_generated_layouts"] = False
             if process_kwargs:
@@ -535,6 +554,8 @@ def _handle_clips_process_command(args: argparse.Namespace) -> int:
             process_kwargs = {"config": config}
             if args.generate_captions is not None:
                 process_kwargs["generate_captions"] = args.generate_captions
+            if args.force_captions:
+                process_kwargs["force_captions"] = True
             if args.static_layouts:
                 process_kwargs["use_generated_layouts"] = False
             metadata_path = process_clip(clip.url, **process_kwargs)

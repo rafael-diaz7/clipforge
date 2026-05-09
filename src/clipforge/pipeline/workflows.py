@@ -9,7 +9,12 @@ from clipforge.core.config import ClipforgeConfig, load_config
 from clipforge.utils import ensure_directory, safe_filename, twitch_clip_slug_from_url
 from clipforge.integrations.clipr import CliprClient
 from clipforge.media.download import download_clip, download_twitch_clip
-from clipforge.media.captions import CaptionMetadata, generate_caption_metadata, load_caption_metadata
+from clipforge.media.captions import (
+    CaptionMetadata,
+    caption_metadata_path as deterministic_caption_metadata_path,
+    generate_caption_metadata,
+    load_caption_metadata,
+)
 from clipforge.media.layouts import (
     DEFAULT_LAYOUT_NAMES,
     Layout,
@@ -118,6 +123,7 @@ def process_clip(
     twitch_clip_url: str,
     *,
     generate_captions: bool | None = None,
+    force_captions: bool = False,
     use_generated_layouts: bool = True,
     config: ClipforgeConfig | None = None,
 ) -> Path:
@@ -137,12 +143,31 @@ def process_clip(
     source_path = download_result.source_path
     caption_metadata_path = None
     if _should_generate_captions(generate_captions, config=config):
-        LOGGER.info("Generating captions for clip %s from %s.", clip_id, source_path)
-        caption_metadata_path = generate_caption_metadata(
-            source_path,
-            clip_id=clip_id,
+        existing_caption_metadata_path = deterministic_caption_metadata_path(
+            clip_id,
             config=config,
         )
+        if existing_caption_metadata_path.exists() and not force_captions:
+            caption_metadata_path = existing_caption_metadata_path
+            LOGGER.info(
+                "Reusing existing caption metadata for clip %s from %s.",
+                clip_id,
+                caption_metadata_path,
+            )
+        else:
+            if force_captions and existing_caption_metadata_path.exists():
+                LOGGER.info(
+                    "Regenerating captions for clip %s from %s.",
+                    clip_id,
+                    source_path,
+                )
+            else:
+                LOGGER.info("Generating captions for clip %s from %s.", clip_id, source_path)
+            caption_metadata_path = generate_caption_metadata(
+                source_path,
+                clip_id=clip_id,
+                config=config,
+            )
     caption_metadata = _load_optional_caption_metadata(caption_metadata_path)
     caption_style = _caption_style_from_config(config)
 

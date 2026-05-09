@@ -506,6 +506,151 @@ def test_process_clip_can_generate_captions_before_rendering(
     ]
 
 
+def test_process_clip_reuses_existing_caption_metadata(
+    tmp_path: Path,
+    monkeypatch,
+    capsys,
+) -> None:
+    config = _config(tmp_path)
+    source_path = tmp_path / "downloads" / TWITCH_CLIP_SLUG / "ytdlp" / f"{TWITCH_CLIP_SLUG}.mp4"
+    caption_path = save_captions(
+        clip_id=TWITCH_CLIP_SLUG,
+        segments=(CaptionSegment(start_time=0, end_time=1, text="existing"),),
+        config=config,
+    )
+    events: list[str] = []
+
+    def fake_download_twitch_clip(
+        url: str,
+        *,
+        clip_id: str | None,
+        config: ClipforgeConfig,
+        on_media_url_resolved,
+    ) -> DownloadResult:
+        events.append("download")
+        return DownloadResult(source_path=source_path, backend="ytdlp")
+
+    def fail_generate_caption_metadata(*args, **kwargs) -> Path:
+        raise AssertionError("Existing caption metadata should be reused.")
+
+    def fake_render(
+        source: Path,
+        output: Path,
+        layout,
+        *,
+        caption_metadata: CaptionMetadata,
+        caption_renderer_backend: str,
+        ass_temp_dir: Path,
+    ) -> Path:
+        assert caption_metadata == CaptionMetadata(
+            clip_id=TWITCH_CLIP_SLUG,
+            segments=(CaptionSegment(start_time=0, end_time=1, text="existing"),),
+        )
+        events.append(f"render:{layout.name}")
+        return output
+
+    monkeypatch.setattr(
+        "clipforge.pipeline.workflows.download_twitch_clip",
+        fake_download_twitch_clip,
+    )
+    monkeypatch.setattr(
+        "clipforge.pipeline.workflows.generate_caption_metadata",
+        fail_generate_caption_metadata,
+    )
+    monkeypatch.setattr("clipforge.pipeline.workflows.render_layout", fake_render)
+
+    metadata_path = process_clip(
+        TWITCH_CLIP_URL,
+        generate_captions=True,
+        config=config,
+    )
+
+    metadata = json.loads(metadata_path.read_text(encoding="utf-8"))
+    assert metadata["caption_metadata_path"] == str(caption_path)
+    assert events == [
+        "download",
+        "render:center_gameplay",
+        "render:facecam_focus",
+        "render:hybrid",
+    ]
+    assert f"captions: reusing existing {caption_path}" in capsys.readouterr().out
+
+
+def test_process_clip_force_captions_regenerates_existing_caption_metadata(
+    tmp_path: Path,
+    monkeypatch,
+) -> None:
+    config = _config(tmp_path)
+    source_path = tmp_path / "downloads" / TWITCH_CLIP_SLUG / "ytdlp" / f"{TWITCH_CLIP_SLUG}.mp4"
+    caption_path = save_captions(
+        clip_id=TWITCH_CLIP_SLUG,
+        segments=(CaptionSegment(start_time=0, end_time=1, text="stale"),),
+        config=config,
+    )
+    events: list[str] = []
+
+    def fake_download_twitch_clip(
+        url: str,
+        *,
+        clip_id: str | None,
+        config: ClipforgeConfig,
+        on_media_url_resolved,
+    ) -> DownloadResult:
+        events.append("download")
+        return DownloadResult(source_path=source_path, backend="ytdlp")
+
+    def fake_generate_caption_metadata(
+        path: Path,
+        *,
+        clip_id: str,
+        config: ClipforgeConfig,
+    ) -> Path:
+        assert path == source_path
+        events.append("captions")
+        return save_captions(
+            clip_id=clip_id,
+            segments=(CaptionSegment(start_time=0, end_time=1, text="fresh"),),
+            config=config,
+        )
+
+    def fake_render(
+        source: Path,
+        output: Path,
+        layout,
+        *,
+        caption_metadata: CaptionMetadata,
+        caption_renderer_backend: str,
+        ass_temp_dir: Path,
+    ) -> Path:
+        assert caption_metadata == CaptionMetadata(
+            clip_id=TWITCH_CLIP_SLUG,
+            segments=(CaptionSegment(start_time=0, end_time=1, text="fresh"),),
+        )
+        events.append(f"render:{layout.name}")
+        return output
+
+    monkeypatch.setattr(
+        "clipforge.pipeline.workflows.download_twitch_clip",
+        fake_download_twitch_clip,
+    )
+    monkeypatch.setattr(
+        "clipforge.pipeline.workflows.generate_caption_metadata",
+        fake_generate_caption_metadata,
+    )
+    monkeypatch.setattr("clipforge.pipeline.workflows.render_layout", fake_render)
+
+    metadata_path = process_clip(
+        TWITCH_CLIP_URL,
+        generate_captions=True,
+        force_captions=True,
+        config=config,
+    )
+
+    metadata = json.loads(metadata_path.read_text(encoding="utf-8"))
+    assert metadata["caption_metadata_path"] == str(caption_path)
+    assert events[:2] == ["download", "captions"]
+
+
 def test_process_clip_marks_existing_state_as_rendered(
     tmp_path: Path,
     monkeypatch,
