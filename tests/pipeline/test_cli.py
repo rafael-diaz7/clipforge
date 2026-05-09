@@ -286,6 +286,30 @@ def test_main_routes_analyze_overlay_command(monkeypatch, capsys, tmp_path: Path
     assert capsys.readouterr().out.splitlines() == [str(overlay_path)]
 
 
+def test_main_routes_analyze_overlay_debug_command(
+    monkeypatch,
+    capsys,
+    tmp_path: Path,
+) -> None:
+    debug_dir = tmp_path / "analysis" / "clip-123" / "debug"
+    calls: list[str] = []
+
+    def fake_write_overlay_debug_images(*, clip_id: str) -> Path:
+        calls.append(clip_id)
+        return debug_dir
+
+    monkeypatch.setattr(
+        "clipforge.pipeline.cli.write_overlay_debug_images",
+        fake_write_overlay_debug_images,
+    )
+
+    exit_code = main(["analyze", "overlay-debug", "--clip-id", "clip-123"])
+
+    assert exit_code == 0
+    assert calls == ["clip-123"]
+    assert capsys.readouterr().out.splitlines() == [str(debug_dir)]
+
+
 def test_main_routes_clips_command(monkeypatch, capsys, tmp_path: Path) -> None:
     calls: list[dict[str, object]] = []
     recorded: list[dict[str, object]] = []

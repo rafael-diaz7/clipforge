@@ -9,8 +9,10 @@ from clipforge.media.analyze import AnalysisError
 from clipforge.media.overlay import (
     FaceDetection,
     NormalizedRect,
+    OverlayDebugAnnotation,
     OverlayDetectorUnavailable,
     analyze_overlay,
+    write_overlay_debug_images,
 )
 
 
@@ -20,6 +22,29 @@ class SyntheticDetector:
 
     def detect(self, frame_path: Path) -> tuple[FaceDetection, ...]:
         return self._detections.get(frame_path.name, ())
+
+
+class RecordingDebugWriter:
+    def __init__(self) -> None:
+        self.calls: list[dict[str, object]] = []
+
+    def write(
+        self,
+        *,
+        frame_path: Path,
+        output_path: Path,
+        annotations: tuple[OverlayDebugAnnotation, ...],
+        banner: str,
+    ) -> None:
+        self.calls.append(
+            {
+                "frame_path": frame_path,
+                "output_path": output_path,
+                "annotations": annotations,
+                "banner": banner,
+            }
+        )
+        output_path.write_bytes(b"debug")
 
 
 def test_stable_corner_face_wins_over_huge_central_face(tmp_path: Path) -> None:
@@ -205,6 +230,96 @@ def test_analyze_overlay_reads_frame_metadata_and_writes_overlay_metadata(
     }
 
 
+def test_write_overlay_debug_images_writes_one_debug_image_per_sampled_frame(
+    tmp_path: Path,
+) -> None:
+    analysis_dir, frame_names = _write_frames_metadata(tmp_path, clip_id="clip-123", count=2)
+    _write_overlay_metadata(
+        analysis_dir,
+        clip_id="clip-123",
+        fallback=False,
+        selected_rect={"x": 0.03, "y": 0.62, "width": 0.22, "height": 0.22},
+        confidence=0.82,
+        candidate_clusters=[
+            {
+                "cluster_id": 1,
+                "rect": {"x": 0.03, "y": 0.62, "width": 0.22, "height": 0.22},
+                "confidence": 0.82,
+            },
+            {
+                "cluster_id": 2,
+                "rect": {"x": 0.72, "y": 0.60, "width": 0.20, "height": 0.20},
+                "confidence": 0.43,
+            },
+        ],
+    )
+    writer = RecordingDebugWriter()
+
+    debug_dir = write_overlay_debug_images(
+        clip_id="clip-123",
+        analysis_dir=analysis_dir,
+        image_writer=writer,
+    )
+
+    assert debug_dir == analysis_dir / "clip-123" / "debug"
+    assert len(writer.calls) == 2
+    assert [call["frame_path"].name for call in writer.calls] == list(frame_names)
+    assert [call["output_path"].name for call in writer.calls] == [
+        "frame_0001_overlay_debug.jpg",
+        "frame_0002_overlay_debug.jpg",
+    ]
+    assert all(Path(call["output_path"]).is_file() for call in writer.calls)
+    first_call = writer.calls[0]
+    annotations = first_call["annotations"]
+    assert first_call["banner"] == "overlay selected | confidence 0.820"
+    assert [annotation.label for annotation in annotations] == [
+        "cluster 1 | confidence 0.820 | selected",
+        "cluster 2 | confidence 0.430 | candidate",
+    ]
+
+
+def test_write_overlay_debug_images_labels_fallback_candidates(tmp_path: Path) -> None:
+    analysis_dir, _frame_names = _write_frames_metadata(tmp_path, clip_id="clip-123", count=1)
+    _write_overlay_metadata(
+        analysis_dir,
+        clip_id="clip-123",
+        fallback=True,
+        selected_rect=None,
+        confidence=0.31,
+        candidate_clusters=[
+            {
+                "cluster_id": 1,
+                "rect": {"x": 0.18, "y": 0.10, "width": 0.62, "height": 0.62},
+                "confidence": 0.31,
+            }
+        ],
+    )
+    writer = RecordingDebugWriter()
+
+    write_overlay_debug_images(
+        clip_id="clip-123",
+        analysis_dir=analysis_dir,
+        image_writer=writer,
+    )
+
+    assert writer.calls[0]["banner"] == "overlay fallback | confidence 0.310"
+    annotations = writer.calls[0]["annotations"]
+    assert [annotation.label for annotation in annotations] == [
+        "cluster 1 | confidence 0.310 | fallback candidate"
+    ]
+
+
+def test_write_overlay_debug_images_requires_overlay_metadata(tmp_path: Path) -> None:
+    analysis_dir, _frame_names = _write_frames_metadata(tmp_path, clip_id="clip-123", count=1)
+
+    with pytest.raises(AnalysisError, match="Overlay metadata not found"):
+        write_overlay_debug_images(
+            clip_id="clip-123",
+            analysis_dir=analysis_dir,
+            image_writer=RecordingDebugWriter(),
+        )
+
+
 def _write_frames_metadata(
     tmp_path: Path,
     *,
@@ -235,6 +350,30 @@ def _write_frames_metadata(
         encoding="utf-8",
     )
     return analysis_dir, tuple(path.name for path in frame_paths)
+
+
+def _write_overlay_metadata(
+    analysis_dir: Path,
+    *,
+    clip_id: str,
+    fallback: bool,
+    selected_rect: dict[str, float] | None,
+    confidence: float,
+    candidate_clusters: list[dict[str, object]],
+) -> None:
+    (analysis_dir / clip_id / "overlay.json").write_text(
+        json.dumps(
+            {
+                "clip_id": clip_id,
+                "selected_rect": selected_rect,
+                "confidence": confidence,
+                "fallback": fallback,
+                "reason": "test",
+                "candidate_clusters": candidate_clusters,
+            }
+        ),
+        encoding="utf-8",
+    )
 
 
 def _detection(x: float, y: float, width: float, height: float) -> FaceDetection:

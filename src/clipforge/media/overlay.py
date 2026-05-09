@@ -70,6 +70,34 @@ class FaceDetector(Protocol):
 
 
 @dataclass(frozen=True)
+class OverlayDebugAnnotation:
+    """One debug rectangle annotation to draw on a sampled frame."""
+
+    cluster_id: int
+    rect: NormalizedRect
+    confidence: float
+    state: str
+
+    @property
+    def label(self) -> str:
+        return f"cluster {self.cluster_id} | confidence {self.confidence:.3f} | {self.state}"
+
+
+class OverlayDebugImageWriter(Protocol):
+    """Draw overlay debug annotations onto one sampled frame."""
+
+    def write(
+        self,
+        *,
+        frame_path: Path,
+        output_path: Path,
+        annotations: tuple[OverlayDebugAnnotation, ...],
+        banner: str,
+    ) -> None:
+        """Write a debug image for one sampled frame."""
+
+
+@dataclass(frozen=True)
 class _FrameDetection:
     frame_index: int
     rect: NormalizedRect
@@ -161,6 +189,87 @@ class OpenCVFaceDetector:
         return tuple(detections)
 
 
+class OpenCVOverlayDebugImageWriter:
+    """OpenCV-backed writer for overlay debug frame images."""
+
+    def __init__(self) -> None:
+        try:
+            import cv2
+        except ImportError as exc:
+            raise AnalysisError(
+                "OpenCV is not installed; install opencv-python to write overlay debug images."
+            ) from exc
+
+        self._cv2 = cv2
+
+    def write(
+        self,
+        *,
+        frame_path: Path,
+        output_path: Path,
+        annotations: tuple[OverlayDebugAnnotation, ...],
+        banner: str,
+    ) -> None:
+        image = self._cv2.imread(str(frame_path))
+        if image is None:
+            raise AnalysisError(f"Could not read sampled frame for debug image: {frame_path}")
+
+        height, width = image.shape[:2]
+        self._draw_label(image, banner, (8, 24), color=(255, 255, 255), background=(32, 32, 32))
+        for annotation in annotations:
+            color = _debug_color(annotation.state)
+            left, top, right, bottom = _rect_pixels(annotation.rect, width=width, height=height)
+            self._cv2.rectangle(image, (left, top), (right, bottom), color, 2)
+            self._draw_label(
+                image,
+                annotation.label,
+                (left, max(18, top - 8)),
+                color=(255, 255, 255),
+                background=color,
+            )
+
+        ensure_directory(output_path.parent)
+        if not self._cv2.imwrite(str(output_path), image):
+            raise AnalysisError(f"Could not write overlay debug image: {output_path}")
+
+    def _draw_label(
+        self,
+        image: object,
+        text: str,
+        origin: tuple[int, int],
+        *,
+        color: tuple[int, int, int],
+        background: tuple[int, int, int],
+    ) -> None:
+        font = self._cv2.FONT_HERSHEY_SIMPLEX
+        scale = 0.52
+        thickness = 1
+        (text_width, text_height), baseline = self._cv2.getTextSize(
+            text,
+            font,
+            scale,
+            thickness,
+        )
+        x, y = origin
+        self._cv2.rectangle(
+            image,
+            (x - 4, y - text_height - baseline - 4),
+            (x + text_width + 4, y + baseline + 4),
+            background,
+            -1,
+        )
+        self._cv2.putText(
+            image,
+            text,
+            (x, y),
+            font,
+            scale,
+            color,
+            thickness,
+            self._cv2.LINE_AA,
+        )
+
+
 def analyze_overlay(
     *,
     clip_id: str,
@@ -246,6 +355,44 @@ def analyze_overlay(
         reason=_selection_reason(selected, scored_clusters),
         candidate_clusters=scored_clusters,
     )
+
+
+def write_overlay_debug_images(
+    *,
+    clip_id: str,
+    analysis_dir: Path = ANALYSIS_DIR,
+    image_writer: OverlayDebugImageWriter | None = None,
+) -> Path:
+    """Draw overlay inference candidates on sampled frames and return the debug dir."""
+
+    safe_clip_id = _safe_clip_id(clip_id)
+    clip_analysis_dir = analysis_dir / safe_clip_id
+    frames_metadata_path = clip_analysis_dir / "frames.json"
+    overlay_path = clip_analysis_dir / "overlay.json"
+    if not frames_metadata_path.is_file():
+        raise AnalysisError(f"Frame metadata not found: {frames_metadata_path}")
+    if not overlay_path.is_file():
+        raise AnalysisError(f"Overlay metadata not found: {overlay_path}")
+
+    frames_metadata = _read_frames_metadata(frames_metadata_path)
+    frame_paths = _frame_paths_from_metadata(frames_metadata, base_path=frames_metadata_path.parent)
+    _require_existing_frames(frame_paths)
+    overlay_metadata = _read_overlay_metadata(overlay_path)
+    annotations = _debug_annotations(overlay_metadata)
+    banner = _debug_banner(overlay_metadata)
+    writer = image_writer or OpenCVOverlayDebugImageWriter()
+    debug_dir = ensure_directory(clip_analysis_dir / "debug")
+
+    for index, frame_path in enumerate(frame_paths, start=1):
+        output_path = debug_dir / f"{frame_path.stem}_overlay_debug{frame_path.suffix or '.jpg'}"
+        writer.write(
+            frame_path=frame_path,
+            output_path=output_path,
+            annotations=annotations,
+            banner=banner,
+        )
+
+    return debug_dir
 
 
 def _detect_faces(
@@ -528,6 +675,16 @@ def _read_frames_metadata(path: Path) -> dict[str, object]:
     return payload
 
 
+def _read_overlay_metadata(path: Path) -> dict[str, object]:
+    try:
+        payload = json.loads(path.read_text(encoding="utf-8"))
+    except json.JSONDecodeError as exc:
+        raise AnalysisError(f"Overlay metadata is not valid JSON: {path}") from exc
+    if not isinstance(payload, dict):
+        raise AnalysisError(f"Overlay metadata must be a JSON object: {path}")
+    return payload
+
+
 def _frame_paths_from_metadata(
     payload: dict[str, object],
     *,
@@ -546,11 +703,124 @@ def _frame_paths_from_metadata(
     return tuple(paths)
 
 
+def _debug_annotations(payload: dict[str, object]) -> tuple[OverlayDebugAnnotation, ...]:
+    clusters = payload.get("candidate_clusters")
+    if not isinstance(clusters, list):
+        raise AnalysisError("Overlay metadata must include a candidate_clusters list.")
+
+    selected_rect = _optional_rect_from_payload(payload.get("selected_rect"))
+    fallback = bool(payload.get("fallback"))
+    annotations: list[OverlayDebugAnnotation] = []
+    for cluster in clusters:
+        if not isinstance(cluster, dict):
+            raise AnalysisError("Overlay metadata contains an invalid candidate cluster.")
+        rect = _rect_from_payload(cluster.get("rect"), context="candidate cluster rect")
+        cluster_id = _int_from_payload(cluster.get("cluster_id"), context="cluster_id")
+        confidence = _float_from_payload(cluster.get("confidence"), context="cluster confidence")
+        state = _debug_state(rect=rect, selected_rect=selected_rect, fallback=fallback)
+        annotations.append(
+            OverlayDebugAnnotation(
+                cluster_id=cluster_id,
+                rect=rect,
+                confidence=confidence,
+                state=state,
+            )
+        )
+    return tuple(annotations)
+
+
+def _debug_banner(payload: dict[str, object]) -> str:
+    confidence = _float_from_payload(payload.get("confidence"), context="overlay confidence")
+    fallback = bool(payload.get("fallback"))
+    state = "fallback" if fallback else "selected"
+    return f"overlay {state} | confidence {confidence:.3f}"
+
+
+def _debug_state(
+    *,
+    rect: NormalizedRect,
+    selected_rect: NormalizedRect | None,
+    fallback: bool,
+) -> str:
+    if fallback:
+        return "fallback candidate"
+    if selected_rect is not None and _rects_close(rect, selected_rect):
+        return "selected"
+    return "candidate"
+
+
+def _optional_rect_from_payload(value: object) -> NormalizedRect | None:
+    if value is None:
+        return None
+    return _rect_from_payload(value, context="selected_rect")
+
+
+def _rect_from_payload(value: object, *, context: str) -> NormalizedRect:
+    if not isinstance(value, dict):
+        raise AnalysisError(f"Overlay metadata contains an invalid {context}.")
+    rect = NormalizedRect(
+        x=_float_from_payload(value.get("x"), context=f"{context}.x"),
+        y=_float_from_payload(value.get("y"), context=f"{context}.y"),
+        width=_float_from_payload(value.get("width"), context=f"{context}.width"),
+        height=_float_from_payload(value.get("height"), context=f"{context}.height"),
+    )
+    if not _is_valid_rect(rect):
+        raise AnalysisError(f"Overlay metadata contains an out-of-bounds {context}.")
+    return rect
+
+
+def _float_from_payload(value: object, *, context: str) -> float:
+    if not isinstance(value, (int, float)):
+        raise AnalysisError(f"Overlay metadata contains an invalid {context}.")
+    return float(value)
+
+
+def _int_from_payload(value: object, *, context: str) -> int:
+    if not isinstance(value, int):
+        raise AnalysisError(f"Overlay metadata contains an invalid {context}.")
+    return value
+
+
 def _require_existing_frames(frame_paths: tuple[Path, ...]) -> None:
     missing = tuple(path for path in frame_paths if not path.is_file())
     if missing:
         formatted = ", ".join(str(path) for path in missing)
         raise AnalysisError(f"Sampled frame file(s) not found: {formatted}")
+
+
+def _rect_pixels(
+    rect: NormalizedRect,
+    *,
+    width: int,
+    height: int,
+) -> tuple[int, int, int, int]:
+    left = round(rect.x * width)
+    top = round(rect.y * height)
+    right = round((rect.x + rect.width) * width)
+    bottom = round((rect.y + rect.height) * height)
+    return (
+        max(0, min(width - 1, left)),
+        max(0, min(height - 1, top)),
+        max(0, min(width - 1, right)),
+        max(0, min(height - 1, bottom)),
+    )
+
+
+def _debug_color(state: str) -> tuple[int, int, int]:
+    if state == "selected":
+        return (40, 220, 40)
+    if state == "fallback candidate":
+        return (0, 180, 255)
+    return (255, 180, 0)
+
+
+def _rects_close(first: NormalizedRect, second: NormalizedRect) -> bool:
+    return (
+        abs(first.x - second.x) <= 0.0005
+        and abs(first.y - second.y) <= 0.0005
+        and abs(first.width - second.width) <= 0.0005
+        and abs(first.height - second.height) <= 0.0005
+    )
 
 
 def _is_valid_rect(rect: NormalizedRect) -> bool:
