@@ -269,6 +269,23 @@ def test_main_routes_analyze_frames_command(monkeypatch, capsys, tmp_path: Path)
     assert capsys.readouterr().out.splitlines() == [str(metadata_path)]
 
 
+def test_main_routes_analyze_overlay_command(monkeypatch, capsys, tmp_path: Path) -> None:
+    overlay_path = tmp_path / "analysis" / "clip-123" / "overlay.json"
+    calls: list[str] = []
+
+    def fake_analyze_overlay(*, clip_id: str) -> Path:
+        calls.append(clip_id)
+        return overlay_path
+
+    monkeypatch.setattr("clipforge.pipeline.cli.analyze_overlay", fake_analyze_overlay)
+
+    exit_code = main(["analyze", "overlay", "--clip-id", "clip-123"])
+
+    assert exit_code == 0
+    assert calls == ["clip-123"]
+    assert capsys.readouterr().out.splitlines() == [str(overlay_path)]
+
+
 def test_main_routes_clips_command(monkeypatch, capsys, tmp_path: Path) -> None:
     calls: list[dict[str, object]] = []
     recorded: list[dict[str, object]] = []

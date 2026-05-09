@@ -13,6 +13,7 @@ from clipforge.core.config import ConfigError, load_config
 from clipforge.media.analyze import sample_frames
 from clipforge.integrations.twitch import list_channel_clips, twitch_channel_login_from_input
 from clipforge.media.captions import generate_caption_metadata
+from clipforge.media.overlay import analyze_overlay
 from clipforge.pipeline.artifacts import write_clip_discovery_export, write_metadata
 from clipforge.pipeline.state_sync import (
     record_discovered_clips,
@@ -266,6 +267,15 @@ def build_parser() -> argparse.ArgumentParser:
         type=float,
         help="Seconds between sampled frames. Defaults to 2 seconds.",
     )
+    analyze_overlay_parser = analyze_subparsers.add_parser(
+        "overlay",
+        help="Infer the most likely streamer overlay from sampled frames.",
+    )
+    analyze_overlay_parser.add_argument(
+        "--clip-id",
+        required=True,
+        help="Clip ID used for analysis artifact paths.",
+    )
 
     return parser
 
@@ -352,6 +362,11 @@ def _handle_analyze_command(args: argparse.Namespace) -> int:
             interval_seconds=args.interval_seconds,
         )
         print(metadata_path)
+        return 0
+
+    if args.analyze_command == "overlay":
+        overlay_path = analyze_overlay(clip_id=args.clip_id)
+        print(overlay_path)
         return 0
 
     raise CLIError("analyze requires a subcommand.")

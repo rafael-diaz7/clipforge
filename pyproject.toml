@@ -4,6 +4,7 @@ version = "0.1.0"
 description = "Automated clip generation pipeline"
 requires-python = ">=3.11"
 dependencies = [
+    "opencv-python",
     "requests",
     "python-dotenv",
     "yt-dlp"
