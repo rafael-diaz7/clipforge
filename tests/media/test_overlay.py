@@ -72,7 +72,7 @@ def test_stable_corner_face_wins_over_huge_central_face(tmp_path: Path) -> None:
     assert payload["selected_overlay_rect"]["width"] > payload["selected_face_rect"]["width"]
     assert payload["selected_overlay_rect"]["height"] > payload["selected_face_rect"]["height"]
     assert payload["candidate_clusters"][0]["component_scores"]["edge_proximity"] > 0.7
-    assert "expanded into an overlay region" in payload["reason"]
+    assert "expanded into a streamer crop" in payload["reason"]
 
 
 def test_huge_central_face_is_penalized_to_fallback(tmp_path: Path) -> None:
@@ -238,13 +238,121 @@ def test_analyze_overlay_reads_frame_metadata_and_writes_overlay_metadata(
     }
     assert payload["selected_overlay_rect"] == {
         "x": 0.0,
-        "y": 0.57754,
-        "width": 0.484,
-        "height": 0.363,
+        "y": 0.538732,
+        "width": 0.28,
+        "height": 0.4554,
     }
     assert payload["selected_rect"] == payload["selected_overlay_rect"]
     assert payload["candidate_clusters"][0]["face_rect"] == payload["selected_face_rect"]
     assert payload["candidate_clusters"][0]["overlay_rect"] == payload["selected_overlay_rect"]
+
+
+def test_streamer_crop_expands_selected_face_rect(tmp_path: Path) -> None:
+    analysis_dir, frame_names = _write_frames_metadata(tmp_path, clip_id="clip-123", count=8)
+    detector = SyntheticDetector(
+        {name: (_detection(0.04, 0.56, 0.18, 0.18),) for name in frame_names}
+    )
+
+    overlay_path = analyze_overlay(
+        clip_id="clip-123",
+        analysis_dir=analysis_dir,
+        detector=detector,
+    )
+
+    payload = _read_json(overlay_path)
+    face_rect = payload["selected_face_rect"]
+    crop_rect = payload["selected_overlay_rect"]
+    assert payload["fallback"] is False
+    assert crop_rect["width"] > face_rect["width"]
+    assert crop_rect["height"] > face_rect["height"]
+    assert crop_rect["x"] <= face_rect["x"]
+    assert crop_rect["y"] <= face_rect["y"]
+    assert crop_rect["x"] + crop_rect["width"] >= face_rect["x"] + face_rect["width"]
+    assert crop_rect["y"] + crop_rect["height"] >= face_rect["y"] + face_rect["height"]
+
+
+def test_streamer_crop_centers_horizontally_on_face_near_edge(tmp_path: Path) -> None:
+    analysis_dir, frame_names = _write_frames_metadata(tmp_path, clip_id="clip-123", count=8)
+    detector = SyntheticDetector(
+        {name: (_detection(0.03, 0.52, 0.20, 0.20),) for name in frame_names}
+    )
+
+    overlay_path = analyze_overlay(
+        clip_id="clip-123",
+        analysis_dir=analysis_dir,
+        detector=detector,
+    )
+
+    payload = _read_json(overlay_path)
+    face_rect = payload["selected_face_rect"]
+    crop_rect = payload["selected_overlay_rect"]
+    face_center_x = face_rect["x"] + face_rect["width"] / 2
+    crop_center_x = crop_rect["x"] + crop_rect["width"] / 2
+    assert payload["fallback"] is False
+    assert abs(face_center_x - crop_center_x) <= 0.005
+
+
+def test_streamer_crop_places_head_slightly_above_vertical_center(tmp_path: Path) -> None:
+    analysis_dir, frame_names = _write_frames_metadata(tmp_path, clip_id="clip-123", count=8)
+    detector = SyntheticDetector(
+        {name: (_detection(0.05, 0.36, 0.16, 0.16),) for name in frame_names}
+    )
+
+    overlay_path = analyze_overlay(
+        clip_id="clip-123",
+        analysis_dir=analysis_dir,
+        detector=detector,
+    )
+
+    payload = _read_json(overlay_path)
+    face_rect = payload["selected_face_rect"]
+    crop_rect = payload["selected_overlay_rect"]
+    above_head = face_rect["y"] - crop_rect["y"]
+    below_head = crop_rect["y"] + crop_rect["height"] - face_rect["y"] - face_rect["height"]
+    face_center_y = face_rect["y"] + face_rect["height"] / 2
+    crop_center_y = crop_rect["y"] + crop_rect["height"] / 2
+    assert payload["fallback"] is False
+    assert face_center_y < crop_center_y
+    assert below_head > above_head
+
+
+def test_streamer_crop_stays_tight_around_left_side_face(tmp_path: Path) -> None:
+    analysis_dir, frame_names = _write_frames_metadata(tmp_path, clip_id="clip-123", count=8)
+    detector = SyntheticDetector(
+        {name: (_detection(0.03, 0.52, 0.20, 0.20),) for name in frame_names}
+    )
+
+    overlay_path = analyze_overlay(
+        clip_id="clip-123",
+        analysis_dir=analysis_dir,
+        detector=detector,
+    )
+
+    payload = _read_json(overlay_path)
+    crop_rect = payload["selected_overlay_rect"]
+    assert payload["fallback"] is False
+    assert crop_rect["x"] == 0.0
+    assert crop_rect["width"] <= 0.32
+    assert crop_rect["x"] + crop_rect["width"] <= 0.32
+
+
+def test_streamer_crop_does_not_expand_far_into_main_content(tmp_path: Path) -> None:
+    analysis_dir, frame_names = _write_frames_metadata(tmp_path, clip_id="clip-123", count=8)
+    detector = SyntheticDetector(
+        {name: (_detection(0.02, 0.44, 0.22, 0.22),) for name in frame_names}
+    )
+
+    overlay_path = analyze_overlay(
+        clip_id="clip-123",
+        analysis_dir=analysis_dir,
+        detector=detector,
+    )
+
+    payload = _read_json(overlay_path)
+    crop_rect = payload["selected_overlay_rect"]
+    assert payload["fallback"] is False
+    assert crop_rect["width"] <= 0.36
+    assert crop_rect["x"] + crop_rect["width"] < 0.40
 
 
 def test_overlay_expansion_clamps_at_frame_edges(tmp_path: Path) -> None:
@@ -267,7 +375,7 @@ def test_overlay_expansion_clamps_at_frame_edges(tmp_path: Path) -> None:
     assert overlay_rect["x"] + overlay_rect["width"] <= 1.0
     assert overlay_rect["y"] + overlay_rect["height"] <= 1.0
     assert overlay_rect["x"] + overlay_rect["width"] == 1.0
-    assert overlay_rect["y"] + overlay_rect["height"] == 1.0
+    assert overlay_rect["y"] + overlay_rect["height"] >= 0.99
 
 
 def test_write_overlay_debug_images_writes_one_debug_image_per_sampled_frame(

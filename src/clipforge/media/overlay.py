@@ -18,6 +18,13 @@ ANALYSIS_DIR = DATA_DIR / "analysis"
 DEFAULT_OVERLAY_CONFIDENCE_THRESHOLD = 0.58
 CLUSTER_CENTER_THRESHOLD = 0.12
 CLUSTER_SIZE_THRESHOLD = 0.09
+STREAMER_CROP_HORIZONTAL_PADDING_RATIO = 0.28
+STREAMER_CROP_TOP_PADDING_RATIO = 0.32
+STREAMER_CROP_BOTTOM_PADDING_RATIO = 0.75
+STREAMER_CROP_MAX_WIDTH_FACE_RATIO = 1.65
+STREAMER_CROP_MAX_HEIGHT_FACE_RATIO = 2.10
+STREAMER_CROP_MAX_NORMALIZED_WIDTH = 0.36
+STREAMER_CROP_FACE_CENTER_Y_RATIO = 0.42
 
 
 class OverlayDetectorUnavailable(RuntimeError):
@@ -486,7 +493,7 @@ def _score_cluster(
     total_frames: int,
 ) -> _ScoredCluster:
     face_rect = _cluster_rect(cluster)
-    overlay_rect = _expand_face_rect_to_overlay_rect(face_rect)
+    overlay_rect = _expand_face_rect_to_streamer_crop_rect(face_rect)
     frame_count = len({detection.frame_index for detection in cluster.detections})
     prevalence = frame_count / total_frames if total_frames else 0.0
 
@@ -564,38 +571,64 @@ def _cluster_rect(cluster: _Cluster) -> NormalizedRect:
     )
 
 
-def _expand_face_rect_to_overlay_rect(face_rect: NormalizedRect) -> NormalizedRect:
-    aspect = _preferred_overlay_aspect(face_rect)
-    target_height = max(
-        0.16,
-        face_rect.height * 1.65,
-        (face_rect.width / aspect) * 1.12,
+def _expand_face_rect_to_streamer_crop_rect(face_rect: NormalizedRect) -> NormalizedRect:
+    width_cap = min(
+        face_rect.width * STREAMER_CROP_MAX_WIDTH_FACE_RATIO,
+        STREAMER_CROP_MAX_NORMALIZED_WIDTH,
     )
-    target_height = min(1.0, target_height)
-    target_width = max(0.18, target_height * aspect, face_rect.width * 1.9)
-    if target_width > 1.0:
-        target_width = 1.0
-        target_height = min(1.0, max(face_rect.height * 1.08, target_width / aspect))
+    target_width = min(
+        width_cap,
+        face_rect.width * (1.0 + STREAMER_CROP_HORIZONTAL_PADDING_RATIO * 2),
+    )
+    target_width = max(
+        face_rect.width,
+        min(target_width, _centered_rect_extent(face_rect.center_x)),
+    )
 
-    target_height = min(1.0, max(target_height, face_rect.height * 1.08))
+    height_cap = max(
+        face_rect.height,
+        face_rect.height * STREAMER_CROP_MAX_HEIGHT_FACE_RATIO,
+    )
+    target_height = min(
+        height_cap,
+        face_rect.height
+        * (
+            1.0
+            + STREAMER_CROP_TOP_PADDING_RATIO
+            + STREAMER_CROP_BOTTOM_PADDING_RATIO
+        ),
+    )
+    target_height = max(
+        face_rect.height,
+        min(
+            target_height,
+            _biased_rect_extent(
+                face_rect.center_y,
+                target_ratio=STREAMER_CROP_FACE_CENTER_Y_RATIO,
+            ),
+        ),
+    )
 
-    if face_rect.center_x < 0.42:
-        x = face_rect.center_x - target_width * 0.42
-    elif face_rect.center_x > 0.58:
-        x = face_rect.center_x - target_width * 0.58
-    else:
-        x = face_rect.center_x - target_width / 2
+    x = face_rect.center_x - target_width / 2
+    y = face_rect.center_y - target_height * STREAMER_CROP_FACE_CENTER_Y_RATIO
 
-    y = face_rect.center_y - target_height * 0.42
     x = max(face_rect.x + face_rect.width - target_width, min(x, face_rect.x))
     y = max(face_rect.y + face_rect.height - target_height, min(y, face_rect.y))
     return _fit_rect_to_frame(x=x, y=y, width=target_width, height=target_height)
 
 
-def _preferred_overlay_aspect(face_rect: NormalizedRect) -> float:
-    if face_rect.center_x < 0.42 or face_rect.center_x > 0.58:
-        return 4 / 3
-    return 16 / 9
+def _centered_rect_extent(center: float) -> float:
+    return max(0.0, min(center, 1.0 - center) * 2)
+
+
+def _biased_rect_extent(center: float, *, target_ratio: float) -> float:
+    return max(
+        0.0,
+        min(
+            center / target_ratio,
+            (1.0 - center) / (1.0 - target_ratio),
+        ),
+    )
 
 
 def _fit_rect_to_frame(
@@ -698,7 +731,7 @@ def _selection_reason(
 ) -> str:
     components = selected.component_scores
     reason = (
-        "selected stable edge/corner face cluster expanded into an overlay region "
+        "selected stable edge/corner face cluster expanded into a streamer crop "
         f"seen in {selected.frame_count} sampled frame(s); "
         f"prevalence={components['prevalence']:.3f}, "
         f"position_stability={components['position_stability']:.3f}, "
