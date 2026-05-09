@@ -8,7 +8,8 @@ from dataclasses import dataclass
 from pathlib import Path
 from typing import Any
 
-from clipforge.core.config import EXAMPLE_LAYOUTS_DIR
+from clipforge.core.config import DATA_DIR, EXAMPLE_LAYOUTS_DIR
+from clipforge.utils import ensure_directory, safe_filename
 from clipforge.utils.json_validation import required_int
 from clipforge.utils.json_validation import required_list
 from clipforge.utils.json_validation import required_number
@@ -21,6 +22,11 @@ class LayoutError(RuntimeError):
 
 
 DEFAULT_LAYOUT_NAMES = ("center_gameplay", "facecam_focus", "hybrid")
+GENERATED_LAYOUT_NAMES = ("detected_streamer_focus", "detected_hybrid")
+ANALYSIS_DIR = DATA_DIR / "analysis"
+DYNAMIC_LAYOUT_CONFIDENCE_THRESHOLD = 0.58
+SOURCE_ASPECT_RATIO = 16 / 9
+TARGET_ASPECT_RATIO = 9 / 16
 
 
 @dataclass(frozen=True)
@@ -99,6 +105,50 @@ def load_example_layouts(
     """Load the default MVP example layouts in a stable order."""
 
     return tuple(load_example_layout(name, layouts_dir=layouts_dir) for name in names)
+
+
+def generate_detected_layout_candidates(
+    *,
+    clip_id: str,
+    analysis_dir: Path = ANALYSIS_DIR,
+    example_layouts_dir: Path = EXAMPLE_LAYOUTS_DIR,
+    confidence_threshold: float = DYNAMIC_LAYOUT_CONFIDENCE_THRESHOLD,
+) -> tuple[Path, ...]:
+    """Generate deterministic layout JSON candidates from overlay analysis metadata."""
+
+    safe_clip_id = _safe_clip_id(clip_id)
+    clip_analysis_dir = analysis_dir / safe_clip_id
+    overlay_path = clip_analysis_dir / "overlay.json"
+    if not overlay_path.is_file():
+        raise LayoutError(f"Overlay metadata not found: {overlay_path}")
+
+    overlay_metadata = _read_overlay_metadata(overlay_path)
+    layouts_dir = ensure_directory(clip_analysis_dir / "layouts")
+    if _can_generate_dynamic_layouts(
+        overlay_metadata,
+        confidence_threshold=confidence_threshold,
+    ):
+        payloads = _dynamic_layout_payloads(
+            overlay_metadata,
+            overlay_path=overlay_path,
+            example_layouts_dir=example_layouts_dir,
+        )
+    else:
+        payloads = _fallback_layout_payloads(
+            overlay_metadata,
+            overlay_path=overlay_path,
+            example_layouts_dir=example_layouts_dir,
+            confidence_threshold=confidence_threshold,
+        )
+
+    paths: list[Path] = []
+    for name in GENERATED_LAYOUT_NAMES:
+        payload = payloads[name]
+        parse_layout(payload)
+        path = layouts_dir / f"{name}.json"
+        path.write_text(json.dumps(payload, indent=2) + "\n", encoding="utf-8")
+        paths.append(path)
+    return tuple(paths)
 
 
 def parse_layout(payload: Any) -> Layout:
@@ -211,4 +261,293 @@ def _validate_rect_bounds(rect: NormalizedRect, *, context: str) -> None:
 
     if rect.y + rect.height > 1:
         raise LayoutError(f"{context} y + height must be less than or equal to 1.")
+
+
+def _dynamic_layout_payloads(
+    overlay_metadata: dict[str, object],
+    *,
+    overlay_path: Path,
+    example_layouts_dir: Path,
+) -> dict[str, dict[str, object]]:
+    overlay_rect = _overlay_rect_from_metadata(overlay_metadata)
+    center_gameplay = load_example_layout(
+        "center_gameplay",
+        layouts_dir=example_layouts_dir,
+    )
+    gameplay_source = center_gameplay.regions[0].source_region
+    output = center_gameplay.output
+    metadata = _generation_metadata(
+        overlay_metadata,
+        overlay_path=overlay_path,
+        fallback_generated=False,
+    )
+
+    focus_streamer_output = _streamer_output_region(
+        overlay_rect,
+        desired_height=0.52,
+    )
+    hybrid_streamer_output = _streamer_output_region(
+        overlay_rect,
+        desired_height=0.40,
+    )
+
+    return {
+        "detected_streamer_focus": {
+            "name": "detected_streamer_focus",
+            "description": (
+                "Generated streamer-focused layout from detected overlay analysis."
+            ),
+            "output": _output_to_payload(output),
+            "metadata": {
+                **metadata,
+                "layout_goal": "streamer_focus",
+            },
+            "regions": [
+                {
+                    "name": "gameplay",
+                    "source_region": _rect_to_payload(gameplay_source),
+                    "output_region": _rect_to_payload(
+                        NormalizedRect(x=0.0, y=0.0, width=1.0, height=1.0)
+                    ),
+                },
+                {
+                    "name": "streamer",
+                    "source_region": _rect_to_payload(overlay_rect),
+                    "output_region": _rect_to_payload(focus_streamer_output),
+                },
+            ],
+        },
+        "detected_hybrid": {
+            "name": "detected_hybrid",
+            "description": "Generated balanced layout from detected overlay analysis.",
+            "output": _output_to_payload(output),
+            "metadata": {
+                **metadata,
+                "layout_goal": "hybrid",
+            },
+            "regions": [
+                {
+                    "name": "gameplay",
+                    "source_region": _rect_to_payload(gameplay_source),
+                    "output_region": _rect_to_payload(
+                        NormalizedRect(
+                            x=0.0,
+                            y=hybrid_streamer_output.height,
+                            width=1.0,
+                            height=1.0 - hybrid_streamer_output.height,
+                        )
+                    ),
+                },
+                {
+                    "name": "streamer",
+                    "source_region": _rect_to_payload(overlay_rect),
+                    "output_region": _rect_to_payload(hybrid_streamer_output),
+                },
+            ],
+        },
+    }
+
+
+def _fallback_layout_payloads(
+    overlay_metadata: dict[str, object],
+    *,
+    overlay_path: Path,
+    example_layouts_dir: Path,
+    confidence_threshold: float,
+) -> dict[str, dict[str, object]]:
+    metadata = _generation_metadata(
+        overlay_metadata,
+        overlay_path=overlay_path,
+        fallback_generated=True,
+        confidence_threshold=confidence_threshold,
+    )
+    focus_template = load_example_layout(
+        "facecam_focus",
+        layouts_dir=example_layouts_dir,
+    )
+    hybrid_template = load_example_layout("hybrid", layouts_dir=example_layouts_dir)
+
+    return {
+        "detected_streamer_focus": _renamed_layout_payload(
+            focus_template,
+            name="detected_streamer_focus",
+            description=(
+                "Fallback streamer-focused layout generated from static facecam template."
+            ),
+            metadata={
+                **metadata,
+                "layout_goal": "streamer_focus",
+                "source_template": "facecam_focus",
+            },
+        ),
+        "detected_hybrid": _renamed_layout_payload(
+            hybrid_template,
+            name="detected_hybrid",
+            description="Fallback hybrid layout generated from static hybrid template.",
+            metadata={
+                **metadata,
+                "layout_goal": "hybrid",
+                "source_template": "hybrid",
+            },
+        ),
+    }
+
+
+def _renamed_layout_payload(
+    layout: Layout,
+    *,
+    name: str,
+    description: str,
+    metadata: dict[str, object],
+) -> dict[str, object]:
+    return {
+        "name": name,
+        "description": description,
+        "output": _output_to_payload(layout.output),
+        "metadata": metadata,
+        "regions": [_region_to_payload(region) for region in layout.regions],
+    }
+
+
+def _region_to_payload(region: LayoutRegion) -> dict[str, object]:
+    return {
+        "name": region.name,
+        "source_region": _rect_to_payload(region.source_region),
+        "output_region": _rect_to_payload(region.output_region),
+    }
+
+
+def _output_to_payload(output: OutputSize) -> dict[str, int]:
+    return {
+        "width": output.width,
+        "height": output.height,
+    }
+
+
+def _generation_metadata(
+    overlay_metadata: dict[str, object],
+    *,
+    overlay_path: Path,
+    fallback_generated: bool,
+    confidence_threshold: float | None = None,
+) -> dict[str, object]:
+    metadata: dict[str, object] = {
+        "generated_by": "clipforge analyze layouts",
+        "generation_source": "overlay_analysis",
+        "overlay_path": str(overlay_path),
+        "overlay_confidence": _overlay_confidence(overlay_metadata),
+        "overlay_fallback": bool(overlay_metadata.get("fallback")),
+        "fallback_generated": fallback_generated,
+        "overlay_reason": str(overlay_metadata.get("reason") or ""),
+    }
+    selected_overlay_rect = overlay_metadata.get("selected_overlay_rect")
+    if isinstance(selected_overlay_rect, dict):
+        metadata["selected_overlay_rect"] = selected_overlay_rect
+    if confidence_threshold is not None:
+        metadata["confidence_threshold"] = confidence_threshold
+    return metadata
+
+
+def _can_generate_dynamic_layouts(
+    overlay_metadata: dict[str, object],
+    *,
+    confidence_threshold: float,
+) -> bool:
+    if bool(overlay_metadata.get("fallback")):
+        return False
+    if _overlay_confidence(overlay_metadata) < confidence_threshold:
+        return False
+    return overlay_metadata.get("selected_overlay_rect") is not None
+
+
+def _overlay_rect_from_metadata(payload: dict[str, object]) -> NormalizedRect:
+    rect_payload = payload.get("selected_overlay_rect")
+    if not isinstance(rect_payload, dict):
+        raise LayoutError("Overlay metadata must include selected_overlay_rect.")
+    return _rect_from_payload(rect_payload, context="selected_overlay_rect")
+
+
+def _rect_from_payload(payload: dict[str, object], *, context: str) -> NormalizedRect:
+    rect = NormalizedRect(
+        x=_number_from_payload(payload.get("x"), context=f"{context}.x"),
+        y=_number_from_payload(payload.get("y"), context=f"{context}.y"),
+        width=_number_from_payload(payload.get("width"), context=f"{context}.width"),
+        height=_number_from_payload(payload.get("height"), context=f"{context}.height"),
+    )
+    _validate_rect_bounds(rect, context=context)
+    return rect
+
+
+def _streamer_output_region(
+    source_region: NormalizedRect,
+    *,
+    desired_height: float,
+) -> NormalizedRect:
+    source_aspect_ratio = _source_region_aspect_ratio(source_region)
+    full_width_output_aspect_ratio = TARGET_ASPECT_RATIO / desired_height
+    width = (
+        source_aspect_ratio * desired_height / TARGET_ASPECT_RATIO
+        if full_width_output_aspect_ratio > source_aspect_ratio
+        else 1.0
+    )
+    width = _clamp(width, minimum=0.0, maximum=1.0)
+    return NormalizedRect(
+        x=_round((1.0 - width) / 2),
+        y=0.0,
+        width=_round(width),
+        height=_round(desired_height),
+    )
+
+
+def _source_region_aspect_ratio(rect: NormalizedRect) -> float:
+    return (rect.width * SOURCE_ASPECT_RATIO) / rect.height
+
+
+def _read_overlay_metadata(path: Path) -> dict[str, object]:
+    try:
+        payload = json.loads(path.read_text(encoding="utf-8"))
+    except json.JSONDecodeError as exc:
+        raise LayoutError(f"Overlay metadata is not valid JSON: {path}") from exc
+    except OSError as exc:
+        raise LayoutError(f"Could not read overlay metadata {path}: {exc}") from exc
+
+    if not isinstance(payload, dict):
+        raise LayoutError(f"Overlay metadata must be a JSON object: {path}")
+    return payload
+
+
+def _overlay_confidence(payload: dict[str, object]) -> float:
+    value = payload.get("confidence", 0.0)
+    if not isinstance(value, (int, float)) or not math.isfinite(float(value)):
+        return 0.0
+    return float(value)
+
+
+def _number_from_payload(value: object, *, context: str) -> float:
+    if not isinstance(value, (int, float)):
+        raise LayoutError(f"Overlay metadata contains an invalid {context}.")
+    return float(value)
+
+
+def _rect_to_payload(rect: NormalizedRect) -> dict[str, float]:
+    return {
+        "x": _round(rect.x),
+        "y": _round(rect.y),
+        "width": _round(rect.width),
+        "height": _round(rect.height),
+    }
+
+
+def _safe_clip_id(clip_id: str) -> str:
+    if not clip_id.strip():
+        raise LayoutError("clip_id must not be empty.")
+    return safe_filename(clip_id)
+
+
+def _clamp(value: float, *, minimum: float, maximum: float) -> float:
+    return max(minimum, min(maximum, value))
+
+
+def _round(value: float) -> float:
+    return round(value, 6)
 

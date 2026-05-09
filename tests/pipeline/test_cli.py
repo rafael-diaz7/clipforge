@@ -310,6 +310,29 @@ def test_main_routes_analyze_overlay_debug_command(
     assert capsys.readouterr().out.splitlines() == [str(debug_dir)]
 
 
+def test_main_routes_analyze_layouts_command(monkeypatch, capsys, tmp_path: Path) -> None:
+    layout_paths = (
+        tmp_path / "analysis" / "clip-123" / "layouts" / "detected_streamer_focus.json",
+        tmp_path / "analysis" / "clip-123" / "layouts" / "detected_hybrid.json",
+    )
+    calls: list[str] = []
+
+    def fake_generate_detected_layout_candidates(*, clip_id: str) -> tuple[Path, ...]:
+        calls.append(clip_id)
+        return layout_paths
+
+    monkeypatch.setattr(
+        "clipforge.pipeline.cli.generate_detected_layout_candidates",
+        fake_generate_detected_layout_candidates,
+    )
+
+    exit_code = main(["analyze", "layouts", "--clip-id", "clip-123"])
+
+    assert exit_code == 0
+    assert calls == ["clip-123"]
+    assert capsys.readouterr().out.splitlines() == [str(path) for path in layout_paths]
+
+
 def test_main_routes_clips_command(monkeypatch, capsys, tmp_path: Path) -> None:
     calls: list[dict[str, object]] = []
     recorded: list[dict[str, object]] = []

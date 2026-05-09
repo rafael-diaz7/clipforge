@@ -13,6 +13,7 @@ from clipforge.core.config import ConfigError, load_config
 from clipforge.media.analyze import sample_frames
 from clipforge.integrations.twitch import list_channel_clips, twitch_channel_login_from_input
 from clipforge.media.captions import generate_caption_metadata
+from clipforge.media.layouts import generate_detected_layout_candidates
 from clipforge.media.overlay import analyze_overlay, write_overlay_debug_images
 from clipforge.pipeline.artifacts import write_clip_discovery_export, write_metadata
 from clipforge.pipeline.state_sync import (
@@ -285,6 +286,15 @@ def build_parser() -> argparse.ArgumentParser:
         required=True,
         help="Clip ID used for analysis artifact paths.",
     )
+    analyze_layouts_parser = analyze_subparsers.add_parser(
+        "layouts",
+        help="Generate detected vertical layout candidates from overlay analysis.",
+    )
+    analyze_layouts_parser.add_argument(
+        "--clip-id",
+        required=True,
+        help="Clip ID used for analysis artifact paths.",
+    )
 
     return parser
 
@@ -381,6 +391,11 @@ def _handle_analyze_command(args: argparse.Namespace) -> int:
     if args.analyze_command == "overlay-debug":
         debug_dir = write_overlay_debug_images(clip_id=args.clip_id)
         print(debug_dir)
+        return 0
+
+    if args.analyze_command == "layouts":
+        for layout_path in generate_detected_layout_candidates(clip_id=args.clip_id):
+            print(layout_path)
         return 0
 
     raise CLIError("analyze requires a subcommand.")

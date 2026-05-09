@@ -9,10 +9,13 @@ from clipforge.media.layouts import (
     DEFAULT_LAYOUT_NAMES,
     LayoutError,
     NormalizedRect,
+    generate_detected_layout_candidates,
+    load_example_layout,
     load_example_layouts,
     load_layout,
     parse_layout,
 )
+from clipforge.media.render import build_filter_complex
 
 
 def test_load_layout_returns_validated_layout(tmp_path: Path) -> None:
@@ -180,3 +183,172 @@ def test_parse_layout_rejects_non_finite_coordinates() -> None:
                 ],
             }
         )
+
+
+def test_generate_detected_layouts_from_high_confidence_overlay(tmp_path: Path) -> None:
+    analysis_dir = tmp_path / "analysis"
+    overlay_rect = {"x": 0.02, "y": 0.08, "width": 0.28, "height": 0.34}
+    _write_overlay_metadata(
+        analysis_dir,
+        clip_id="clip-123",
+        selected_overlay_rect=overlay_rect,
+        confidence=0.82,
+        fallback=False,
+    )
+
+    paths = generate_detected_layout_candidates(
+        clip_id="clip-123",
+        analysis_dir=analysis_dir,
+    )
+
+    assert paths == (
+        analysis_dir / "clip-123" / "layouts" / "detected_streamer_focus.json",
+        analysis_dir / "clip-123" / "layouts" / "detected_hybrid.json",
+    )
+    layouts = tuple(load_layout(path) for path in paths)
+    assert [layout.name for layout in layouts] == [
+        "detected_streamer_focus",
+        "detected_hybrid",
+    ]
+    assert layouts[0].regions[1].name == "streamer"
+    assert layouts[0].regions[1].source_region == NormalizedRect(**overlay_rect)
+    assert layouts[1].regions[1].source_region == NormalizedRect(**overlay_rect)
+    assert layouts[0].regions[1].output_region.height > layouts[1].regions[1].output_region.height
+
+    payload = _read_json(paths[0])
+    assert payload["metadata"]["generation_source"] == "overlay_analysis"
+    assert payload["metadata"]["overlay_confidence"] == 0.82
+    assert payload["metadata"]["fallback_generated"] is False
+
+
+def test_fallback_overlay_generates_static_layout_candidates(tmp_path: Path) -> None:
+    analysis_dir = tmp_path / "analysis"
+    _write_overlay_metadata(
+        analysis_dir,
+        clip_id="clip-123",
+        selected_overlay_rect=None,
+        confidence=0.31,
+        fallback=True,
+        reason="fallback: no face detections found in sampled frames",
+    )
+
+    paths = generate_detected_layout_candidates(
+        clip_id="clip-123",
+        analysis_dir=analysis_dir,
+    )
+
+    focus = load_layout(paths[0])
+    hybrid = load_layout(paths[1])
+    assert focus.name == "detected_streamer_focus"
+    assert hybrid.name == "detected_hybrid"
+    assert focus.regions == load_example_layout("facecam_focus").regions
+    assert hybrid.regions == load_example_layout("hybrid").regions
+
+    payload = _read_json(paths[1])
+    assert payload["metadata"]["fallback_generated"] is True
+    assert payload["metadata"]["source_template"] == "hybrid"
+    assert payload["metadata"]["confidence_threshold"] == 0.58
+
+
+def test_generated_layout_json_matches_renderer_schema(tmp_path: Path) -> None:
+    analysis_dir = tmp_path / "analysis"
+    _write_overlay_metadata(
+        analysis_dir,
+        clip_id="clip-123",
+        selected_overlay_rect={"x": 0.64, "y": 0.04, "width": 0.24, "height": 0.28},
+        confidence=0.9,
+        fallback=False,
+    )
+
+    paths = generate_detected_layout_candidates(
+        clip_id="clip-123",
+        analysis_dir=analysis_dir,
+    )
+
+    for path in paths:
+        layout = load_layout(path)
+        filter_complex = build_filter_complex(layout)
+        assert "[0:v]split=2[src0][src1]" in filter_complex
+        assert filter_complex.endswith("[out]")
+
+
+def test_generated_layouts_are_deterministic(tmp_path: Path) -> None:
+    analysis_dir = tmp_path / "analysis"
+    _write_overlay_metadata(
+        analysis_dir,
+        clip_id="clip-123",
+        selected_overlay_rect={"x": 0.04, "y": 0.12, "width": 0.2, "height": 0.3},
+        confidence=0.75,
+        fallback=False,
+    )
+
+    first_paths = generate_detected_layout_candidates(
+        clip_id="clip-123",
+        analysis_dir=analysis_dir,
+    )
+    first_contents = tuple(path.read_text(encoding="utf-8") for path in first_paths)
+    second_paths = generate_detected_layout_candidates(
+        clip_id="clip-123",
+        analysis_dir=analysis_dir,
+    )
+    second_contents = tuple(path.read_text(encoding="utf-8") for path in second_paths)
+
+    assert second_paths == first_paths
+    assert second_contents == first_contents
+
+
+def test_low_confidence_overlay_uses_stable_fallback_paths(tmp_path: Path) -> None:
+    analysis_dir = tmp_path / "analysis"
+    _write_overlay_metadata(
+        analysis_dir,
+        clip_id="clip-123",
+        selected_overlay_rect={"x": 0.04, "y": 0.12, "width": 0.2, "height": 0.3},
+        confidence=0.2,
+        fallback=False,
+    )
+
+    paths = generate_detected_layout_candidates(
+        clip_id="clip-123",
+        analysis_dir=analysis_dir,
+    )
+
+    assert paths == (
+        analysis_dir / "clip-123" / "layouts" / "detected_streamer_focus.json",
+        analysis_dir / "clip-123" / "layouts" / "detected_hybrid.json",
+    )
+    assert _read_json(paths[0])["metadata"]["fallback_generated"] is True
+
+
+def _write_overlay_metadata(
+    analysis_dir: Path,
+    *,
+    clip_id: str,
+    selected_overlay_rect: dict[str, float] | None,
+    confidence: float,
+    fallback: bool,
+    reason: str = "selected stable edge/corner face cluster",
+) -> Path:
+    path = analysis_dir / clip_id / "overlay.json"
+    path.parent.mkdir(parents=True)
+    path.write_text(
+        json.dumps(
+            {
+                "clip_id": clip_id,
+                "selected_rect": selected_overlay_rect,
+                "selected_face_rect": None,
+                "selected_overlay_rect": selected_overlay_rect,
+                "confidence": confidence,
+                "fallback": fallback,
+                "reason": reason,
+                "candidate_clusters": [],
+            }
+        ),
+        encoding="utf-8",
+    )
+    return path
+
+
+def _read_json(path: Path) -> dict[str, object]:
+    payload = json.loads(path.read_text(encoding="utf-8"))
+    assert isinstance(payload, dict)
+    return payload
