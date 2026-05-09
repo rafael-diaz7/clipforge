@@ -142,6 +142,7 @@ def process_clip(
     )
     source_path = download_result.source_path
     caption_metadata_path = None
+    reused_caption_metadata = False
     if _should_generate_captions(generate_captions, config=config):
         existing_caption_metadata_path = deterministic_caption_metadata_path(
             clip_id,
@@ -149,6 +150,7 @@ def process_clip(
         )
         if existing_caption_metadata_path.exists() and not force_captions:
             caption_metadata_path = existing_caption_metadata_path
+            reused_caption_metadata = True
             LOGGER.info(
                 "Reusing existing caption metadata for clip %s from %s.",
                 clip_id,
@@ -211,7 +213,10 @@ def process_clip(
 
     print(f"source: {source_path}")
     if caption_metadata_path is not None:
-        print(f"captions: {caption_metadata_path}")
+        if reused_caption_metadata:
+            print(f"captions: reusing existing {caption_metadata_path}")
+        else:
+            print(f"captions: {caption_metadata_path}")
     for output in outputs:
         print(f"{output['layout']}: {output['path']}")
     print(f"metadata: {metadata_path}")

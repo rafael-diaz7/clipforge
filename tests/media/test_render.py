@@ -68,6 +68,23 @@ def test_build_filter_complex_builds_single_region_graph() -> None:
     assert "[base][region0]overlay=0:0:format=auto:shortest=1[out]" in filter_complex
 
 
+def test_build_filter_complex_applies_optional_region_blur_effect() -> None:
+    filter_complex = build_filter_complex(
+        _layout(
+            LayoutRegion(
+                name="background",
+                source_region=NormalizedRect(x=0.0, y=0.0, width=1.0, height=1.0),
+                output_region=NormalizedRect(x=0.0, y=0.0, width=1.0, height=1.0),
+                effect="blur",
+            )
+        )
+    )
+
+    assert "crop=iw*1:ih*1:iw*0:ih*0" in filter_complex
+    assert "scale=1080:1920:force_original_aspect_ratio=increase" in filter_complex
+    assert "setsar=1,boxblur=20:1[region0]" in filter_complex
+
+
 def test_build_filter_complex_overlays_regions_in_layout_order() -> None:
     layout = _layout(
         _region(

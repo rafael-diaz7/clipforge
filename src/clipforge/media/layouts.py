@@ -27,6 +27,7 @@ ANALYSIS_DIR = DATA_DIR / "analysis"
 DYNAMIC_LAYOUT_CONFIDENCE_THRESHOLD = 0.58
 SOURCE_ASPECT_RATIO = 16 / 9
 TARGET_ASPECT_RATIO = 9 / 16
+SUPPORTED_REGION_EFFECTS = frozenset({"blur"})
 
 
 @dataclass(frozen=True)
@@ -54,6 +55,7 @@ class LayoutRegion:
     name: str
     source_region: NormalizedRect
     output_region: NormalizedRect
+    effect: str | None = None
 
 
 @dataclass(frozen=True)
@@ -224,7 +226,19 @@ def _parse_region(payload: Any, *, index: int) -> LayoutRegion:
             ),
             context=f"{context}.output_region",
         ),
+        effect=_parse_region_effect(payload.get("effect"), context=f"{context}.effect"),
     )
+
+
+def _parse_region_effect(value: Any, *, context: str) -> str | None:
+    if value is None:
+        return None
+    if not isinstance(value, str):
+        raise LayoutError(f"{context} must be a string.")
+    if value not in SUPPORTED_REGION_EFFECTS:
+        supported = ", ".join(sorted(SUPPORTED_REGION_EFFECTS))
+        raise LayoutError(f"{context} must be one of: {supported}.")
+    return value
 
 
 def _parse_rect(payload: dict[str, Any], *, context: str) -> NormalizedRect:
@@ -282,14 +296,13 @@ def _dynamic_layout_payloads(
         fallback_generated=False,
     )
 
-    focus_streamer_output = _streamer_output_region(
+    full_source = NormalizedRect(x=0.0, y=0.0, width=1.0, height=1.0)
+    full_output = NormalizedRect(x=0.0, y=0.0, width=1.0, height=1.0)
+    focus_streamer_output = _centered_streamer_output_region(
         overlay_rect,
-        desired_height=0.52,
+        desired_height=0.62,
     )
-    hybrid_streamer_output = _streamer_output_region(
-        overlay_rect,
-        desired_height=0.40,
-    )
+    hybrid_streamer_output = NormalizedRect(x=0.0, y=0.0, width=1.0, height=0.40)
 
     return {
         "detected_streamer_focus": {
@@ -304,11 +317,10 @@ def _dynamic_layout_payloads(
             },
             "regions": [
                 {
-                    "name": "gameplay",
-                    "source_region": _rect_to_payload(gameplay_source),
-                    "output_region": _rect_to_payload(
-                        NormalizedRect(x=0.0, y=0.0, width=1.0, height=1.0)
-                    ),
+                    "name": "background",
+                    "source_region": _rect_to_payload(full_source),
+                    "output_region": _rect_to_payload(full_output),
+                    "effect": "blur",
                 },
                 {
                     "name": "streamer",
@@ -414,6 +426,7 @@ def _region_to_payload(region: LayoutRegion) -> dict[str, object]:
         "name": region.name,
         "source_region": _rect_to_payload(region.source_region),
         "output_region": _rect_to_payload(region.output_region),
+        **({"effect": region.effect} if region.effect is not None else {}),
     }
 
 
@@ -496,6 +509,20 @@ def _streamer_output_region(
         y=0.0,
         width=_round(width),
         height=_round(desired_height),
+    )
+
+
+def _centered_streamer_output_region(
+    source_region: NormalizedRect,
+    *,
+    desired_height: float,
+) -> NormalizedRect:
+    region = _streamer_output_region(source_region, desired_height=desired_height)
+    return NormalizedRect(
+        x=region.x,
+        y=_round((1.0 - region.height) / 2),
+        width=region.width,
+        height=region.height,
     )
 
 

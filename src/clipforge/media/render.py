@@ -461,7 +461,7 @@ def _split_labels(count: int) -> str:
 
 def _region_filter(region: LayoutRegion, output_rect: PixelRect) -> str:
     source = region.source_region
-    return (
+    filter_chain = (
         f"crop=iw*{_fmt(source.width)}:ih*{_fmt(source.height)}:"
         f"iw*{_fmt(source.x)}:ih*{_fmt(source.y)},"
         f"scale={output_rect.width}:{output_rect.height}:"
@@ -469,6 +469,9 @@ def _region_filter(region: LayoutRegion, output_rect: PixelRect) -> str:
         f"crop={output_rect.width}:{output_rect.height},"
         "setsar=1"
     )
+    if region.effect == "blur":
+        filter_chain += ",boxblur=20:1"
+    return filter_chain
 
 
 def _fmt(value: float) -> str:

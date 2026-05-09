@@ -192,6 +192,7 @@ Planned region concepts:
 - `facecam`: A region intended to emphasize the streamer camera area.
 - `background`: A full-canvas or blurred/scaled base layer behind foreground regions.
 - `overlay`: A foreground element placed on top of another region.
+- `effect`: An optional per-region render effect. The current supported value is `"blur"` for blurred background layers.
 
 An MVP layout template should include enough information for the renderer to generate one vertical candidate:
 

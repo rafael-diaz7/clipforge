@@ -185,6 +185,35 @@ def test_parse_layout_rejects_non_finite_coordinates() -> None:
         )
 
 
+def test_parse_layout_rejects_unsupported_region_effect() -> None:
+    with pytest.raises(LayoutError, match="must be one of: blur"):
+        parse_layout(
+            {
+                "name": "bad",
+                "description": "Bad effect.",
+                "output": {"width": 1080, "height": 1920},
+                "regions": [
+                    {
+                        "name": "background",
+                        "source_region": {
+                            "x": 0.0,
+                            "y": 0.0,
+                            "width": 1.0,
+                            "height": 1.0,
+                        },
+                        "output_region": {
+                            "x": 0.0,
+                            "y": 0.0,
+                            "width": 1.0,
+                            "height": 1.0,
+                        },
+                        "effect": "sharpen",
+                    }
+                ],
+            }
+        )
+
+
 def test_generate_detected_layouts_from_high_confidence_overlay(tmp_path: Path) -> None:
     analysis_dir = tmp_path / "analysis"
     overlay_rect = {"x": 0.02, "y": 0.08, "width": 0.28, "height": 0.34}
@@ -210,15 +239,44 @@ def test_generate_detected_layouts_from_high_confidence_overlay(tmp_path: Path) 
         "detected_streamer_focus",
         "detected_hybrid",
     ]
-    assert layouts[0].regions[1].name == "streamer"
-    assert layouts[0].regions[1].source_region == NormalizedRect(**overlay_rect)
-    assert layouts[1].regions[1].source_region == NormalizedRect(**overlay_rect)
-    assert layouts[0].regions[1].output_region.height > layouts[1].regions[1].output_region.height
+    focus_background = layouts[0].regions[0]
+    focus_streamer = layouts[0].regions[1]
+    hybrid_gameplay = layouts[1].regions[0]
+    hybrid_streamer = layouts[1].regions[1]
+
+    assert focus_background.name == "background"
+    assert focus_background.source_region == NormalizedRect(
+        x=0.0,
+        y=0.0,
+        width=1.0,
+        height=1.0,
+    )
+    assert focus_background.effect == "blur"
+    assert focus_streamer.name == "streamer"
+    assert focus_streamer.source_region == NormalizedRect(**overlay_rect)
+    assert focus_streamer.source_region != focus_background.source_region
+    assert focus_streamer.output_region.y > 0.0
+    assert focus_streamer.output_region.y + focus_streamer.output_region.height < 1.0
+    assert hybrid_streamer.source_region == NormalizedRect(**overlay_rect)
+    assert hybrid_streamer.output_region == NormalizedRect(
+        x=0.0,
+        y=0.0,
+        width=1.0,
+        height=0.4,
+    )
+    assert hybrid_gameplay.output_region == NormalizedRect(
+        x=0.0,
+        y=0.4,
+        width=1.0,
+        height=0.6,
+    )
+    assert focus_streamer.output_region.height > hybrid_streamer.output_region.height
 
     payload = _read_json(paths[0])
     assert payload["metadata"]["generation_source"] == "overlay_analysis"
     assert payload["metadata"]["overlay_confidence"] == 0.82
     assert payload["metadata"]["fallback_generated"] is False
+    assert payload["regions"][0]["effect"] == "blur"
 
 
 def test_fallback_overlay_generates_static_layout_candidates(tmp_path: Path) -> None:
@@ -268,8 +326,12 @@ def test_generated_layout_json_matches_renderer_schema(tmp_path: Path) -> None:
     for path in paths:
         layout = load_layout(path)
         filter_complex = build_filter_complex(layout)
-        assert "[0:v]split=2[src0][src1]" in filter_complex
         assert filter_complex.endswith("[out]")
+
+    assert "[0:v]split=2[src0][src1]" in build_filter_complex(load_layout(paths[1]))
+    focus_filter_complex = build_filter_complex(load_layout(paths[0]))
+    assert "[0:v]split=2[src0][src1]" in focus_filter_complex
+    assert "boxblur=20:1" in focus_filter_complex
 
 
 def test_generated_layouts_are_deterministic(tmp_path: Path) -> None:
