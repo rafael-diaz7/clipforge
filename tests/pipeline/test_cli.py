@@ -219,6 +219,56 @@ def test_main_routes_captions_command(monkeypatch, capsys, tmp_path: Path) -> No
     assert capsys.readouterr().out.splitlines() == [str(caption_path)]
 
 
+def test_main_routes_analyze_frames_command(monkeypatch, capsys, tmp_path: Path) -> None:
+    metadata_path = tmp_path / "analysis" / "clip-123" / "frames.json"
+    calls: list[dict[str, object]] = []
+
+    def fake_sample_frames(
+        source_path: Path,
+        *,
+        clip_id: str,
+        count: int,
+        interval_seconds: float | None,
+    ) -> Path:
+        calls.append(
+            {
+                "source_path": source_path,
+                "clip_id": clip_id,
+                "count": count,
+                "interval_seconds": interval_seconds,
+            }
+        )
+        return metadata_path
+
+    monkeypatch.setattr("clipforge.pipeline.cli.sample_frames", fake_sample_frames)
+
+    exit_code = main(
+        [
+            "analyze",
+            "frames",
+            "--source",
+            "source.mp4",
+            "--clip-id",
+            "clip-123",
+            "--count",
+            "4",
+            "--interval-seconds",
+            "1.5",
+        ]
+    )
+
+    assert exit_code == 0
+    assert calls == [
+        {
+            "source_path": Path("source.mp4"),
+            "clip_id": "clip-123",
+            "count": 4,
+            "interval_seconds": 1.5,
+        }
+    ]
+    assert capsys.readouterr().out.splitlines() == [str(metadata_path)]
+
+
 def test_main_routes_clips_command(monkeypatch, capsys, tmp_path: Path) -> None:
     calls: list[dict[str, object]] = []
     recorded: list[dict[str, object]] = []

@@ -10,6 +10,7 @@ from pathlib import Path
 from typing import Sequence
 
 from clipforge.core.config import ConfigError, load_config
+from clipforge.media.analyze import sample_frames
 from clipforge.integrations.twitch import list_channel_clips, twitch_channel_login_from_input
 from clipforge.media.captions import generate_caption_metadata
 from clipforge.pipeline.artifacts import write_clip_discovery_export, write_metadata
@@ -235,6 +236,37 @@ def build_parser() -> argparse.ArgumentParser:
         help="Only rerank clips for this Twitch channel login.",
     )
 
+    analyze_parser = subparsers.add_parser(
+        "analyze",
+        help="Create lightweight local analysis artifacts.",
+    )
+    analyze_subparsers = analyze_parser.add_subparsers(dest="analyze_command")
+    analyze_frames_parser = analyze_subparsers.add_parser(
+        "frames",
+        help="Sample representative frames from a local source clip.",
+    )
+    analyze_frames_parser.add_argument(
+        "--source",
+        required=True,
+        help="Local source video path.",
+    )
+    analyze_frames_parser.add_argument(
+        "--clip-id",
+        required=True,
+        help="Clip ID used for analysis artifact paths.",
+    )
+    analyze_frames_parser.add_argument(
+        "--count",
+        type=int,
+        default=12,
+        help="Number of frames to sample. Defaults to 12.",
+    )
+    analyze_frames_parser.add_argument(
+        "--interval-seconds",
+        type=float,
+        help="Seconds between sampled frames. Defaults to 2 seconds.",
+    )
+
     return parser
 
 
@@ -302,10 +334,27 @@ def main(argv: Sequence[str] | None = None) -> int:
         if args.command == "clips":
             return _handle_clips_command(args)
 
+        if args.command == "analyze":
+            return _handle_analyze_command(args)
+
         raise CLIError(f"Unsupported command: {args.command}")
     except (CLIError, ConfigError, RuntimeError, ValueError) as exc:
         print(f"clipforge: {exc}", file=sys.stderr)
         return 1
+
+
+def _handle_analyze_command(args: argparse.Namespace) -> int:
+    if args.analyze_command == "frames":
+        metadata_path = sample_frames(
+            Path(args.source),
+            clip_id=args.clip_id,
+            count=args.count,
+            interval_seconds=args.interval_seconds,
+        )
+        print(metadata_path)
+        return 0
+
+    raise CLIError("analyze requires a subcommand.")
 
 
 def _handle_clips_command(args: argparse.Namespace) -> int:
