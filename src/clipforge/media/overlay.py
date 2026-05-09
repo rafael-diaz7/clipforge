@@ -115,16 +115,23 @@ class _Cluster:
 @dataclass(frozen=True)
 class _ScoredCluster:
     cluster_id: int
-    rect: NormalizedRect
+    face_rect: NormalizedRect
+    overlay_rect: NormalizedRect
     frame_count: int
     component_scores: dict[str, float]
     raw_score: float
     confidence: float
 
+    @property
+    def rect(self) -> NormalizedRect:
+        return self.overlay_rect
+
     def to_dict(self) -> dict[str, object]:
         return {
             "cluster_id": self.cluster_id,
-            "rect": self.rect.to_dict(),
+            "rect": self.overlay_rect.to_dict(),
+            "face_rect": self.face_rect.to_dict(),
+            "overlay_rect": self.overlay_rect.to_dict(),
             "frame_count": self.frame_count,
             "component_scores": {
                 name: _round(value) for name, value in self.component_scores.items()
@@ -298,7 +305,8 @@ def analyze_overlay(
         return _write_overlay_result(
             output_path,
             clip_id=metadata_clip_id,
-            selected_rect=None,
+            selected_face_rect=None,
+            selected_overlay_rect=None,
             confidence=0.0,
             fallback=True,
             reason=f"fallback: detector unavailable: {exc}",
@@ -311,7 +319,8 @@ def analyze_overlay(
         return _write_overlay_result(
             output_path,
             clip_id=metadata_clip_id,
-            selected_rect=None,
+            selected_face_rect=None,
+            selected_overlay_rect=None,
             confidence=0.0,
             fallback=True,
             reason=f"fallback: detector failed: {exc}",
@@ -324,7 +333,8 @@ def analyze_overlay(
         return _write_overlay_result(
             output_path,
             clip_id=metadata_clip_id,
-            selected_rect=None,
+            selected_face_rect=None,
+            selected_overlay_rect=None,
             confidence=0.0,
             fallback=True,
             reason="fallback: no face detections found in sampled frames",
@@ -336,7 +346,8 @@ def analyze_overlay(
         return _write_overlay_result(
             output_path,
             clip_id=metadata_clip_id,
-            selected_rect=None,
+            selected_face_rect=None,
+            selected_overlay_rect=None,
             confidence=selected.confidence,
             fallback=True,
             reason=(
@@ -349,7 +360,8 @@ def analyze_overlay(
     return _write_overlay_result(
         output_path,
         clip_id=metadata_clip_id,
-        selected_rect=selected.rect,
+        selected_face_rect=selected.face_rect,
+        selected_overlay_rect=selected.overlay_rect,
         confidence=selected.confidence,
         fallback=False,
         reason=_selection_reason(selected, scored_clusters),
@@ -455,7 +467,8 @@ def _score_clusters(
         adjusted.append(
             _ScoredCluster(
                 cluster_id=cluster.cluster_id,
-                rect=cluster.rect,
+                face_rect=cluster.face_rect,
+                overlay_rect=cluster.overlay_rect,
                 frame_count=cluster.frame_count,
                 component_scores={**cluster.component_scores, "competition_penalty": penalty},
                 raw_score=cluster.raw_score,
@@ -472,21 +485,25 @@ def _score_cluster(
     cluster_id: int,
     total_frames: int,
 ) -> _ScoredCluster:
-    rect = _cluster_rect(cluster)
+    face_rect = _cluster_rect(cluster)
+    overlay_rect = _expand_face_rect_to_overlay_rect(face_rect)
     frame_count = len({detection.frame_index for detection in cluster.detections})
     prevalence = frame_count / total_frames if total_frames else 0.0
 
     position_stability = _position_stability(cluster)
     size_stability = _size_stability(cluster)
-    edge_proximity = _edge_proximity(rect)
-    center_avoidance = _center_avoidance(rect)
-    size_score = _overlay_size_score(rect.area)
+    edge_proximity = _edge_proximity(overlay_rect)
+    center_avoidance = _center_avoidance(overlay_rect)
+    size_score = _overlay_size_score(overlay_rect.area)
     detection_score = statistics.fmean(detection.score for detection in cluster.detections)
 
     brief_penalty = max(0.0, 0.45 - prevalence) * 0.75
     central_penalty = (1.0 - center_avoidance) * 0.22
-    huge_central_penalty = _huge_central_penalty(rect, center_avoidance)
-    tiny_penalty = _tiny_penalty(rect.area, size_score)
+    huge_central_penalty = _huge_central_penalty(overlay_rect, center_avoidance)
+    tiny_penalty = max(
+        _tiny_penalty(overlay_rect.area, size_score),
+        _tiny_face_penalty(face_rect.area),
+    )
 
     raw_score = _clamp01(
         prevalence * 0.30
@@ -517,7 +534,8 @@ def _score_cluster(
     }
     return _ScoredCluster(
         cluster_id=cluster_id,
-        rect=rect,
+        face_rect=face_rect,
+        overlay_rect=overlay_rect,
         frame_count=frame_count,
         component_scores=component_scores,
         raw_score=raw_score,
@@ -543,6 +561,57 @@ def _cluster_rect(cluster: _Cluster) -> NormalizedRect:
         y=statistics.fmean(detection.rect.y for detection in cluster.detections),
         width=statistics.fmean(detection.rect.width for detection in cluster.detections),
         height=statistics.fmean(detection.rect.height for detection in cluster.detections),
+    )
+
+
+def _expand_face_rect_to_overlay_rect(face_rect: NormalizedRect) -> NormalizedRect:
+    aspect = _preferred_overlay_aspect(face_rect)
+    target_height = max(
+        0.16,
+        face_rect.height * 1.65,
+        (face_rect.width / aspect) * 1.12,
+    )
+    target_height = min(1.0, target_height)
+    target_width = max(0.18, target_height * aspect, face_rect.width * 1.9)
+    if target_width > 1.0:
+        target_width = 1.0
+        target_height = min(1.0, max(face_rect.height * 1.08, target_width / aspect))
+
+    target_height = min(1.0, max(target_height, face_rect.height * 1.08))
+
+    if face_rect.center_x < 0.42:
+        x = face_rect.center_x - target_width * 0.42
+    elif face_rect.center_x > 0.58:
+        x = face_rect.center_x - target_width * 0.58
+    else:
+        x = face_rect.center_x - target_width / 2
+
+    y = face_rect.center_y - target_height * 0.42
+    x = max(face_rect.x + face_rect.width - target_width, min(x, face_rect.x))
+    y = max(face_rect.y + face_rect.height - target_height, min(y, face_rect.y))
+    return _fit_rect_to_frame(x=x, y=y, width=target_width, height=target_height)
+
+
+def _preferred_overlay_aspect(face_rect: NormalizedRect) -> float:
+    if face_rect.center_x < 0.42 or face_rect.center_x > 0.58:
+        return 4 / 3
+    return 16 / 9
+
+
+def _fit_rect_to_frame(
+    *,
+    x: float,
+    y: float,
+    width: float,
+    height: float,
+) -> NormalizedRect:
+    width = _clamp01(width)
+    height = _clamp01(height)
+    return NormalizedRect(
+        x=max(0.0, min(1.0 - width, x)),
+        y=max(0.0, min(1.0 - height, y)),
+        width=width,
+        height=height,
     )
 
 
@@ -601,6 +670,12 @@ def _tiny_penalty(area: float, size_score: float) -> float:
     return (1.0 - size_score) * 0.45
 
 
+def _tiny_face_penalty(area: float) -> float:
+    if area >= 0.008:
+        return 0.0
+    return _clamp01((0.008 - area) / 0.005) * 0.45
+
+
 def _competition_penalty(
     cluster: _ScoredCluster,
     other_clusters: list[_ScoredCluster],
@@ -623,7 +698,7 @@ def _selection_reason(
 ) -> str:
     components = selected.component_scores
     reason = (
-        "selected stable edge/corner face cluster "
+        "selected stable edge/corner face cluster expanded into an overlay region "
         f"seen in {selected.frame_count} sampled frame(s); "
         f"prevalence={components['prevalence']:.3f}, "
         f"position_stability={components['position_stability']:.3f}, "
@@ -646,7 +721,8 @@ def _write_overlay_result(
     output_path: Path,
     *,
     clip_id: str,
-    selected_rect: NormalizedRect | None,
+    selected_face_rect: NormalizedRect | None,
+    selected_overlay_rect: NormalizedRect | None,
     confidence: float,
     fallback: bool,
     reason: str,
@@ -655,7 +731,11 @@ def _write_overlay_result(
     ensure_directory(output_path.parent)
     payload = {
         "clip_id": clip_id,
-        "selected_rect": selected_rect.to_dict() if selected_rect else None,
+        "selected_rect": selected_overlay_rect.to_dict() if selected_overlay_rect else None,
+        "selected_face_rect": selected_face_rect.to_dict() if selected_face_rect else None,
+        "selected_overlay_rect": (
+            selected_overlay_rect.to_dict() if selected_overlay_rect else None
+        ),
         "confidence": _round(confidence),
         "fallback": fallback,
         "reason": reason,

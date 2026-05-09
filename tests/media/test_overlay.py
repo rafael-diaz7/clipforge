@@ -66,9 +66,13 @@ def test_stable_corner_face_wins_over_huge_central_face(tmp_path: Path) -> None:
     payload = _read_json(overlay_path)
     assert payload["fallback"] is False
     assert payload["confidence"] > 0.7
-    assert payload["selected_rect"]["x"] < 0.05
-    assert payload["selected_rect"]["y"] > 0.55
+    assert payload["selected_face_rect"]["x"] < 0.05
+    assert payload["selected_face_rect"]["y"] > 0.55
+    assert payload["selected_overlay_rect"]["x"] <= payload["selected_face_rect"]["x"]
+    assert payload["selected_overlay_rect"]["width"] > payload["selected_face_rect"]["width"]
+    assert payload["selected_overlay_rect"]["height"] > payload["selected_face_rect"]["height"]
     assert payload["candidate_clusters"][0]["component_scores"]["edge_proximity"] > 0.7
+    assert "expanded into an overlay region" in payload["reason"]
 
 
 def test_huge_central_face_is_penalized_to_fallback(tmp_path: Path) -> None:
@@ -86,6 +90,7 @@ def test_huge_central_face_is_penalized_to_fallback(tmp_path: Path) -> None:
     payload = _read_json(overlay_path)
     assert payload["fallback"] is True
     assert payload["selected_rect"] is None
+    assert payload["selected_overlay_rect"] is None
     cluster = payload["candidate_clusters"][0]
     assert cluster["component_scores"]["huge_central_penalty"] > 0.2
 
@@ -105,6 +110,7 @@ def test_tiny_avatar_like_face_is_penalized_to_fallback(tmp_path: Path) -> None:
     payload = _read_json(overlay_path)
     assert payload["fallback"] is True
     assert payload["selected_rect"] is None
+    assert payload["selected_overlay_rect"] is None
     cluster = payload["candidate_clusters"][0]
     assert cluster["component_scores"]["tiny_penalty"] > 0.3
 
@@ -122,6 +128,8 @@ def test_no_detections_writes_fallback_overlay_json(tmp_path: Path) -> None:
     assert payload == {
         "clip_id": "clip-123",
         "selected_rect": None,
+        "selected_face_rect": None,
+        "selected_overlay_rect": None,
         "confidence": 0.0,
         "fallback": True,
         "reason": "fallback: no face detections found in sampled frames",
@@ -222,12 +230,44 @@ def test_analyze_overlay_reads_frame_metadata_and_writes_overlay_metadata(
     payload = _read_json(overlay_path)
     assert payload["clip_id"] == "clip-123"
     assert payload["fallback"] is False
-    assert payload["selected_rect"] == {
+    assert payload["selected_face_rect"] == {
         "x": 0.03,
         "y": 0.62,
         "width": 0.22,
         "height": 0.22,
     }
+    assert payload["selected_overlay_rect"] == {
+        "x": 0.0,
+        "y": 0.57754,
+        "width": 0.484,
+        "height": 0.363,
+    }
+    assert payload["selected_rect"] == payload["selected_overlay_rect"]
+    assert payload["candidate_clusters"][0]["face_rect"] == payload["selected_face_rect"]
+    assert payload["candidate_clusters"][0]["overlay_rect"] == payload["selected_overlay_rect"]
+
+
+def test_overlay_expansion_clamps_at_frame_edges(tmp_path: Path) -> None:
+    analysis_dir, frame_names = _write_frames_metadata(tmp_path, clip_id="clip-123", count=8)
+    detector = SyntheticDetector(
+        {name: (_detection(0.88, 0.86, 0.12, 0.12),) for name in frame_names}
+    )
+
+    overlay_path = analyze_overlay(
+        clip_id="clip-123",
+        analysis_dir=analysis_dir,
+        detector=detector,
+    )
+
+    payload = _read_json(overlay_path)
+    assert payload["fallback"] is False
+    overlay_rect = payload["selected_overlay_rect"]
+    assert overlay_rect["x"] >= 0.0
+    assert overlay_rect["y"] >= 0.0
+    assert overlay_rect["x"] + overlay_rect["width"] <= 1.0
+    assert overlay_rect["y"] + overlay_rect["height"] <= 1.0
+    assert overlay_rect["x"] + overlay_rect["width"] == 1.0
+    assert overlay_rect["y"] + overlay_rect["height"] == 1.0
 
 
 def test_write_overlay_debug_images_writes_one_debug_image_per_sampled_frame(
