@@ -207,7 +207,18 @@ def build_parser() -> argparse.ArgumentParser:
     )
     clips_process_group.add_argument(
         "--clip-id",
-        help="Process a specific unprocessed saved clip ID.",
+        help="Process a specific saved clip ID.",
+    )
+    clips_process_parser.add_argument(
+        "--force",
+        action="store_true",
+        help="Allow reprocessing a rendered clip when used with --clip-id.",
+    )
+    clips_process_parser.add_argument(
+        "--generate-captions",
+        action="store_true",
+        default=None,
+        help="Generate caption metadata before rendering.",
     )
     clips_process_parser.add_argument(
         "--continue-on-error",
@@ -373,6 +384,8 @@ def _handle_clips_pending_command(args: argparse.Namespace) -> int:
 def _handle_clips_process_command(args: argparse.Namespace) -> int:
     config = load_config()
     if args.top is not None:
+        if args.force:
+            raise CLIError("--force can only be used with --clip-id.")
         clips = get_unprocessed_clips(db_path=config.state_db_path, limit=args.top)
         if not clips:
             raise CLIError("No unprocessed clips found.")
@@ -380,14 +393,24 @@ def _handle_clips_process_command(args: argparse.Namespace) -> int:
         clip = get_clip(args.clip_id, db_path=config.state_db_path)
         if clip is None:
             raise CLIError(f"Clip not found: {args.clip_id}.")
-        if clip.status not in UNPROCESSED_STATUSES:
+        if clip.status == "rendered" and not args.force:
+            raise CLIError(
+                f"Clip is already rendered: {args.clip_id}. "
+                "Re-run with --force to reprocess it."
+            )
+        if clip.status not in UNPROCESSED_STATUSES and not (
+            clip.status == "rendered" and args.force
+        ):
             raise CLIError(f"Clip is not unprocessed: {args.clip_id}.")
         clips = (clip,)
 
     failures = 0
     for clip in clips:
         try:
-            metadata_path = process_clip(clip.url, config=config)
+            process_kwargs = {"config": config}
+            if args.generate_captions is not None:
+                process_kwargs["generate_captions"] = args.generate_captions
+            metadata_path = process_clip(clip.url, **process_kwargs)
         except Exception as exc:
             failures += 1
             error_message = str(exc)

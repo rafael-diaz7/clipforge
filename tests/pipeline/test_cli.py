@@ -757,6 +757,146 @@ def test_main_processes_specific_pending_clip_from_state(
     assert calls == ["https://clips.twitch.tv/clip-2"]
 
 
+def test_main_rejects_rendered_clip_without_force(
+    monkeypatch,
+    capsys,
+    tmp_path: Path,
+) -> None:
+    config = ClipforgeConfig(state_db_path=tmp_path / "state" / "clipforge.sqlite")
+    upsert_discovered_clip(
+        clip_id="clip-rendered",
+        url="https://clips.twitch.tv/clip-rendered",
+        rank_score=1.0,
+        db_path=config.state_db_path,
+    )
+    mark_clip_rendered(
+        "clip-rendered",
+        render_dir=tmp_path / "renders" / "clip-rendered",
+        db_path=config.state_db_path,
+    )
+
+    def fail_process(*args, **kwargs) -> Path:
+        raise AssertionError("Rendered clips should require --force before processing.")
+
+    monkeypatch.setattr("clipforge.pipeline.cli.load_config", lambda: config)
+    monkeypatch.setattr("clipforge.pipeline.cli.process_clip", fail_process)
+
+    exit_code = main(["clips", "process", "--clip-id", "clip-rendered"])
+
+    captured = capsys.readouterr()
+    state = get_clip("clip-rendered", db_path=config.state_db_path)
+    assert exit_code == 1
+    assert "Clip is already rendered: clip-rendered" in captured.err
+    assert "--force" in captured.err
+    assert state is not None
+    assert state.status == "rendered"
+
+
+def test_main_reprocesses_rendered_clip_by_id_with_force(
+    monkeypatch,
+    capsys,
+    tmp_path: Path,
+) -> None:
+    config = ClipforgeConfig(state_db_path=tmp_path / "state" / "clipforge.sqlite")
+    upsert_discovered_clip(
+        clip_id="clip-rendered",
+        url="https://clips.twitch.tv/clip-rendered",
+        rank_score=1.0,
+        db_path=config.state_db_path,
+    )
+    mark_clip_rendered(
+        "clip-rendered",
+        render_dir=tmp_path / "renders" / "old",
+        metadata_path=tmp_path / "metadata" / "old.json",
+        db_path=config.state_db_path,
+    )
+    calls: list[str] = []
+
+    def fake_process(url: str, *, config: ClipforgeConfig) -> Path:
+        calls.append(url)
+        metadata_path = tmp_path / "metadata" / "new.json"
+        mark_clip_rendered(
+            "clip-rendered",
+            render_dir=tmp_path / "renders" / "new",
+            metadata_path=metadata_path,
+            db_path=config.state_db_path,
+        )
+        return metadata_path
+
+    monkeypatch.setattr("clipforge.pipeline.cli.load_config", lambda: config)
+    monkeypatch.setattr("clipforge.pipeline.cli.process_clip", fake_process)
+
+    exit_code = main(["clips", "process", "--clip-id", "clip-rendered", "--force"])
+
+    state = get_clip("clip-rendered", db_path=config.state_db_path)
+    assert exit_code == 0
+    assert calls == ["https://clips.twitch.tv/clip-rendered"]
+    assert state is not None
+    assert state.status == "rendered"
+    assert state.metadata_path == str(tmp_path / "metadata" / "new.json")
+    assert state.render_dir == str(tmp_path / "renders" / "new")
+    assert capsys.readouterr().out.splitlines() == [
+        f"processed: clip-rendered: {tmp_path / 'metadata' / 'new.json'}"
+    ]
+
+
+def test_main_reprocesses_rendered_clip_with_force_and_captions(
+    monkeypatch,
+    tmp_path: Path,
+) -> None:
+    config = ClipforgeConfig(state_db_path=tmp_path / "state" / "clipforge.sqlite")
+    upsert_discovered_clip(
+        clip_id="clip-rendered",
+        url="https://clips.twitch.tv/clip-rendered",
+        rank_score=1.0,
+        db_path=config.state_db_path,
+    )
+    mark_clip_rendered(
+        "clip-rendered",
+        render_dir=tmp_path / "renders" / "clip-rendered",
+        db_path=config.state_db_path,
+    )
+    calls: list[dict[str, object]] = []
+
+    def fake_process(
+        url: str,
+        *,
+        generate_captions: bool,
+        config: ClipforgeConfig,
+    ) -> Path:
+        calls.append(
+            {
+                "url": url,
+                "generate_captions": generate_captions,
+                "config": config,
+            }
+        )
+        return tmp_path / "metadata" / "captions.json"
+
+    monkeypatch.setattr("clipforge.pipeline.cli.load_config", lambda: config)
+    monkeypatch.setattr("clipforge.pipeline.cli.process_clip", fake_process)
+
+    exit_code = main(
+        [
+            "clips",
+            "process",
+            "--clip-id",
+            "clip-rendered",
+            "--force",
+            "--generate-captions",
+        ]
+    )
+
+    assert exit_code == 0
+    assert calls == [
+        {
+            "url": "https://clips.twitch.tv/clip-rendered",
+            "generate_captions": True,
+            "config": config,
+        }
+    ]
+
+
 def test_main_clips_pending_and_top_process_exclude_rendered_clips(
     monkeypatch,
     capsys,
