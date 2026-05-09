@@ -12,6 +12,7 @@ from clipforge.media.captions import (
     CaptionError,
     CaptionMetadata,
     CaptionSegment,
+    CaptionWord,
     caption_metadata_path,
     generate_caption_metadata,
     load_caption_metadata,
@@ -76,6 +77,52 @@ def test_caption_metadata_round_trips_through_save_and_load(tmp_path: Path) -> N
 
     assert load_caption_metadata(output_path) == metadata
     assert output_path.read_text(encoding="utf-8").endswith("\n")
+
+
+def test_caption_metadata_round_trips_optional_word_timing(tmp_path: Path) -> None:
+    config = ClipforgeConfig(metadata_dir=tmp_path / "metadata")
+    metadata = CaptionMetadata(
+        clip_id=CAPTION_CLIP_ID,
+        segments=(
+            CaptionSegment(
+                start_time=0,
+                end_time=1,
+                text="hello world",
+                words=(
+                    CaptionWord(start_time=0, end_time=0.4, text="hello"),
+                    CaptionWord(start_time=0.5, end_time=1, text="world"),
+                ),
+            ),
+        ),
+    )
+
+    output_path = save_caption_metadata(metadata, config=config)
+
+    payload = json.loads(output_path.read_text(encoding="utf-8"))
+    assert payload["segments"][0]["words"] == [
+        {"start_time": 0.0, "end_time": 0.4, "text": "hello"},
+        {"start_time": 0.5, "end_time": 1.0, "text": "world"},
+    ]
+    assert load_caption_metadata(output_path) == metadata
+
+
+def test_caption_metadata_keeps_existing_json_without_word_timing_compatible() -> None:
+    metadata = parse_caption_metadata(
+        {
+            "type": CAPTION_METADATA_TYPE,
+            "version": CAPTION_METADATA_VERSION,
+            "clip_id": CAPTION_CLIP_ID,
+            "segments": [
+                {
+                    "start_time": 0,
+                    "end_time": 1,
+                    "text": "legacy segment",
+                }
+            ],
+        }
+    )
+
+    assert metadata.segments[0].words == ()
 
 
 def test_empty_caption_segments_are_valid_metadata(tmp_path: Path) -> None:

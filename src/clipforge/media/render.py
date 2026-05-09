@@ -2,18 +2,20 @@
 
 from __future__ import annotations
 
+import logging
 import subprocess
 import textwrap
 from dataclasses import dataclass
+from enum import Enum
 from pathlib import Path
-from typing import Protocol
+from typing import Any, Mapping, Protocol
 
 from clipforge.media.caption_escaping import (
     escape_ass_text,
     escape_drawtext_option,
     escape_drawtext_text,
 )
-from clipforge.media.captions import CaptionMetadata, CaptionSegment
+from clipforge.media.captions import CaptionMetadata, CaptionSegment, CaptionWord
 from clipforge.media.layouts import Layout, LayoutRegion, NormalizedRect, OutputSize
 
 
@@ -27,6 +29,7 @@ CAPTION_RENDERER_DRAWTEXT = "drawtext"
 SUPPORTED_CAPTION_RENDERER_BACKENDS = frozenset(
     {CAPTION_RENDERER_ASS, CAPTION_RENDERER_DRAWTEXT}
 )
+LOGGER = logging.getLogger(__name__)
 
 
 @dataclass(frozen=True)
@@ -37,6 +40,40 @@ class PixelRect:
     y: int
     width: int
     height: int
+
+
+@dataclass(frozen=True)
+class CaptionVerticalSafeArea:
+    """Vertical caption bounds in output pixels."""
+
+    top: int = 0
+    bottom: int = 220
+
+    def __post_init__(self) -> None:
+        if self.top < 0 or self.bottom < 0:
+            raise RenderError("Caption vertical safe area values must be non-negative.")
+
+    def to_dict(self) -> dict[str, int]:
+        return {
+            "top": self.top,
+            "bottom": self.bottom,
+        }
+
+    @classmethod
+    def from_dict(cls, payload: Mapping[str, Any]) -> "CaptionVerticalSafeArea":
+        return cls(
+            top=int(payload.get("top", 0)),
+            bottom=int(payload.get("bottom", 220)),
+        )
+
+
+class CaptionAnimationPreset(str, Enum):
+    """Named caption animation hooks for future renderer support."""
+
+    NONE = "none"
+    SCALE_POP = "scale_pop"
+    ACTIVE_WORD = "active_word"
+    KARAOKE = "karaoke"
 
 
 @dataclass(frozen=True)
@@ -52,9 +89,12 @@ class CaptionStyle:
     box_border_width: int = 20
     line_spacing: int = 8
     outline_width: int = 4
+    outline_thickness: int | None = None
     shadow_offset: int = 2
+    shadow_strength: int | None = None
     safe_margin_x: int = 96
     safe_margin_bottom: int = 220
+    vertical_safe_area: CaptionVerticalSafeArea | None = None
     max_chars_per_line: int | None = None
     max_lines: int = 2
     min_display_seconds: float = 0.75
@@ -66,7 +106,64 @@ class CaptionStyle:
     max_hold_seconds: float | None = None
     display_padding_seconds: float = 0.45
     uppercase: bool = False
+    highlight_color: str = "yellow"
+    active_word_color: str = "yellow"
+    animation_preset: CaptionAnimationPreset = CaptionAnimationPreset.NONE
     ass_style_name: str = "Default"
+
+    def to_dict(self) -> dict[str, Any]:
+        return {
+            "font_family": self.font_family,
+            "font_color": self.font_color,
+            "font_size": self.font_size,
+            "font_file": str(self.font_file) if self.font_file is not None else None,
+            "font_fallbacks": list(self.font_fallbacks),
+            "box_color": self.box_color,
+            "box_border_width": self.box_border_width,
+            "line_spacing": self.line_spacing,
+            "outline_width": self.outline_width,
+            "outline_thickness": self.outline_thickness,
+            "shadow_offset": self.shadow_offset,
+            "shadow_strength": self.shadow_strength,
+            "safe_margin_x": self.safe_margin_x,
+            "safe_margin_bottom": self.safe_margin_bottom,
+            "vertical_safe_area": (
+                self.vertical_safe_area.to_dict()
+                if self.vertical_safe_area is not None
+                else None
+            ),
+            "max_chars_per_line": self.max_chars_per_line,
+            "max_lines": self.max_lines,
+            "min_display_seconds": self.min_display_seconds,
+            "max_display_seconds": self.max_display_seconds,
+            "seconds_per_word": self.seconds_per_word,
+            "seconds_per_character": self.seconds_per_character,
+            "punctuation_pause_seconds": self.punctuation_pause_seconds,
+            "min_cue_seconds": self.min_cue_seconds,
+            "max_hold_seconds": self.max_hold_seconds,
+            "display_padding_seconds": self.display_padding_seconds,
+            "uppercase": self.uppercase,
+            "highlight_color": self.highlight_color,
+            "active_word_color": self.active_word_color,
+            "animation_preset": self.animation_preset.value,
+            "ass_style_name": self.ass_style_name,
+        }
+
+    @classmethod
+    def from_dict(cls, payload: Mapping[str, Any]) -> "CaptionStyle":
+        values = dict(payload)
+        if values.get("font_file") is not None:
+            values["font_file"] = Path(str(values["font_file"]))
+        if "font_fallbacks" in values:
+            values["font_fallbacks"] = tuple(values["font_fallbacks"])
+        if "vertical_safe_area" in values and values["vertical_safe_area"] is not None:
+            values["vertical_safe_area"] = CaptionVerticalSafeArea.from_dict(
+                values["vertical_safe_area"]
+            )
+        if "animation_preset" in values:
+            values["animation_preset"] = CaptionAnimationPreset(values["animation_preset"])
+        supported_keys = cls().to_dict().keys()
+        return cls(**{key: value for key, value in values.items() if key in supported_keys})
 
 
 @dataclass(frozen=True)
@@ -76,6 +173,7 @@ class CaptionCue:
     start_time: float
     end_time: float
     lines: tuple[str, ...]
+    words: tuple[CaptionWord, ...] = ()
 
 
 DEFAULT_CAPTION_STYLE = CaptionStyle()
@@ -386,6 +484,11 @@ def _caption_filters(
     ass_subtitle_path: Path | None,
 ) -> tuple[str, ...]:
     cues = _caption_cues(segments, caption_style=caption_style, output_size=output_size)
+    LOGGER.info(
+        "Rendering captions with %s backend using %s.",
+        caption_renderer_backend,
+        _caption_font_log_value(caption_style),
+    )
     renderer = _caption_renderer(
         caption_renderer_backend,
         ass_subtitle_path=ass_subtitle_path,
@@ -436,6 +539,7 @@ def _caption_cues(
                         lines=tuple(
                             _wrapped_caption_lines(chunk, caption_style, output_size)
                         ),
+                        words=_caption_words_for_cue(segment.words, cursor, end_time),
                     )
                 )
             cursor = end_time
@@ -485,17 +589,35 @@ def _caption_line_y(
     line_index: int,
     caption_style: CaptionStyle,
 ) -> str:
+    safe_margin_bottom = _caption_safe_margin_bottom(caption_style)
     block_height = (
         len(lines) * caption_style.font_size
         + (len(lines) - 1) * caption_style.line_spacing
     )
     y = (
-        f"h-{block_height}-{caption_style.safe_margin_bottom}"
+        f"h-{block_height}-{safe_margin_bottom}"
         if line_index == 0
-        else f"h-{block_height}-{caption_style.safe_margin_bottom}+"
+        else f"h-{block_height}-{safe_margin_bottom}+"
         f"{line_index * (caption_style.font_size + caption_style.line_spacing)}"
     )
-    return f"max({caption_style.safe_margin_x}\\,{y})"
+    min_y = (
+        _caption_safe_margin_top(caption_style)
+        if caption_style.vertical_safe_area is not None
+        else caption_style.safe_margin_x
+    )
+    return f"max({min_y}\\,{y})"
+
+
+def _caption_words_for_cue(
+    words: tuple[CaptionWord, ...],
+    start_time: float,
+    end_time: float,
+) -> tuple[CaptionWord, ...]:
+    return tuple(
+        word
+        for word in words
+        if word.start_time < end_time and word.end_time > start_time
+    )
 
 
 def _caption_chars_per_line(caption_style: CaptionStyle, output_size: OutputSize) -> int:
@@ -666,12 +788,12 @@ def _ass_style_block(caption_style: CaptionStyle) -> str:
                 "1,0,0,0,"
                 "100,100,0,0,"
                 "1,"
-                f"{caption_style.outline_width},"
-                f"{caption_style.shadow_offset},"
+                f"{_caption_outline_width(caption_style)},"
+                f"{_caption_shadow_strength(caption_style)},"
                 "2,"
                 f"{caption_style.safe_margin_x},"
                 f"{caption_style.safe_margin_x},"
-                f"{caption_style.safe_margin_bottom},"
+                f"{_caption_safe_margin_bottom(caption_style)},"
                 "1"
             ),
         )
@@ -708,8 +830,9 @@ def _ass_dialogue_lines(
             f"0,{_format_ass_time(cue.start_time)},{_format_ass_time(cue.end_time)},"
             f"{_ass_field(caption_style.ass_style_name)},,"
             f"{caption_style.safe_margin_x},{caption_style.safe_margin_x},"
-            f"{caption_style.safe_margin_bottom},,"
-            f"{{\\an2\\pos({output_size.width // 2},{y})}}{escape_ass_text(text)}"
+            f"{_caption_safe_margin_bottom(caption_style)},,"
+            f"{{{_ass_caption_override_tags(output_size.width // 2, y)}}}"
+            f"{escape_ass_text(text)}"
         )
     return tuple(dialogue_lines)
 
@@ -721,8 +844,37 @@ def _ass_caption_line_y(
     output_size: OutputSize,
 ) -> int:
     line_step = caption_style.font_size + caption_style.line_spacing
-    bottom_y = output_size.height - caption_style.safe_margin_bottom
-    return bottom_y - (line_count - line_index - 1) * line_step
+    bottom_y = output_size.height - _caption_safe_margin_bottom(caption_style)
+    raw_y = bottom_y - (line_count - line_index - 1) * line_step
+    return max(_caption_safe_margin_top(caption_style), raw_y)
+
+
+def _ass_caption_override_tags(x: int, y: int) -> str:
+    return f"\\an2\\pos({x},{y})"
+
+
+def _caption_outline_width(caption_style: CaptionStyle) -> int:
+    if caption_style.outline_thickness is not None:
+        return caption_style.outline_thickness
+    return caption_style.outline_width
+
+
+def _caption_shadow_strength(caption_style: CaptionStyle) -> int:
+    if caption_style.shadow_strength is not None:
+        return caption_style.shadow_strength
+    return caption_style.shadow_offset
+
+
+def _caption_safe_margin_top(caption_style: CaptionStyle) -> int:
+    if caption_style.vertical_safe_area is None:
+        return 0
+    return caption_style.vertical_safe_area.top
+
+
+def _caption_safe_margin_bottom(caption_style: CaptionStyle) -> int:
+    if caption_style.vertical_safe_area is None:
+        return caption_style.safe_margin_bottom
+    return caption_style.vertical_safe_area.bottom
 
 
 def _format_ass_time(seconds: float) -> str:
@@ -803,3 +955,13 @@ def _caption_font_option(caption_style: CaptionStyle) -> str:
         return ""
     font_file = str(caption_style.font_file).replace("\\", "/")
     return f"fontfile='{escape_drawtext_option(font_file)}':"
+
+
+def _caption_font_log_value(caption_style: CaptionStyle) -> str:
+    if caption_style.font_file is not None:
+        return f"font file {caption_style.font_file}"
+    if caption_style.font_family is not None and caption_style.font_family.strip():
+        return f"font family {caption_style.font_family.strip()}"
+    if caption_style.font_fallbacks:
+        return f"font fallback {caption_style.font_fallbacks[0]}"
+    return "default font fallback"

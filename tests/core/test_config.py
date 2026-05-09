@@ -101,6 +101,7 @@ def test_load_config_uses_env_for_caption_renderer_options(
 def test_load_config_defaults_caption_renderer_to_drawtext(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
+    monkeypatch.setattr("clipforge.core.config.load_dotenv", lambda *_args: None)
     monkeypatch.delenv("CLIPFORGE_CAPTION_RENDERER", raising=False)
     monkeypatch.delenv("CLIPFORGE_CAPTION_FONT_FALLBACKS", raising=False)
 

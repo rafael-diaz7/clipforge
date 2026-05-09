@@ -36,26 +36,55 @@ class CaptionTranscriber(Protocol):
 
 
 @dataclass(frozen=True)
-class CaptionSegment:
-    """One timed caption segment."""
+class CaptionWord:
+    """One word-level timing entry within a caption segment."""
 
     start_time: float
     end_time: float
     text: str
 
     def __post_init__(self) -> None:
+        start_time = _coerce_time(self.start_time, field_name="word.start_time")
+        end_time = _coerce_time(self.end_time, field_name="word.end_time")
+        text = self.text.strip()
+
+        if end_time <= start_time:
+            raise CaptionError("caption word end_time must be greater than start_time.")
+        if not text:
+            raise CaptionError("caption word text must be a non-empty string.")
+
+        object.__setattr__(self, "start_time", start_time)
+        object.__setattr__(self, "end_time", end_time)
+        object.__setattr__(self, "text", text)
+
+
+@dataclass(frozen=True)
+class CaptionSegment:
+    """One timed caption segment."""
+
+    start_time: float
+    end_time: float
+    text: str
+    words: tuple[CaptionWord, ...] = ()
+
+    def __post_init__(self) -> None:
         start_time = _coerce_time(self.start_time, field_name="start_time")
         end_time = _coerce_time(self.end_time, field_name="end_time")
         text = self.text.strip()
+        words = tuple(self.words)
 
         if end_time <= start_time:
             raise CaptionError("caption segment end_time must be greater than start_time.")
         if not text:
             raise CaptionError("caption segment text must be a non-empty string.")
+        for word in words:
+            if word.start_time < start_time or word.end_time > end_time:
+                raise CaptionError("caption word timings must be inside the segment boundaries.")
 
         object.__setattr__(self, "start_time", start_time)
         object.__setattr__(self, "end_time", end_time)
         object.__setattr__(self, "text", text)
+        object.__setattr__(self, "words", words)
 
 
 @dataclass(frozen=True)
@@ -217,15 +246,26 @@ def _caption_metadata_payload(metadata: CaptionMetadata) -> dict[str, Any]:
         "type": CAPTION_METADATA_TYPE,
         "version": CAPTION_METADATA_VERSION,
         "clip_id": metadata.clip_id,
-        "segments": [
-            {
-                "start_time": segment.start_time,
-                "end_time": segment.end_time,
-                "text": segment.text,
-            }
-            for segment in metadata.segments
-        ],
+        "segments": [_caption_segment_payload(segment) for segment in metadata.segments],
     }
+
+
+def _caption_segment_payload(segment: CaptionSegment) -> dict[str, Any]:
+    payload: dict[str, Any] = {
+        "start_time": segment.start_time,
+        "end_time": segment.end_time,
+        "text": segment.text,
+    }
+    if segment.words:
+        payload["words"] = [
+            {
+                "start_time": word.start_time,
+                "end_time": word.end_time,
+                "text": word.text,
+            }
+            for word in segment.words
+        ]
+    return payload
 
 
 def _parse_caption_segment(payload: Any, *, index: int) -> CaptionSegment:
@@ -233,7 +273,41 @@ def _parse_caption_segment(payload: Any, *, index: int) -> CaptionSegment:
     if not isinstance(payload, dict):
         raise CaptionError(f"{context} must be an object.")
 
+    words_payload = payload.get("words", [])
+    if not isinstance(words_payload, list):
+        raise CaptionError(f"{context}.words must be a list.")
+
     return CaptionSegment(
+        start_time=required_number(
+            payload,
+            "start_time",
+            context=context,
+            error_cls=CaptionError,
+        ),
+        end_time=required_number(
+            payload,
+            "end_time",
+            context=context,
+            error_cls=CaptionError,
+        ),
+        text=required_string(
+            payload,
+            "text",
+            context=context,
+            error_cls=CaptionError,
+        ),
+        words=tuple(
+            _parse_caption_word(word_payload, context=f"{context}.words[{word_index}]")
+            for word_index, word_payload in enumerate(words_payload)
+        ),
+    )
+
+
+def _parse_caption_word(payload: Any, *, context: str) -> CaptionWord:
+    if not isinstance(payload, dict):
+        raise CaptionError(f"{context} must be an object.")
+
+    return CaptionWord(
         start_time=required_number(
             payload,
             "start_time",

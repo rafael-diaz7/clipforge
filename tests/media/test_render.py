@@ -1,14 +1,17 @@
 from __future__ import annotations
 
+import logging
 from pathlib import Path
 
 import pytest
 
-from clipforge.media.captions import CaptionMetadata, CaptionSegment
+from clipforge.media.captions import CaptionMetadata, CaptionSegment, CaptionWord
 from clipforge.media.layouts import Layout, LayoutRegion, NormalizedRect, OutputSize
 from clipforge.media.render import (
+    CaptionAnimationPreset,
     CaptionCue,
     CaptionStyle,
+    CaptionVerticalSafeArea,
     RenderError,
     _caption_chunk_duration,
     _caption_cues,
@@ -238,6 +241,71 @@ def test_caption_timing_preserves_chunk_boundaries_inside_segment() -> None:
     )
 
 
+def test_caption_cues_carry_optional_word_timing_metadata() -> None:
+    words = (
+        CaptionWord(start_time=0, end_time=0.4, text="hello"),
+        CaptionWord(start_time=0.5, end_time=1, text="world"),
+    )
+
+    cues = _caption_cues(
+        (
+            CaptionSegment(
+                start_time=0,
+                end_time=1,
+                text="hello world",
+                words=words,
+            ),
+        ),
+        caption_style=CaptionStyle(max_chars_per_line=24),
+        output_size=OutputSize(width=1080, height=1920),
+    )
+
+    assert len(cues) == 1
+    assert cues[0].words == words
+
+
+def test_caption_style_serializes_future_caption_fields() -> None:
+    style = CaptionStyle(
+        font_file=Path("C:/Windows/Fonts/arial.ttf"),
+        font_fallbacks=("Inter", "Segoe UI Emoji"),
+        outline_thickness=7,
+        shadow_strength=5,
+        uppercase=True,
+        highlight_color="#ffee00",
+        active_word_color="#00e5ff",
+        animation_preset=CaptionAnimationPreset.SCALE_POP,
+        vertical_safe_area=CaptionVerticalSafeArea(top=140, bottom=260),
+    )
+
+    payload = style.to_dict()
+
+    assert payload["font_file"] == "C:\\Windows\\Fonts\\arial.ttf"
+    assert payload["font_fallbacks"] == ["Inter", "Segoe UI Emoji"]
+    assert payload["outline_thickness"] == 7
+    assert payload["shadow_strength"] == 5
+    assert payload["uppercase"] is True
+    assert payload["highlight_color"] == "#ffee00"
+    assert payload["active_word_color"] == "#00e5ff"
+    assert payload["animation_preset"] == "scale_pop"
+    assert payload["vertical_safe_area"] == {"top": 140, "bottom": 260}
+    assert CaptionStyle.from_dict(payload) == style
+
+
+def test_generate_ass_subtitle_uses_explicit_polish_fields() -> None:
+    ass_text = generate_ass_subtitle(
+        (CaptionCue(start_time=0, end_time=1, lines=("hello",)),),
+        caption_style=CaptionStyle(
+            outline_thickness=8,
+            shadow_strength=6,
+            vertical_safe_area=CaptionVerticalSafeArea(top=150, bottom=300),
+        ),
+        output_size=OutputSize(width=1080, height=1920),
+    )
+
+    assert ",1,8,6,2,96,96,300,1" in ass_text
+    assert "{\\an2\\pos(540,1620)}hello" in ass_text
+
+
 def test_build_filter_complex_can_use_custom_caption_font_file() -> None:
     caption_metadata = CaptionMetadata(
         clip_id="clip-123",
@@ -251,6 +319,27 @@ def test_build_filter_complex_can_use_custom_caption_font_file() -> None:
     )
 
     assert "fontfile='C\\:/Windows/Fonts/arial.ttf'" in filter_complex
+
+
+def test_build_filter_complex_logs_caption_renderer_and_font(
+    caplog: pytest.LogCaptureFixture,
+) -> None:
+    caption_metadata = CaptionMetadata(
+        clip_id="clip-123",
+        segments=(CaptionSegment(start_time=0, end_time=1, text="hello"),),
+    )
+
+    with caplog.at_level(logging.INFO, logger="clipforge.media.render"):
+        build_filter_complex(
+            _layout(_region()),
+            caption_metadata=caption_metadata,
+            caption_style=CaptionStyle(font_file=Path("C:/Windows/Fonts/arial.ttf")),
+        )
+
+    assert (
+        "Rendering captions with drawtext backend using "
+        "font file C:\\Windows\\Fonts\\arial.ttf."
+    ) in caplog.messages
 
 
 def test_build_filter_complex_normalizes_caption_apostrophes_for_drawtext() -> None:
