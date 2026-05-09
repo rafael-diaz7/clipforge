@@ -1,328 +1,307 @@
-# clipforge
+# Clipforge
 
-Automating the boring parts of clipping so I can try to turn this into a minimal effort task.
+Clipforge is a local, CLI-driven workflow for discovering Twitch clips, ranking
+them for review, and rendering short-form vertical candidates.
 
-The goal of this project is to take a Twitch clip and turn it into multiple short-form vertical edits that are ready for YouTube Shorts, TikTok, etc. Instead of manually editing every clip, this pipeline generates a few good candidates that I can quickly review and tweak.
+It is built around a stateful loop:
 
-This is not meant to fully replace editing. It is meant to speed it up.
-
-
-## What this does (MVP)
-
-Given a Twitch clip URL:
-
-- Get a downloadable video (via Clipr or similar)
-- Download the clip locally
-- Generate multiple vertical edits:
-  - centered gameplay crop
-  - facecam-focused crop
-  - hybrid layout (facecam + gameplay section)
-- Save all outputs locally
-- Save layout metadata so edits can be tweaked later without starting over
-
-This is a human-in-the-loop workflow: clipforge creates candidates, then I review, tweak, and post manually.
-
-
-## Project structure
-
-```
-clipforge/
-  src/clipforge/        # main code
-  data/
-    downloads/          # raw clips
-    renders/            # final video outputs
-    metadata/           # layout + edit configs (json)
-      captions/         # optional timed caption metadata
-  examples/
-    layouts/            # example layout templates
-  README.md
+```text
+discover -> persist -> rerank -> review -> process -> reprocess
 ```
 
-## How this is meant to be used
+Clipforge does not try to replace editorial judgment. It automates the repetitive
+download, caption, layout, and render work so a human can decide what is worth
+posting.
 
-1. Input a Twitch clip URL
-2. Script downloads the clip
-3. Script generates a few vertical edit candidates
-4. I review them
-5. If needed, I tweak layout values or re-render
-6. Post manually
+## Features
 
-## Setup
+- Discover recent Twitch clips for a channel through the Twitch Helix API.
+- Persist discovered clips in local SQLite state at `data/state/clipforge.sqlite`.
+- Rank clips using Twitch metadata so review starts with the strongest candidates.
+- Review pending clips before spending time on downloads and renders.
+- Process the highest-ranked pending clips or a specific saved clip.
+- Reprocess an already-rendered clip intentionally with `--force`.
+- Download Twitch clips with `yt-dlp` by default, with Clipr available as an optional backend.
+- Render vertical candidates from reusable layout JSON files.
+- Optionally generate timed caption metadata with the OpenAI transcription API.
+- Burn caption metadata into renders with FFmpeg `drawtext` or generated `.ass` subtitle files.
+
+## Workflow Overview
+
+The primary workflow is stateful:
+
+1. Discover clips for a Twitch channel.
+2. Clipforge writes or refreshes those clips in SQLite.
+3. Ranking scores are stored with each clip.
+4. You review pending clips from the local state table.
+5. You process selected clips into vertical render candidates.
+6. If an edit needs another pass, you reprocess that clip explicitly.
+
+Processing remains human-in-the-loop. Clipforge creates candidates; you still
+review, tweak layouts or caption settings when needed, and post manually.
+Clipforge also tracks clip lifecycle state in SQLite so processed clips are not
+re-rendered accidentally.
+
+## Installation
 
 Requirements:
 
 - Python 3.11+
-- FFmpeg installed and available in PATH
-- yt-dlp is installed with Clipforge as a Python dependency
-- Twitch developer app credentials for clip discovery:
-  - `TWITCH_CLIENT_ID`
-  - `TWITCH_CLIENT_SECRET`
-- OpenAI API credentials for optional caption generation:
-  - `OPENAI_API_KEY`
-  - `OPENAI_TRANSCRIPTION_MODEL` defaults to `whisper-1`
-- A downloader backend:
-  - Clipr: `CLIPR_API_KEY` set and `CLIPFORGE_DOWNLOADER=clipr`
-  - yt-dlp: `CLIPFORGE_DOWNLOADER=ytdlp` or unset
-- `CLIPFORGE_DOWNLOADER` unset uses the default yt-dlp downloader
+- FFmpeg available on `PATH`
+- Twitch app credentials for clip discovery
+- OpenAI API credentials only if generating captions
+- Clipr API key only if using the Clipr downloader backend
 
-### FFmpeg
+Check FFmpeg:
 
-Check whether FFmpeg is already available:
-
-```bash
+```powershell
 ffmpeg -version
 ```
 
-If that command fails, install FFmpeg first:
+Create a virtual environment and install Clipforge:
 
-- Windows: install FFmpeg, then make sure the `ffmpeg` executable is on PATH before opening Git Bash.
-- Ubuntu/Linux: use your distro package manager, for example `sudo apt install ffmpeg`.
-- macOS: install with Homebrew using `brew install ffmpeg`.
-
-### Python Environment
-
-Windows Git Bash:
-
-```bash
+```powershell
 python -m venv .venv
-source .venv/Scripts/activate
-python -m pip install -e .
+.\.venv\Scripts\Activate.ps1
+python -m pip install -e ".[dev]"
 ```
 
-Ubuntu/Linux:
+For a non-development install, use `python -m pip install -e .`.
 
-```bash
-python3 -m venv .venv
-source .venv/bin/activate
-python -m pip install -e .
+Copy the example environment file:
+
+```powershell
+Copy-Item .env.example .env
 ```
 
-macOS:
+## Environment Variables
 
-```bash
-python3 -m venv .venv
-source .venv/bin/activate
-python -m pip install -e .
+Clipforge loads `.env` from the project root.
+
+| Variable | Required | Default | Purpose |
+| --- | --- | --- | --- |
+| `TWITCH_CLIENT_ID` | For `clips` discovery | none | Twitch app client ID. |
+| `TWITCH_CLIENT_SECRET` | For `clips` discovery | none | Twitch app client secret. |
+| `CLIPFORGE_DOWNLOADER` | No | `ytdlp` | Downloader backend. Supported values: `ytdlp`, `clipr`. |
+| `CLIPR_API_KEY` | Only when `CLIPFORGE_DOWNLOADER=clipr` | none | RapidAPI Clipr key. |
+| `OPENAI_API_KEY` | Only when generating captions | none | OpenAI API key for transcription. |
+| `OPENAI_TRANSCRIPTION_MODEL` | No | `whisper-1` | OpenAI transcription model used for captions. |
+| `CLIPFORGE_GENERATE_CAPTIONS` | No | `false` | Enables caption generation during full processing. |
+| `CLIPFORGE_CAPTION_FONT_FILE` | No | none | Optional local `.ttf` or `.otf` font path for burned-in captions. |
+| `CLIPFORGE_CAPTION_RENDERER` | No | `drawtext` | Caption renderer. Supported values: `drawtext`, `ass`. |
+| `CLIPFORGE_ASS_TEMP_DIR` | No | `data/metadata/ass` | Directory for generated `.ass` files when using the `ass` renderer. |
+| `CLIPFORGE_CAPTION_FONT_FALLBACKS` | No | `Arial` | Comma-separated fallback font names for generated ASS styles. |
+
+`yt-dlp` is installed as a Python dependency and is the default downloader even
+if `CLIPR_API_KEY` is present. Set `CLIPFORGE_DOWNLOADER=clipr` only when you
+want Clipforge to use Clipr.
+
+## Quick Start
+
+Discover and persist clips for a channel:
+
+```powershell
+clipforge clips --channel "<channel_login>" --limit 20
 ```
 
-### Clipr API Key
+Review the saved pending list:
 
-Copy `.env.example` to `.env`. If you use Clipr, replace the placeholder with
-your real key:
-
-```bash
-cp .env.example .env
+```powershell
+clipforge clips pending --channel "<channel_login>"
 ```
 
-`.env`:
+Process the top ranked pending clip:
 
-```text
-CLIPR_API_KEY=your_key_here
-CLIPFORGE_DOWNLOADER=clipr
+```powershell
+clipforge clips process --top 1
 ```
 
-`CLIPFORGE_DOWNLOADER` selects the Twitch clip downloader backend. The only
-supported backends are `clipr` and `ytdlp`. `ytdlp` remains the default when the
-variable is unset, even if `CLIPR_API_KEY` is present.
+Reprocess a rendered clip after changing layout or caption settings:
 
-### yt-dlp
-
-Clipforge installs `yt-dlp` as a Python dependency. To download Twitch clips
-directly without Clipr, leave `CLIPFORGE_DOWNLOADER` unset or select the backend:
-
-`.env`:
-
-```text
-CLIPFORGE_DOWNLOADER=ytdlp
+```powershell
+clipforge clips process --clip-id "<clip_id>" --force
 ```
 
-When `ytdlp` is selected, `CLIPR_API_KEY` is not required. Clipforge runs
-`yt-dlp` from the active Python environment.
+Outputs are written under `data/downloads/`, `data/renders/`, and
+`data/metadata/`. The SQLite state database tracks clip status and artifact
+paths between runs.
 
-### Twitch Clip Discovery
+## Stateful Clip Workflow
 
-Clip discovery uses the Twitch Helix API with app credentials. Add these values
-to `.env`:
+### Discover
 
-```text
-TWITCH_CLIENT_ID=your_twitch_client_id_here
-TWITCH_CLIENT_SECRET=your_twitch_client_secret_here
+`clipforge clips` searches Twitch clips and persists every returned clip to
+SQLite. Without date filters, discovery searches the last 7 days in UTC.
+
+```powershell
+clipforge clips --channel "<channel_login>" --limit 20
 ```
 
-List clips for a channel without downloading or rendering:
+Use UTC ISO-8601 filters when you want a specific window:
 
-```bash
-clipforge clips --channel "<channel_login>" --limit 10
+```powershell
+clipforge clips --channel "<channel_login>" --started-at "2026-05-01T00:00:00Z" --ended-at "2026-05-06T00:00:00Z" --limit 50
 ```
 
-Without explicit dates, `clips` searches the last 7 days in UTC.
+The command prints a compact tab-separated list and updates local state. JSON
+discovery exports are still available for manual inspection or external tools:
 
-You can narrow discovery with UTC ISO-8601 date filters:
-
-```bash
-clipforge clips \
-  --channel "<channel_login>" \
-  --limit 20 \
-  --started-at "2026-05-01T00:00:00Z" \
-  --ended-at "2026-05-06T00:00:00Z"
-```
-
-The command prints tab-separated `created_at`, `view_count`, `duration`, `url`,
-and `title` fields. Discovery is read-only and does not trigger downloads or
-renders.
-
-Pass `--format json` to write a queue-friendly discovery export instead of the
-tab-separated list:
-
-```bash
+```powershell
 clipforge clips --channel "<channel_login>" --limit 20 --format json
 ```
 
-By default, JSON exports are written to
-`data/metadata/discovered_clips/<channel>/<date>-<channel>.json`. Use `--output`
-to choose a specific path:
+Pass `--output "<path>"` with `--format json` to choose the export path.
 
-```bash
-clipforge clips \
-  --channel "<channel_login>" \
-  --limit 20 \
-  --format json \
-  --output "data/metadata/discovered_clips/review_queue.json"
+### Rerank
+
+Discovery stores a deterministic rank score based on available Twitch metadata.
+Refresh scores without calling Twitch again:
+
+```powershell
+clipforge clips rerank --channel "<channel_login>"
 ```
 
-## Running
+### Review
 
-Run the full Twitch-clip-to-candidates flow:
+List unprocessed clips ordered by rank:
 
-```bash
-python -m clipforge.pipeline.cli --url "<twitch_clip_url>"
+```powershell
+clipforge clips pending --channel "<channel_login>" --limit 10
 ```
 
-After reinstalling with `python -m pip install -e .`, the same full pipeline is available through the console script:
+Add `--show-url` when you want the full clip URLs in the table.
 
-```bash
-clipforge --url "<twitch_clip_url>"
+### Process
+
+Process by rank:
+
+```powershell
+clipforge clips process --top 3
 ```
 
-The command:
+Or process a specific saved clip:
 
-- validates the Twitch clip URL
-- downloads through the configured downloader backend, defaulting to yt-dlp
-- downloads the source clip to `data/downloads/<clip_slug>/<backend>/`
-- optionally generates caption metadata before rendering
-- burns generated captions into the rendered candidates when caption generation is enabled
-- renders the `center_gameplay`, `facecam_focus`, and `hybrid` candidates to `data/renders/<clip_slug>/<backend>/`
-- writes run metadata to `data/metadata/`
-- prints the source, render, and metadata paths
+```powershell
+clipforge clips process --clip-id "<clip_id>"
+```
 
-Caption metadata uses the `clipforge.caption_metadata` JSON schema with a
-`clip_id` and ordered `segments`, where each segment has `start_time`,
-`end_time`, and `text`. Caption files are saved deterministically under
-`data/metadata/captions/<clip_id>.json`. Run metadata may reference a caption
-metadata file with `caption_metadata_path`; when that field is absent, the clip
-has no caption metadata. A caption file with an empty `segments` list is valid
-and means captions were intentionally saved as empty.
-Before upload, clipforge extracts temporary speech-optimized MP3 audio with
-FFmpeg instead of sending the full MP4 to OpenAI.
-Caption rendering uses a conservative vertical-safe style by default: smaller
-two-line captions, safe horizontal margins, and capped display time so short
-captions do not linger through long pauses in a transcription segment.
-The default caption renderer is FFmpeg `drawtext`. Set
-`CLIPFORGE_CAPTION_RENDERER=ass` to render from generated `.ass` subtitle files
-under `CLIPFORGE_ASS_TEMP_DIR`; rerenders still use existing caption JSON and do
-not require new transcription or download work.
+Use `--continue-on-error` when processing a batch should continue after a single
+clip fails.
 
-Set `CLIPFORGE_CAPTION_FONT_FILE` to a local `.ttf` or `.otf` path to change the
-burned-in caption font:
+### Reprocess
+
+Rendered clips are excluded from pending and top-ranked processing. Reprocessing
+is opt-in so an existing render is not replaced by accident:
+
+```powershell
+clipforge clips process --clip-id "<clip_id>" --force
+```
+
+Force reprocessing and regenerate captions in the same pass:
+
+```powershell
+clipforge clips process --clip-id "<clip_id>" --force --generate-captions
+```
+
+`--force` is only supported with `--clip-id`.
+
+## Direct Pipeline Commands
+
+The stateful clip workflow is the normal path. Direct commands are available for
+manual or advanced use:
+
+| Command | Use |
+| --- | --- |
+| `clipforge process --url "<twitch_clip_url>"` | Run the full URL-to-candidates pipeline for one Twitch clip. |
+| `clipforge --url "<twitch_clip_url>"` | Shortcut for the full direct pipeline. |
+| `clipforge resolve-url --url "<twitch_clip_url>"` | Resolve a Twitch clip URL to a direct media URL through Clipr. |
+| `clipforge download --media-url "<direct_media_url>" --clip-id "<clip_id>"` | Download a direct media URL. |
+| `clipforge render --source "<path>" --layout center_gameplay` | Render one layout from a local source clip. |
+| `clipforge render-all --source "<path>"` | Render all default candidate layouts from a local source clip. |
+| `clipforge captions --source "<path>" --clip-id "<clip_id>"` | Generate caption metadata for a local source clip. Add `--output "<path>"` to choose the JSON path. |
+
+Default candidate layouts live in `examples/layouts/` and currently include
+`center_gameplay`, `facecam_focus`, and `hybrid`.
+
+## Caption Workflow
+
+Captions are optional. Enable them for the full processing flow with either an
+environment variable:
+
+```text
+CLIPFORGE_GENERATE_CAPTIONS=true
+```
+
+or per command:
+
+```powershell
+clipforge clips process --clip-id "<clip_id>" --generate-captions
+```
+
+Caption generation extracts temporary speech-optimized audio with FFmpeg,
+transcribes it with the configured OpenAI transcription model, and writes JSON
+metadata to:
+
+```text
+data/metadata/captions/<clip_id>.json
+```
+
+Existing caption metadata can be reused during manual renders:
+
+```powershell
+clipforge render-all --source "data/downloads/<clip_id>/ytdlp/<clip_id>.mp4" --clip-id "<clip_id>" --captions "data/metadata/captions/<clip_id>.json"
+```
+
+Caption rendering defaults to FFmpeg `drawtext`. Set
+`CLIPFORGE_CAPTION_RENDERER=ass` to render from generated ASS subtitle files
+under `CLIPFORGE_ASS_TEMP_DIR`. Rerenders with existing caption JSON do not need
+another transcription request.
+
+Set `CLIPFORGE_CAPTION_FONT_FILE` to a local font file when you want explicit
+caption font control:
 
 ```text
 CLIPFORGE_CAPTION_FONT_FILE=C:/Windows/Fonts/arial.ttf
 ```
 
-Use `--captions <caption_metadata.json>` with `render` or `render-all` to burn
-existing caption metadata into local renders:
+## Project Structure
 
-```bash
-clipforge render-all \
-  --source "data/downloads/<clip_slug>/<backend>/<clip_slug>.mp4" \
-  --clip-id "<clip_id>" \
-  --captions "data/metadata/captions/<clip_id>.json"
+```text
+clipforge/
+  src/clipforge/        # application code
+  data/
+    downloads/          # downloaded source clips
+    renders/            # rendered vertical candidates
+    metadata/           # run metadata, discovery exports, captions, ASS files
+      captions/         # caption metadata JSON
+      ass/              # generated ASS subtitle files
+    state/
+      clipforge.sqlite  # local clip workflow state
+  examples/
+    layouts/            # reusable render layouts
+  tests/                # automated tests
 ```
 
-Full pipeline render filenames are layout-only inside the scoped render
-directory, for example `data/renders/<clip_slug>/ytdlp/hybrid.mp4`. Direct
-`render` and `render-all` commands still write flat filenames based on the
-source clip stem.
+The main CLI entry point is `clipforge.pipeline.cli:main`.
 
-Use `--verbose` to show progress logs from Clipforge. For the `ytdlp` backend,
-verbose mode logs when URL processing starts and when the download begins.
-
-You can also run each pipeline step directly:
-
-```bash
-python -m clipforge.pipeline.cli resolve-url --url "<twitch_clip_url>"
-python -m clipforge.pipeline.cli download --media-url "<direct_media_url>" --clip-id "<clip_id>"
-python -m clipforge.pipeline.cli captions --source "data/downloads/<clip_slug>/<backend>/<clip_slug>.mp4" --clip-id "<clip_id>"
-python -m clipforge.pipeline.cli render --source "data/downloads/<clip_slug>/<backend>/<clip_slug>.mp4" --layout center_gameplay --captions "data/metadata/captions/<clip_id>.json"
-python -m clipforge.pipeline.cli render-all --source "data/downloads/<clip_slug>/<backend>/<clip_slug>.mp4" --captions "data/metadata/captions/<clip_id>.json"
-python -m clipforge.pipeline.cli process --url "<twitch_clip_url>"
-```
-
-`resolve-url` uses Clipr because it resolves a direct media URL without
-downloading. The full `process` flow and `clipforge --url` shortcut use the
-configured downloader backend.
-
-The same subcommands are available through the installed `clipforge` command:
-
-```bash
-clipforge --url "<twitch_clip_url>"
-clipforge resolve-url --url "<twitch_clip_url>"
-clipforge download --media-url "<direct_media_url>" --clip-id "<clip_id>"
-clipforge captions --source "data/downloads/<clip_slug>/<backend>/<clip_slug>.mp4" --clip-id "<clip_id>"
-clipforge render --source "data/downloads/<clip_slug>/<backend>/<clip_slug>.mp4" --layout center_gameplay --captions "data/metadata/captions/<clip_id>.json"
-clipforge render-all --source "data/downloads/<clip_slug>/<backend>/<clip_slug>.mp4" --captions "data/metadata/captions/<clip_id>.json"
-clipforge process --url "<twitch_clip_url>"
-```
-
-For development, the installed console script points at
-`clipforge.pipeline.cli:main`.
-
-## Testing
+## Development And Testing
 
 Run the test suite from the repository root:
 
-```bash
-pytest .\tests\
+```powershell
+python -m pytest .\tests\
 ```
 
-The pytest config adds the repo root to Python's import path so shared test
-helpers such as `tests.constants` resolve consistently across `pytest` and
-`python -m pytest`.
+Use the global `--verbose` flag before a subcommand when you want progress logs.
 
-## Design notes
+The pytest configuration adds the repo root to Python's import path so shared
+test helpers resolve consistently.
 
-Layouts are defined using normalized coordinates (0 to 1). This makes it easy to tweak crops without re-editing from scratch.
+## Future Ideas
 
-Each render is generated from a layout config, not hardcoded logic.
-
-The idea is to:
-- generate a few good options automatically
-- make small adjustments quickly
-- avoid full manual edits every time
-
-
-## Future ideas
-
-- automatic clip selection (Twitch API)
-- captions using Whisper
-- better facecam detection
-- dynamic crops based on audio or transcript
-- auto-generated titles and descriptions
-- upload integration
-
-
-## Why I'm building this
-
-Clipping is mostly repetitive work. The creative part is deciding what is funny or worth posting.
-
-Everything else should be as fast as possible.
+- Better review controls for approving, skipping, and posting clips from state.
+- Smarter layout selection based on clip content.
+- Facecam or subject-aware crop assistance.
+- Caption styling presets.
+- Title, description, and thumbnail draft generation.
+- Upload or publishing integrations after human approval.
