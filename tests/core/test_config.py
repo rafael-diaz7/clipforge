@@ -8,6 +8,7 @@ from clipforge.core.config import (
     DEFAULT_DOWNLOADER_BACKEND,
     DEFAULT_CAPTION_RENDERER_BACKEND,
     DEFAULT_OPENAI_TRANSCRIPTION_MODEL,
+    ANALYSIS_DIR,
     DOWNLOADS_DIR,
     EXAMPLE_LAYOUTS_DIR,
     METADATA_DIR,
@@ -196,6 +197,7 @@ def test_config_defines_project_paths_with_pathlib() -> None:
     assert config.downloads_dir == DOWNLOADS_DIR
     assert config.renders_dir == RENDERS_DIR
     assert config.metadata_dir == METADATA_DIR
+    assert config.analysis_dir == ANALYSIS_DIR
     assert config.state_db_path == STATE_DB_PATH
     assert config.example_layouts_dir == EXAMPLE_LAYOUTS_DIR
     assert all(
@@ -205,6 +207,7 @@ def test_config_defines_project_paths_with_pathlib() -> None:
             config.downloads_dir,
             config.renders_dir,
             config.metadata_dir,
+            config.analysis_dir,
             config.state_db_path,
             config.example_layouts_dir,
         )

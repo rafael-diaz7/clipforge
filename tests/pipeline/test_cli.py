@@ -167,6 +167,65 @@ def test_main_routes_render_all_command_caption_path(monkeypatch, capsys) -> Non
     assert capsys.readouterr().out.splitlines() == ["one.mp4", "two.mp4"]
 
 
+def test_main_routes_render_all_static_layouts_flag(monkeypatch, capsys) -> None:
+    calls: list[dict[str, object]] = []
+
+    def fake_render_all(
+        source_path: Path,
+        *,
+        clip_id: str | None = None,
+        use_generated_layouts: bool = True,
+    ) -> tuple[Path, ...]:
+        calls.append(
+            {
+                "source_path": source_path,
+                "clip_id": clip_id,
+                "use_generated_layouts": use_generated_layouts,
+            }
+        )
+        return (Path("static-one.mp4"),)
+
+    monkeypatch.setattr("clipforge.pipeline.cli.render_all_candidates", fake_render_all)
+
+    exit_code = main(
+        [
+            "render-all",
+            "--source",
+            "source.mp4",
+            "--clip-id",
+            "test-clip",
+            "--static-layouts",
+        ]
+    )
+
+    assert exit_code == 0
+    assert calls == [
+        {
+            "source_path": Path("source.mp4"),
+            "clip_id": "test-clip",
+            "use_generated_layouts": False,
+        }
+    ]
+    assert capsys.readouterr().out.splitlines() == ["static-one.mp4"]
+
+
+def test_main_routes_process_static_layouts_flag(monkeypatch) -> None:
+    calls: list[dict[str, object]] = []
+
+    def fake_process(url: str, *, use_generated_layouts: bool) -> Path:
+        calls.append({"url": url, "use_generated_layouts": use_generated_layouts})
+        return Path("metadata.json")
+
+    monkeypatch.setattr("clipforge.pipeline.cli.process_clip", fake_process)
+
+    exit_code = main(["process", "--url", TWITCH_CLIP_URL, "--static-layouts"])
+
+    assert exit_code == 0
+    assert calls == [
+        {"url": TWITCH_CLIP_URL, "use_generated_layouts": False},
+    ]
+
+
 def test_main_routes_captions_command(monkeypatch, capsys, tmp_path: Path) -> None:
     config = ClipforgeConfig(openai_api_key="test-key", metadata_dir=tmp_path / "metadata")
     caption_path = tmp_path / "metadata" / "captions" / "clip-123.json"

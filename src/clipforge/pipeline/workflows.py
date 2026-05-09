@@ -14,6 +14,7 @@ from clipforge.media.layouts import (
     DEFAULT_LAYOUT_NAMES,
     Layout,
     load_example_layouts,
+    load_example_layout,
     load_layout,
 )
 from clipforge.media.render import render_layout
@@ -24,6 +25,11 @@ from clipforge.storage.state import get_clip
 
 
 LOGGER = logging.getLogger("clipforge.pipeline.workflows")
+
+GENERATED_LAYOUT_REPLACEMENTS = {
+    "facecam_focus": "detected_streamer_focus",
+    "hybrid": "detected_hybrid",
+}
 
 
 def resolve_download_url(twitch_clip_url: str, *, config: ClipforgeConfig | None = None) -> str:
@@ -82,12 +88,17 @@ def render_all_candidates(
     *,
     clip_id: str | None = None,
     caption_metadata_path: Path | None = None,
+    use_generated_layouts: bool = True,
     config: ClipforgeConfig | None = None,
 ) -> tuple[Path, ...]:
     """Render the default MVP candidate layouts for one source clip."""
 
     config = config or load_config()
-    layouts = load_example_layouts(DEFAULT_LAYOUT_NAMES, layouts_dir=config.example_layouts_dir)
+    layouts = _candidate_layouts(
+        clip_id=clip_id,
+        use_generated_layouts=use_generated_layouts,
+        config=config,
+    )
     caption_metadata = _load_optional_caption_metadata(caption_metadata_path)
     caption_style = _caption_style_from_config(config)
     return tuple(
@@ -107,6 +118,7 @@ def process_clip(
     twitch_clip_url: str,
     *,
     generate_captions: bool | None = None,
+    use_generated_layouts: bool = True,
     config: ClipforgeConfig | None = None,
 ) -> Path:
     """Run the full MVP pipeline and return the metadata path."""
@@ -134,7 +146,11 @@ def process_clip(
     caption_metadata = _load_optional_caption_metadata(caption_metadata_path)
     caption_style = _caption_style_from_config(config)
 
-    layouts = load_example_layouts(DEFAULT_LAYOUT_NAMES, layouts_dir=config.example_layouts_dir)
+    layouts = _candidate_layouts(
+        clip_id=clip_id,
+        use_generated_layouts=use_generated_layouts,
+        config=config,
+    )
 
     outputs = []
     for layout in layouts:
@@ -196,6 +212,42 @@ def _load_layout_ref(layout_ref: str, *, config: ClipforgeConfig) -> Layout:
     layout_path = config.example_layouts_dir / f"{layout_ref}.json"
     LOGGER.info("Loading example layout %s from %s.", layout_ref, layout_path)
     return load_layout(layout_path)
+
+
+def _candidate_layouts(
+    *,
+    clip_id: str | None,
+    use_generated_layouts: bool,
+    config: ClipforgeConfig,
+) -> tuple[Layout, ...]:
+    if not use_generated_layouts or clip_id is None:
+        return load_example_layouts(
+            DEFAULT_LAYOUT_NAMES,
+            layouts_dir=config.example_layouts_dir,
+        )
+
+    safe_clip_id = safe_filename(clip_id)
+    generated_layouts_dir = config.analysis_dir / safe_clip_id / "layouts"
+    layouts: list[Layout] = []
+    for layout_name in DEFAULT_LAYOUT_NAMES:
+        generated_name = GENERATED_LAYOUT_REPLACEMENTS.get(layout_name)
+        generated_path = (
+            generated_layouts_dir / f"{generated_name}.json"
+            if generated_name is not None
+            else None
+        )
+        if generated_path is not None and generated_path.is_file():
+            LOGGER.info(
+                "Using generated layout %s instead of static %s.",
+                generated_path,
+                layout_name,
+            )
+            layouts.append(load_layout(generated_path))
+        else:
+            layouts.append(
+                load_example_layout(layout_name, layouts_dir=config.example_layouts_dir)
+            )
+    return tuple(layouts)
 
 
 def _render_output_path(

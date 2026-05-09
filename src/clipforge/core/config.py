@@ -16,6 +16,7 @@ DATA_DIR = PROJECT_ROOT / "data"
 DOWNLOADS_DIR = DATA_DIR / "downloads"
 RENDERS_DIR = DATA_DIR / "renders"
 METADATA_DIR = DATA_DIR / "metadata"
+ANALYSIS_DIR = DATA_DIR / "analysis"
 STATE_DIR = DATA_DIR / "state"
 STATE_DB_PATH = STATE_DIR / "clipforge.sqlite"
 EXAMPLE_LAYOUTS_DIR = PROJECT_ROOT / "examples" / "layouts"
@@ -58,6 +59,7 @@ class ClipforgeConfig:
     downloads_dir: Path = DOWNLOADS_DIR
     renders_dir: Path = RENDERS_DIR
     metadata_dir: Path = METADATA_DIR
+    analysis_dir: Path = ANALYSIS_DIR
     state_db_path: Path = STATE_DB_PATH
     example_layouts_dir: Path = EXAMPLE_LAYOUTS_DIR
     target_width: int = TARGET_WIDTH

@@ -63,6 +63,11 @@ def build_parser() -> argparse.ArgumentParser:
         default=None,
         help="Generate caption metadata after download and before rendering.",
     )
+    parser.add_argument(
+        "--static-layouts",
+        action="store_true",
+        help="With --url, ignore generated analysis layouts and render static layouts.",
+    )
 
     subparsers = parser.add_subparsers(dest="command")
 
@@ -118,6 +123,11 @@ def build_parser() -> argparse.ArgumentParser:
         "--captions",
         help="Optional caption metadata JSON path to burn into each render.",
     )
+    render_all_parser.add_argument(
+        "--static-layouts",
+        action="store_true",
+        help="Ignore generated analysis layouts and render static layouts.",
+    )
 
     captions_parser = subparsers.add_parser(
         "captions",
@@ -147,6 +157,11 @@ def build_parser() -> argparse.ArgumentParser:
         action="store_true",
         default=None,
         help="Generate caption metadata after download and before rendering.",
+    )
+    process_parser.add_argument(
+        "--static-layouts",
+        action="store_true",
+        help="Ignore generated analysis layouts and render static layouts.",
     )
 
     clips_parser = subparsers.add_parser(
@@ -222,6 +237,11 @@ def build_parser() -> argparse.ArgumentParser:
         action="store_true",
         default=None,
         help="Generate caption metadata before rendering.",
+    )
+    clips_process_parser.add_argument(
+        "--static-layouts",
+        action="store_true",
+        help="Ignore generated analysis layouts and render static layouts.",
     )
     clips_process_parser.add_argument(
         "--continue-on-error",
@@ -306,10 +326,15 @@ def main(argv: Sequence[str] | None = None) -> int:
 
     try:
         if args.url and args.command is None:
-            if args.generate_captions is None:
-                process_clip(args.url)
+            process_kwargs = {}
+            if args.generate_captions is not None:
+                process_kwargs["generate_captions"] = args.generate_captions
+            if args.static_layouts:
+                process_kwargs["use_generated_layouts"] = False
+            if process_kwargs:
+                process_clip(args.url, **process_kwargs)
             else:
-                process_clip(args.url, generate_captions=args.generate_captions)
+                process_clip(args.url)
             return 0
 
         if args.command is None:
@@ -339,6 +364,8 @@ def main(argv: Sequence[str] | None = None) -> int:
             render_kwargs = {"clip_id": args.clip_id}
             if args.captions:
                 render_kwargs["caption_metadata_path"] = Path(args.captions)
+            if args.static_layouts:
+                render_kwargs["use_generated_layouts"] = False
             for output_path in render_all_candidates(Path(args.source), **render_kwargs):
                 print(output_path)
             return 0
@@ -354,10 +381,15 @@ def main(argv: Sequence[str] | None = None) -> int:
             return 0
 
         if args.command == "process":
-            if args.generate_captions is None:
-                process_clip(args.url)
+            process_kwargs = {}
+            if args.generate_captions is not None:
+                process_kwargs["generate_captions"] = args.generate_captions
+            if args.static_layouts:
+                process_kwargs["use_generated_layouts"] = False
+            if process_kwargs:
+                process_clip(args.url, **process_kwargs)
             else:
-                process_clip(args.url, generate_captions=args.generate_captions)
+                process_clip(args.url)
             return 0
 
         if args.command == "clips":
@@ -503,6 +535,8 @@ def _handle_clips_process_command(args: argparse.Namespace) -> int:
             process_kwargs = {"config": config}
             if args.generate_captions is not None:
                 process_kwargs["generate_captions"] = args.generate_captions
+            if args.static_layouts:
+                process_kwargs["use_generated_layouts"] = False
             metadata_path = process_clip(clip.url, **process_kwargs)
         except Exception as exc:
             failures += 1
