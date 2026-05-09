@@ -21,6 +21,7 @@ from clipforge.pipeline.workflows import (
     render_candidate,
     resolve_download_url,
 )
+from clipforge.storage.state import UNPROCESSED_STATUSES, get_clip, get_unprocessed_clips
 
 
 LOGGER = logging.getLogger("clipforge.pipeline.cli")
@@ -138,9 +139,10 @@ def build_parser() -> argparse.ArgumentParser:
 
     clips_parser = subparsers.add_parser(
         "clips",
-        help="List Twitch clips for a channel without downloading or rendering.",
+        help="Discover clips or process saved clips from SQLite state.",
     )
-    clips_parser.add_argument("--channel", required=True, help="Twitch channel login.")
+    clips_subparsers = clips_parser.add_subparsers(dest="clips_command")
+    clips_parser.add_argument("--channel", help="Twitch channel login.")
     clips_parser.add_argument(
         "--limit",
         type=int,
@@ -163,6 +165,24 @@ def build_parser() -> argparse.ArgumentParser:
     clips_parser.add_argument(
         "--output",
         help="Optional JSON export path. Only used with --format json.",
+    )
+    clips_subparsers.add_parser(
+        "pending",
+        help="List unprocessed saved clips by rank.",
+    )
+    clips_process_parser = clips_subparsers.add_parser(
+        "process",
+        help="Process one saved clip from SQLite state.",
+    )
+    clips_process_group = clips_process_parser.add_mutually_exclusive_group(required=True)
+    clips_process_group.add_argument(
+        "--top",
+        type=int,
+        help="Process the highest-ranked unprocessed clip. Only --top 1 is supported.",
+    )
+    clips_process_group.add_argument(
+        "--clip-id",
+        help="Process a specific unprocessed saved clip ID.",
     )
 
     return parser
@@ -239,6 +259,15 @@ def main(argv: Sequence[str] | None = None) -> int:
 
 
 def _handle_clips_command(args: argparse.Namespace) -> int:
+    if args.clips_command == "pending":
+        return _handle_clips_pending_command(args)
+
+    if args.clips_command == "process":
+        return _handle_clips_process_command(args)
+
+    if not args.channel:
+        raise CLIError("clips discovery requires --channel.")
+
     if args.output and not args.format:
         raise CLIError("--output requires --format json.")
 
@@ -282,6 +311,41 @@ def _handle_clips_command(args: argparse.Namespace) -> int:
             )
         )
     return 0
+
+
+def _handle_clips_pending_command(args: argparse.Namespace) -> int:
+    config = load_config()
+    for clip in get_unprocessed_clips(db_path=config.state_db_path):
+        print(_format_state_clip(clip))
+    return 0
+
+
+def _handle_clips_process_command(args: argparse.Namespace) -> int:
+    config = load_config()
+    if args.top is not None:
+        if args.top != 1:
+            raise CLIError("clips process only supports --top 1.")
+        clips = get_unprocessed_clips(db_path=config.state_db_path, limit=1)
+        if not clips:
+            raise CLIError("No unprocessed clips found.")
+        clip = clips[0]
+    else:
+        clip = get_clip(args.clip_id, db_path=config.state_db_path)
+        if clip is None:
+            raise CLIError(f"Clip not found: {args.clip_id}.")
+        if clip.status not in UNPROCESSED_STATUSES:
+            raise CLIError(f"Clip is not unprocessed: {args.clip_id}.")
+
+    process_clip(clip.url, config=config)
+    return 0
+
+
+def _format_state_clip(clip) -> str:
+    rank_score = "" if clip.rank_score is None else f"{clip.rank_score:g}"
+    view_count = "" if clip.view_count is None else str(clip.view_count)
+    duration = "" if clip.duration_seconds is None else f"{clip.duration_seconds:g}s"
+    title = clip.title or ""
+    return "\t".join((clip.clip_id, rank_score, view_count, duration, clip.url, title))
 
 
 def _configure_logging(*, verbose: bool) -> None:

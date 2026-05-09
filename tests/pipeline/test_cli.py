@@ -7,6 +7,7 @@ import pytest
 from clipforge.core.config import ClipforgeConfig
 from clipforge.pipeline.cli import main
 from clipforge.integrations.twitch import TwitchClip
+from clipforge.storage.state import get_clip, mark_clip_rendered, upsert_discovered_clip
 from tests.constants import TWITCH_CLIP_URL
 
 
@@ -413,6 +414,148 @@ def test_main_exports_clips_command_to_custom_json_path(
 
     assert exit_code == 0
     assert capsys.readouterr().out.splitlines() == [f"export: {output_path}"]
+
+
+def test_main_lists_pending_clips_from_state(monkeypatch, capsys, tmp_path: Path) -> None:
+    config = ClipforgeConfig(state_db_path=tmp_path / "state" / "clipforge.sqlite")
+    upsert_discovered_clip(
+        clip_id="clip-1",
+        url="https://clips.twitch.tv/clip-1",
+        title="first",
+        view_count=10,
+        duration_seconds=12.5,
+        rank_score=0.2,
+        db_path=config.state_db_path,
+    )
+    upsert_discovered_clip(
+        clip_id="clip-2",
+        url="https://clips.twitch.tv/clip-2",
+        title="second",
+        view_count=20,
+        duration_seconds=30,
+        rank_score=0.9,
+        db_path=config.state_db_path,
+    )
+
+    monkeypatch.setattr("clipforge.pipeline.cli.load_config", lambda: config)
+
+    exit_code = main(["clips", "pending"])
+
+    assert exit_code == 0
+    assert capsys.readouterr().out.splitlines() == [
+        "clip-2\t0.9\t20\t30s\thttps://clips.twitch.tv/clip-2\tsecond",
+        "clip-1\t0.2\t10\t12.5s\thttps://clips.twitch.tv/clip-1\tfirst",
+    ]
+
+
+def test_main_processes_top_pending_clip_from_state(
+    monkeypatch,
+    tmp_path: Path,
+) -> None:
+    config = ClipforgeConfig(state_db_path=tmp_path / "state" / "clipforge.sqlite")
+    upsert_discovered_clip(
+        clip_id="clip-1",
+        url="https://clips.twitch.tv/clip-1",
+        rank_score=0.2,
+        db_path=config.state_db_path,
+    )
+    upsert_discovered_clip(
+        clip_id="clip-2",
+        url="https://clips.twitch.tv/clip-2",
+        rank_score=0.9,
+        db_path=config.state_db_path,
+    )
+    calls: list[dict[str, object]] = []
+
+    def fake_process(url: str, *, config: ClipforgeConfig) -> Path:
+        calls.append({"url": url, "config": config})
+        return Path("metadata.json")
+
+    monkeypatch.setattr("clipforge.pipeline.cli.load_config", lambda: config)
+    monkeypatch.setattr("clipforge.pipeline.cli.process_clip", fake_process)
+
+    exit_code = main(["clips", "process", "--top", "1"])
+
+    assert exit_code == 0
+    assert calls == [{"url": "https://clips.twitch.tv/clip-2", "config": config}]
+
+
+def test_main_processes_specific_pending_clip_from_state(
+    monkeypatch,
+    tmp_path: Path,
+) -> None:
+    config = ClipforgeConfig(state_db_path=tmp_path / "state" / "clipforge.sqlite")
+    upsert_discovered_clip(
+        clip_id="clip-1",
+        url="https://clips.twitch.tv/clip-1",
+        rank_score=0.9,
+        db_path=config.state_db_path,
+    )
+    upsert_discovered_clip(
+        clip_id="clip-2",
+        url="https://clips.twitch.tv/clip-2",
+        rank_score=0.2,
+        db_path=config.state_db_path,
+    )
+    calls: list[str] = []
+
+    def fake_process(url: str, *, config: ClipforgeConfig) -> Path:
+        calls.append(url)
+        return Path("metadata.json")
+
+    monkeypatch.setattr("clipforge.pipeline.cli.load_config", lambda: config)
+    monkeypatch.setattr("clipforge.pipeline.cli.process_clip", fake_process)
+
+    exit_code = main(["clips", "process", "--clip-id", "clip-2"])
+
+    assert exit_code == 0
+    assert calls == ["https://clips.twitch.tv/clip-2"]
+
+
+def test_main_clips_pending_and_top_process_exclude_rendered_clips(
+    monkeypatch,
+    capsys,
+    tmp_path: Path,
+) -> None:
+    config = ClipforgeConfig(state_db_path=tmp_path / "state" / "clipforge.sqlite")
+    upsert_discovered_clip(
+        clip_id="clip-rendered",
+        url="https://clips.twitch.tv/clip-rendered",
+        title="rendered",
+        rank_score=1.0,
+        db_path=config.state_db_path,
+    )
+    upsert_discovered_clip(
+        clip_id="clip-pending",
+        url="https://clips.twitch.tv/clip-pending",
+        title="pending",
+        rank_score=0.5,
+        db_path=config.state_db_path,
+    )
+    mark_clip_rendered(
+        "clip-rendered",
+        render_dir=tmp_path / "renders" / "clip-rendered",
+        db_path=config.state_db_path,
+    )
+    calls: list[str] = []
+
+    def fake_process(url: str, *, config: ClipforgeConfig) -> Path:
+        calls.append(url)
+        return Path("metadata.json")
+
+    monkeypatch.setattr("clipforge.pipeline.cli.load_config", lambda: config)
+    monkeypatch.setattr("clipforge.pipeline.cli.process_clip", fake_process)
+
+    pending_exit_code = main(["clips", "pending"])
+    process_exit_code = main(["clips", "process", "--top", "1"])
+
+    assert pending_exit_code == 0
+    assert process_exit_code == 0
+    assert capsys.readouterr().out.splitlines() == [
+        "clip-pending\t0.5\t\t\thttps://clips.twitch.tv/clip-pending\tpending"
+    ]
+    assert calls == ["https://clips.twitch.tv/clip-pending"]
+    assert get_clip("clip-rendered", db_path=config.state_db_path).status == "rendered"
 
 
 def test_main_rejects_clips_output_without_json_format(monkeypatch, capsys) -> None:
