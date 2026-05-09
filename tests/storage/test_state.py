@@ -41,6 +41,7 @@ def test_upsert_discovered_clip_inserts_new_clip_with_discovered_status(
         streamer_login="example",
         title="first title",
         view_count=42,
+        created_at="2026-04-30T12:00:00Z",
         duration_seconds=28.5,
         rank_score=0.75,
         rank_breakdown={"views": 0.5, "age": 1.0},
@@ -54,6 +55,7 @@ def test_upsert_discovered_clip_inserts_new_clip_with_discovered_status(
     assert clip.streamer_login == "example"
     assert clip.title == "first title"
     assert clip.view_count == 42
+    assert clip.created_at == "2026-04-30T12:00:00Z"
     assert clip.duration_seconds == 28.5
     assert clip.rank_score == 0.75
     assert clip.rank_breakdown == {"age": 1.0, "views": 0.5}
@@ -83,6 +85,7 @@ def test_rediscovery_updates_metadata_but_preserves_status(tmp_path: Path) -> No
         streamer_login="example",
         title="new title",
         view_count=100,
+        created_at="2026-05-02T12:00:00Z",
         duration_seconds=30,
         rank_score=0.9,
         rank_breakdown={"views": 0.8, "age": 1.0},
@@ -95,6 +98,7 @@ def test_rediscovery_updates_metadata_but_preserves_status(tmp_path: Path) -> No
     assert clip.streamer_login == "example"
     assert clip.title == "new title"
     assert clip.view_count == 100
+    assert clip.created_at == "2026-05-02T12:00:00Z"
     assert clip.duration_seconds == 30
     assert clip.rank_score == 0.9
     assert clip.rank_breakdown == {"age": 1.0, "views": 0.8}

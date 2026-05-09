@@ -13,7 +13,11 @@ from clipforge.core.config import ConfigError, load_config
 from clipforge.integrations.twitch import list_channel_clips, twitch_channel_login_from_input
 from clipforge.media.captions import generate_caption_metadata
 from clipforge.pipeline.artifacts import write_clip_discovery_export, write_metadata
-from clipforge.pipeline.state_sync import record_discovered_clips, record_rendered_clip
+from clipforge.pipeline.state_sync import (
+    record_discovered_clips,
+    record_rendered_clip,
+    rerank_persisted_clips,
+)
 from clipforge.pipeline.workflows import (
     download_media_url,
     process_clip,
@@ -200,6 +204,15 @@ def build_parser() -> argparse.ArgumentParser:
         "--clip-id",
         help="Process a specific unprocessed saved clip ID.",
     )
+    clips_rerank_parser = clips_subparsers.add_parser(
+        "rerank",
+        help="Refresh saved clip rank scores from SQLite state.",
+    )
+    clips_rerank_parser.add_argument(
+        "--channel",
+        dest="rerank_channel",
+        help="Only rerank clips for this Twitch channel login.",
+    )
 
     return parser
 
@@ -281,6 +294,9 @@ def _handle_clips_command(args: argparse.Namespace) -> int:
     if args.clips_command == "process":
         return _handle_clips_process_command(args)
 
+    if args.clips_command == "rerank":
+        return _handle_clips_rerank_command(args)
+
     if not args.channel:
         raise CLIError("clips discovery requires --channel.")
 
@@ -361,6 +377,15 @@ def _handle_clips_process_command(args: argparse.Namespace) -> int:
             raise CLIError(f"Clip is not unprocessed: {args.clip_id}.")
 
     process_clip(clip.url, config=config)
+    return 0
+
+
+def _handle_clips_rerank_command(args: argparse.Namespace) -> int:
+    config = load_config()
+    channel = args.rerank_channel or args.channel
+    count = rerank_persisted_clips(config=config, channel=channel)
+    suffix = "clip" if count == 1 else "clips"
+    print(f"Reranked {count} {suffix}")
     return 0
 
 

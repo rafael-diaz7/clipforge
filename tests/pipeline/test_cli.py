@@ -631,6 +631,49 @@ def test_main_clips_pending_and_top_process_exclude_rendered_clips(
     assert get_clip("clip-rendered", db_path=config.state_db_path).status == "rendered"
 
 
+def test_main_reranks_clips_from_state_without_changing_status(
+    monkeypatch,
+    capsys,
+    tmp_path: Path,
+) -> None:
+    config = ClipforgeConfig(state_db_path=tmp_path / "state" / "clipforge.sqlite")
+    upsert_discovered_clip(
+        clip_id="clip-rendered",
+        url="https://clips.twitch.tv/clip-rendered",
+        streamer_login="example",
+        title="rendered clip",
+        view_count=100,
+        created_at="2026-05-01T00:00:00Z",
+        duration_seconds=30,
+        rank_score=0.01,
+        db_path=config.state_db_path,
+    )
+    mark_clip_rendered(
+        "clip-rendered",
+        render_dir=tmp_path / "renders" / "clip-rendered",
+        db_path=config.state_db_path,
+    )
+
+    def fail_twitch(*args, **kwargs) -> tuple[TwitchClip, ...]:
+        raise AssertionError("Twitch should not be called during rerank.")
+
+    def fail_process(*args, **kwargs) -> Path:
+        raise AssertionError("Processing should not run during rerank.")
+
+    monkeypatch.setattr("clipforge.pipeline.cli.load_config", lambda: config)
+    monkeypatch.setattr("clipforge.pipeline.cli.list_channel_clips", fail_twitch)
+    monkeypatch.setattr("clipforge.pipeline.cli.process_clip", fail_process)
+
+    exit_code = main(["clips", "rerank"])
+
+    state = get_clip("clip-rendered", db_path=config.state_db_path)
+    assert exit_code == 0
+    assert capsys.readouterr().out.splitlines() == ["Reranked 1 clip"]
+    assert state is not None
+    assert state.status == "rendered"
+    assert state.rank_score != 0.01
+
+
 def test_main_rejects_clips_output_without_json_format(monkeypatch, capsys) -> None:
     def fake_list_channel_clips(*args, **kwargs) -> tuple[TwitchClip, ...]:
         raise AssertionError("Twitch should not be called for invalid CLI options.")

@@ -40,6 +40,7 @@ class ClipState:
     streamer_login: str | None
     title: str | None
     view_count: int | None
+    created_at: str | None
     duration_seconds: float | None
     rank_score: float | None
     rank_breakdown: dict[str, float] | None
@@ -68,6 +69,7 @@ def init_db(db_path: Path | str = DEFAULT_STATE_DB_PATH) -> Path:
               streamer_login TEXT,
               title TEXT,
               view_count INTEGER,
+              created_at TEXT,
               duration_seconds REAL,
               rank_score REAL,
               rank_breakdown TEXT,
@@ -98,6 +100,7 @@ def init_db(db_path: Path | str = DEFAULT_STATE_DB_PATH) -> Path:
             ON clips(status, last_seen_at);
             """
         )
+        _ensure_column(connection, "clips", "created_at", "TEXT")
         _ensure_column(connection, "clips", "rank_score", "REAL")
         _ensure_column(connection, "clips", "rank_breakdown", "TEXT")
 
@@ -111,6 +114,7 @@ def upsert_discovered_clip(
     streamer_login: str | None = None,
     title: str | None = None,
     view_count: int | None = None,
+    created_at: str | None = None,
     duration_seconds: float | None = None,
     rank_score: float | None = None,
     rank_breakdown: dict[str, float] | None = None,
@@ -130,18 +134,20 @@ def upsert_discovered_clip(
               streamer_login,
               title,
               view_count,
+              created_at,
               duration_seconds,
               rank_score,
               rank_breakdown,
               discovered_at,
               last_seen_at
             )
-            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
             ON CONFLICT(clip_id) DO UPDATE SET
               url = excluded.url,
               streamer_login = excluded.streamer_login,
               title = excluded.title,
               view_count = excluded.view_count,
+              created_at = COALESCE(excluded.created_at, clips.created_at),
               duration_seconds = excluded.duration_seconds,
               rank_score = excluded.rank_score,
               rank_breakdown = excluded.rank_breakdown,
@@ -153,6 +159,7 @@ def upsert_discovered_clip(
                 streamer_login,
                 title,
                 view_count,
+                created_at,
                 duration_seconds,
                 rank_score,
                 _serialize_rank_breakdown(rank_breakdown),
@@ -199,6 +206,29 @@ def get_unprocessed_clips(
     return tuple(_clip_from_row(row) for row in rows)
 
 
+def get_persisted_clips(
+    *,
+    db_path: Path | str = DEFAULT_STATE_DB_PATH,
+    streamer_login: str | None = None,
+) -> tuple[ClipState, ...]:
+    """Return persisted clips, optionally scoped to one streamer."""
+
+    resolved_path = init_db(db_path)
+    params: list[Any] = []
+    sql = """
+        SELECT *
+        FROM clips
+    """
+    if streamer_login is not None:
+        sql += " WHERE LOWER(streamer_login) = LOWER(?)"
+        params.append(streamer_login)
+    sql += " ORDER BY clip_id ASC"
+
+    with _connect(resolved_path) as connection:
+        rows = connection.execute(sql, params).fetchall()
+    return tuple(_clip_from_row(row) for row in rows)
+
+
 def get_clip(
     clip_id: str,
     *,
@@ -219,6 +249,40 @@ def get_clip(
     if row is None:
         return None
     return _clip_from_row(row)
+
+
+def update_clip_rank(
+    clip_id: str,
+    *,
+    rank_score: float,
+    rank_breakdown: dict[str, float],
+    db_path: Path | str = DEFAULT_STATE_DB_PATH,
+) -> ClipState:
+    """Update ranking fields without changing clip processing status."""
+
+    resolved_path = init_db(db_path)
+    with _connect(resolved_path) as connection:
+        cursor = connection.execute(
+            """
+            UPDATE clips
+            SET
+              rank_score = ?,
+              rank_breakdown = ?
+            WHERE clip_id = ?
+            """,
+            (
+                rank_score,
+                _serialize_rank_breakdown(rank_breakdown),
+                clip_id,
+            ),
+        )
+        if cursor.rowcount == 0:
+            raise ClipStateError(f"Clip not found: {clip_id}.")
+
+    clip = get_clip(clip_id, db_path=resolved_path)
+    if clip is None:
+        raise ClipStateError(f"Clip not found after rank update: {clip_id}.")
+    return clip
 
 
 def mark_clip_downloaded(
@@ -394,6 +458,7 @@ def _clip_from_row(row: sqlite3.Row) -> ClipState:
         streamer_login=data["streamer_login"],
         title=data["title"],
         view_count=data["view_count"],
+        created_at=data["created_at"],
         duration_seconds=data["duration_seconds"],
         rank_score=data["rank_score"],
         rank_breakdown=_deserialize_rank_breakdown(data["rank_breakdown"]),
