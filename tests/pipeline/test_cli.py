@@ -421,6 +421,7 @@ def test_main_lists_pending_clips_from_state(monkeypatch, capsys, tmp_path: Path
     upsert_discovered_clip(
         clip_id="clip-1",
         url="https://clips.twitch.tv/clip-1",
+        streamer_login="example",
         title="first",
         view_count=10,
         duration_seconds=12.5,
@@ -430,6 +431,7 @@ def test_main_lists_pending_clips_from_state(monkeypatch, capsys, tmp_path: Path
     upsert_discovered_clip(
         clip_id="clip-2",
         url="https://clips.twitch.tv/clip-2",
+        streamer_login="example",
         title="second",
         view_count=20,
         duration_seconds=30,
@@ -442,10 +444,80 @@ def test_main_lists_pending_clips_from_state(monkeypatch, capsys, tmp_path: Path
     exit_code = main(["clips", "pending"])
 
     assert exit_code == 0
-    assert capsys.readouterr().out.splitlines() == [
-        "clip-2\t0.9\t20\t30s\thttps://clips.twitch.tv/clip-2\tsecond",
-        "clip-1\t0.2\t10\t12.5s\thttps://clips.twitch.tv/clip-1\tfirst",
+    output = capsys.readouterr().out
+    assert "https://clips.twitch.tv/clip-1" not in output
+    assert "https://clips.twitch.tv/clip-2" not in output
+    assert output.splitlines() == [
+        "rank  streamer  score  views  duration  status      clip_id  title",
+        "----  --------  -----  -----  --------  ----------  -------  ------",
+        "1     example   0.9    20     30s       discovered  clip-2   second",
+        "2     example   0.2    10     12.5s     discovered  clip-1   first",
     ]
+
+
+def test_main_lists_pending_clips_with_limit_channel_and_url(
+    monkeypatch,
+    capsys,
+    tmp_path: Path,
+) -> None:
+    config = ClipforgeConfig(state_db_path=tmp_path / "state" / "clipforge.sqlite")
+    upsert_discovered_clip(
+        clip_id="clip-example-1",
+        url="https://clips.twitch.tv/clip-example-1",
+        streamer_login="example",
+        title="example first",
+        rank_score=0.2,
+        db_path=config.state_db_path,
+    )
+    upsert_discovered_clip(
+        clip_id="clip-other",
+        url="https://clips.twitch.tv/clip-other",
+        streamer_login="other",
+        title="other channel",
+        rank_score=1.0,
+        db_path=config.state_db_path,
+    )
+    upsert_discovered_clip(
+        clip_id="clip-example-2",
+        url="https://clips.twitch.tv/clip-example-2",
+        streamer_login="example",
+        title="example second",
+        rank_score=0.9,
+        db_path=config.state_db_path,
+    )
+
+    monkeypatch.setattr("clipforge.pipeline.cli.load_config", lambda: config)
+
+    exit_code = main(
+        [
+            "clips",
+            "pending",
+            "--channel",
+            "Example",
+            "--limit",
+            "1",
+            "--show-url",
+        ]
+    )
+
+    lines = capsys.readouterr().out.splitlines()
+    assert exit_code == 0
+    assert lines[0].split() == [
+        "rank",
+        "streamer",
+        "score",
+        "views",
+        "duration",
+        "status",
+        "clip_id",
+        "url",
+        "title",
+    ]
+    assert len(lines) == 3
+    assert "clip-example-2" in lines[2]
+    assert "https://clips.twitch.tv/clip-example-2" in lines[2]
+    assert "clip-example-1" not in "\n".join(lines)
+    assert "clip-other" not in "\n".join(lines)
 
 
 def test_main_processes_top_pending_clip_from_state(
@@ -551,9 +623,10 @@ def test_main_clips_pending_and_top_process_exclude_rendered_clips(
 
     assert pending_exit_code == 0
     assert process_exit_code == 0
-    assert capsys.readouterr().out.splitlines() == [
-        "clip-pending\t0.5\t\t\thttps://clips.twitch.tv/clip-pending\tpending"
-    ]
+    pending_output = capsys.readouterr().out
+    assert "clip-pending" in pending_output
+    assert "clip-rendered" not in pending_output
+    assert "https://clips.twitch.tv/clip-pending" not in pending_output
     assert calls == ["https://clips.twitch.tv/clip-pending"]
     assert get_clip("clip-rendered", db_path=config.state_db_path).status == "rendered"
 

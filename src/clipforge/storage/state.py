@@ -171,6 +171,7 @@ def get_unprocessed_clips(
     *,
     db_path: Path | str = DEFAULT_STATE_DB_PATH,
     limit: int | None = None,
+    streamer_login: str | None = None,
 ) -> tuple[ClipState, ...]:
     """Return clips that are eligible for automatic processing."""
 
@@ -180,6 +181,11 @@ def get_unprocessed_clips(
         SELECT *
         FROM clips
         WHERE status IN (?, ?)
+    """
+    if streamer_login is not None:
+        sql += " AND LOWER(streamer_login) = LOWER(?)"
+        params.append(streamer_login)
+    sql += """
         ORDER BY rank_score IS NULL ASC, rank_score DESC, discovered_at ASC, clip_id ASC
     """
     if limit is not None:

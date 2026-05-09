@@ -10,7 +10,7 @@ from pathlib import Path
 from typing import Sequence
 
 from clipforge.core.config import ConfigError, load_config
-from clipforge.integrations.twitch import list_channel_clips
+from clipforge.integrations.twitch import list_channel_clips, twitch_channel_login_from_input
 from clipforge.media.captions import generate_caption_metadata
 from clipforge.pipeline.artifacts import write_clip_discovery_export, write_metadata
 from clipforge.pipeline.state_sync import record_discovered_clips, record_rendered_clip
@@ -166,9 +166,25 @@ def build_parser() -> argparse.ArgumentParser:
         "--output",
         help="Optional JSON export path. Only used with --format json.",
     )
-    clips_subparsers.add_parser(
+    clips_pending_parser = clips_subparsers.add_parser(
         "pending",
         help="List unprocessed saved clips by rank.",
+    )
+    clips_pending_parser.add_argument(
+        "--limit",
+        type=int,
+        dest="pending_limit",
+        help="Maximum pending clips to list. Defaults to 10.",
+    )
+    clips_pending_parser.add_argument(
+        "--channel",
+        dest="pending_channel",
+        help="Only list pending clips for this Twitch channel login.",
+    )
+    clips_pending_parser.add_argument(
+        "--show-url",
+        action="store_true",
+        help="Include full clip URLs in the pending clips table.",
     )
     clips_process_parser = clips_subparsers.add_parser(
         "process",
@@ -315,8 +331,16 @@ def _handle_clips_command(args: argparse.Namespace) -> int:
 
 def _handle_clips_pending_command(args: argparse.Namespace) -> int:
     config = load_config()
-    for clip in get_unprocessed_clips(db_path=config.state_db_path):
-        print(_format_state_clip(clip))
+    limit = args.pending_limit if args.pending_limit is not None else args.limit
+    channel = args.pending_channel or args.channel
+    streamer_login = twitch_channel_login_from_input(channel) if channel else None
+    clips = get_unprocessed_clips(
+        db_path=config.state_db_path,
+        limit=limit,
+        streamer_login=streamer_login,
+    )
+    for line in _format_state_clip_table(clips, show_url=args.show_url):
+        print(line)
     return 0
 
 
@@ -340,12 +364,50 @@ def _handle_clips_process_command(args: argparse.Namespace) -> int:
     return 0
 
 
-def _format_state_clip(clip) -> str:
-    rank_score = "" if clip.rank_score is None else f"{clip.rank_score:g}"
-    view_count = "" if clip.view_count is None else str(clip.view_count)
-    duration = "" if clip.duration_seconds is None else f"{clip.duration_seconds:g}s"
-    title = clip.title or ""
-    return "\t".join((clip.clip_id, rank_score, view_count, duration, clip.url, title))
+def _format_state_clip_table(clips, *, show_url: bool = False) -> tuple[str, ...]:
+    rows: list[list[str]] = []
+    for index, clip in enumerate(clips, start=1):
+        row = [
+            str(index),
+            clip.streamer_login or "",
+            _format_optional_score(clip.rank_score),
+            "" if clip.view_count is None else str(clip.view_count),
+            _format_optional_duration(clip.duration_seconds),
+            clip.status,
+            clip.clip_id,
+        ]
+        if show_url:
+            row.append(clip.url)
+        row.append(clip.title or "")
+        rows.append(row)
+
+    headers = ["rank", "streamer", "score", "views", "duration", "status", "clip_id"]
+    if show_url:
+        headers.append("url")
+    headers.append("title")
+
+    widths = [
+        max(len(headers[index]), *(len(row[index]) for row in rows))
+        for index in range(len(headers))
+    ]
+    formatted_rows = [_format_table_row(headers, widths)]
+    formatted_rows.append(_format_table_row(("-" * width for width in widths), widths))
+    formatted_rows.extend(_format_table_row(row, widths) for row in rows)
+    return tuple(formatted_rows)
+
+
+def _format_table_row(values, widths: list[int]) -> str:
+    cells = [str(value).ljust(widths[index]) for index, value in enumerate(values)]
+    cells[-1] = cells[-1].rstrip()
+    return "  ".join(cells)
+
+
+def _format_optional_score(value: float | None) -> str:
+    return "" if value is None else f"{value:g}"
+
+
+def _format_optional_duration(value: float | None) -> str:
+    return "" if value is None else f"{value:g}s"
 
 
 def _configure_logging(*, verbose: bool) -> None:

@@ -205,6 +205,39 @@ def test_unprocessed_query_orders_ranked_clips_by_score(tmp_path: Path) -> None:
     ]
 
 
+def test_unprocessed_query_filters_by_streamer_before_limit(tmp_path: Path) -> None:
+    db_path = _db_path(tmp_path)
+    upsert_discovered_clip(
+        clip_id="clip-other",
+        url="https://clips.twitch.tv/clip-other",
+        streamer_login="other",
+        rank_score=1.0,
+        db_path=db_path,
+    )
+    upsert_discovered_clip(
+        clip_id="clip-example-1",
+        url="https://clips.twitch.tv/clip-example-1",
+        streamer_login="example",
+        rank_score=0.9,
+        db_path=db_path,
+    )
+    upsert_discovered_clip(
+        clip_id="clip-example-2",
+        url="https://clips.twitch.tv/clip-example-2",
+        streamer_login="example",
+        rank_score=0.8,
+        db_path=db_path,
+    )
+
+    clips = get_unprocessed_clips(
+        db_path=db_path,
+        streamer_login="Example",
+        limit=1,
+    )
+
+    assert [clip.clip_id for clip in clips] == ["clip-example-1"]
+
+
 def test_get_clip_returns_none_for_unknown_clip(tmp_path: Path) -> None:
     assert get_clip("missing", db_path=_db_path(tmp_path)) is None
 
