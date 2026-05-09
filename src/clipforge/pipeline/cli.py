@@ -25,7 +25,12 @@ from clipforge.pipeline.workflows import (
     render_candidate,
     resolve_download_url,
 )
-from clipforge.storage.state import UNPROCESSED_STATUSES, get_clip, get_unprocessed_clips
+from clipforge.storage.state import (
+    UNPROCESSED_STATUSES,
+    get_clip,
+    get_unprocessed_clips,
+    mark_clip_failed,
+)
 
 
 LOGGER = logging.getLogger("clipforge.pipeline.cli")
@@ -192,17 +197,22 @@ def build_parser() -> argparse.ArgumentParser:
     )
     clips_process_parser = clips_subparsers.add_parser(
         "process",
-        help="Process one saved clip from SQLite state.",
+        help="Process saved clips from SQLite state.",
     )
     clips_process_group = clips_process_parser.add_mutually_exclusive_group(required=True)
     clips_process_group.add_argument(
         "--top",
         type=int,
-        help="Process the highest-ranked unprocessed clip. Only --top 1 is supported.",
+        help="Process the highest-ranked unprocessed clips.",
     )
     clips_process_group.add_argument(
         "--clip-id",
         help="Process a specific unprocessed saved clip ID.",
+    )
+    clips_process_parser.add_argument(
+        "--continue-on-error",
+        action="store_true",
+        help="Continue processing remaining clips after a clip fails.",
     )
     clips_rerank_parser = clips_subparsers.add_parser(
         "rerank",
@@ -363,21 +373,36 @@ def _handle_clips_pending_command(args: argparse.Namespace) -> int:
 def _handle_clips_process_command(args: argparse.Namespace) -> int:
     config = load_config()
     if args.top is not None:
-        if args.top != 1:
-            raise CLIError("clips process only supports --top 1.")
-        clips = get_unprocessed_clips(db_path=config.state_db_path, limit=1)
+        clips = get_unprocessed_clips(db_path=config.state_db_path, limit=args.top)
         if not clips:
             raise CLIError("No unprocessed clips found.")
-        clip = clips[0]
     else:
         clip = get_clip(args.clip_id, db_path=config.state_db_path)
         if clip is None:
             raise CLIError(f"Clip not found: {args.clip_id}.")
         if clip.status not in UNPROCESSED_STATUSES:
             raise CLIError(f"Clip is not unprocessed: {args.clip_id}.")
+        clips = (clip,)
 
-    process_clip(clip.url, config=config)
-    return 0
+    failures = 0
+    for clip in clips:
+        try:
+            metadata_path = process_clip(clip.url, config=config)
+        except Exception as exc:
+            failures += 1
+            error_message = str(exc)
+            mark_clip_failed(
+                clip.clip_id,
+                error_message=error_message,
+                db_path=config.state_db_path,
+            )
+            print(f"failed: {clip.clip_id}: {error_message}")
+            if not args.continue_on_error:
+                return 1
+        else:
+            print(f"processed: {clip.clip_id}: {metadata_path}")
+
+    return 1 if failures else 0
 
 
 def _handle_clips_rerank_command(args: argparse.Namespace) -> int:
