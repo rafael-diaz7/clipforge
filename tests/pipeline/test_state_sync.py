@@ -37,6 +37,9 @@ def test_record_discovered_clips_upserts_clip_state(tmp_path: Path) -> None:
     assert state.streamer_login == "example"
     assert state.title == "great clip"
     assert state.view_count == 42
+    assert state.rank_score is not None
+    assert state.rank_breakdown is not None
+    assert set(state.rank_breakdown) == {"views", "age", "duration", "title"}
 
 
 def test_record_rendered_clip_creates_missing_clip_state(tmp_path: Path) -> None:

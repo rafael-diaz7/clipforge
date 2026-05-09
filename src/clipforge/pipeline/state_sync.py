@@ -7,6 +7,7 @@ from typing import Sequence
 
 from clipforge.core.config import ClipforgeConfig
 from clipforge.integrations.twitch import TwitchClip, twitch_channel_login_from_input
+from clipforge.pipeline.ranking import rank_clips
 from clipforge.storage.state import get_clip, mark_clip_rendered, upsert_discovered_clip
 
 
@@ -19,7 +20,8 @@ def record_discovered_clips(
     """Persist Twitch clips after discovery has succeeded."""
 
     streamer_login = twitch_channel_login_from_input(channel)
-    for clip in clips:
+    for ranked_clip in rank_clips(clips):
+        clip = ranked_clip.clip
         upsert_discovered_clip(
             clip_id=clip.id,
             url=clip.url,
@@ -27,6 +29,8 @@ def record_discovered_clips(
             title=clip.title,
             view_count=clip.view_count,
             duration_seconds=clip.duration,
+            rank_score=ranked_clip.score,
+            rank_breakdown=ranked_clip.breakdown,
             db_path=config.state_db_path,
         )
 

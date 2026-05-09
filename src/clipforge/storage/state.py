@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import json
 import sqlite3
 from dataclasses import dataclass
 from pathlib import Path
@@ -40,6 +41,8 @@ class ClipState:
     title: str | None
     view_count: int | None
     duration_seconds: float | None
+    rank_score: float | None
+    rank_breakdown: dict[str, float] | None
     discovered_at: str
     last_seen_at: str
     status: str
@@ -66,6 +69,8 @@ def init_db(db_path: Path | str = DEFAULT_STATE_DB_PATH) -> Path:
               title TEXT,
               view_count INTEGER,
               duration_seconds REAL,
+              rank_score REAL,
+              rank_breakdown TEXT,
               discovered_at TEXT NOT NULL,
               last_seen_at TEXT NOT NULL,
               status TEXT NOT NULL DEFAULT 'discovered'
@@ -93,6 +98,8 @@ def init_db(db_path: Path | str = DEFAULT_STATE_DB_PATH) -> Path:
             ON clips(status, last_seen_at);
             """
         )
+        _ensure_column(connection, "clips", "rank_score", "REAL")
+        _ensure_column(connection, "clips", "rank_breakdown", "TEXT")
 
     return resolved_path
 
@@ -105,6 +112,8 @@ def upsert_discovered_clip(
     title: str | None = None,
     view_count: int | None = None,
     duration_seconds: float | None = None,
+    rank_score: float | None = None,
+    rank_breakdown: dict[str, float] | None = None,
     db_path: Path | str = DEFAULT_STATE_DB_PATH,
     now: str | None = None,
 ) -> ClipState:
@@ -122,16 +131,20 @@ def upsert_discovered_clip(
               title,
               view_count,
               duration_seconds,
+              rank_score,
+              rank_breakdown,
               discovered_at,
               last_seen_at
             )
-            VALUES (?, ?, ?, ?, ?, ?, ?, ?)
+            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
             ON CONFLICT(clip_id) DO UPDATE SET
               url = excluded.url,
               streamer_login = excluded.streamer_login,
               title = excluded.title,
               view_count = excluded.view_count,
               duration_seconds = excluded.duration_seconds,
+              rank_score = excluded.rank_score,
+              rank_breakdown = excluded.rank_breakdown,
               last_seen_at = excluded.last_seen_at;
             """,
             (
@@ -141,6 +154,8 @@ def upsert_discovered_clip(
                 title,
                 view_count,
                 duration_seconds,
+                rank_score,
+                _serialize_rank_breakdown(rank_breakdown),
                 timestamp,
                 timestamp,
             ),
@@ -165,7 +180,7 @@ def get_unprocessed_clips(
         SELECT *
         FROM clips
         WHERE status IN (?, ?)
-        ORDER BY discovered_at ASC, clip_id ASC
+        ORDER BY rank_score IS NULL ASC, rank_score DESC, discovered_at ASC, clip_id ASC
     """
     if limit is not None:
         if limit < 1:
@@ -330,10 +345,39 @@ def _connect(db_path: Path) -> sqlite3.Connection:
     return connection
 
 
+def _ensure_column(
+    connection: sqlite3.Connection,
+    table: str,
+    column: str,
+    definition: str,
+) -> None:
+    existing_columns = {
+        row["name"]
+        for row in connection.execute(f"PRAGMA table_info({table})").fetchall()
+    }
+    if column not in existing_columns:
+        connection.execute(f"ALTER TABLE {table} ADD COLUMN {column} {definition}")
+
+
 def _optional_path_string(path: Path | str | None) -> str | None:
     if path is None:
         return None
     return str(path)
+
+
+def _serialize_rank_breakdown(value: dict[str, float] | None) -> str | None:
+    if value is None:
+        return None
+    return json.dumps(value, sort_keys=True)
+
+
+def _deserialize_rank_breakdown(value: str | None) -> dict[str, float] | None:
+    if not value:
+        return None
+    payload = json.loads(value)
+    if not isinstance(payload, dict):
+        return None
+    return {str(key): float(score) for key, score in payload.items()}
 
 
 def _clip_from_row(row: sqlite3.Row) -> ClipState:
@@ -345,6 +389,8 @@ def _clip_from_row(row: sqlite3.Row) -> ClipState:
         title=data["title"],
         view_count=data["view_count"],
         duration_seconds=data["duration_seconds"],
+        rank_score=data["rank_score"],
+        rank_breakdown=_deserialize_rank_breakdown(data["rank_breakdown"]),
         discovered_at=data["discovered_at"],
         last_seen_at=data["last_seen_at"],
         status=data["status"],

@@ -42,6 +42,8 @@ def test_upsert_discovered_clip_inserts_new_clip_with_discovered_status(
         title="first title",
         view_count=42,
         duration_seconds=28.5,
+        rank_score=0.75,
+        rank_breakdown={"views": 0.5, "age": 1.0},
         db_path=db_path,
         now="2026-05-01T00:00:00+00:00",
     )
@@ -53,6 +55,8 @@ def test_upsert_discovered_clip_inserts_new_clip_with_discovered_status(
     assert clip.title == "first title"
     assert clip.view_count == 42
     assert clip.duration_seconds == 28.5
+    assert clip.rank_score == 0.75
+    assert clip.rank_breakdown == {"age": 1.0, "views": 0.5}
     assert clip.discovered_at == "2026-05-01T00:00:00+00:00"
     assert clip.last_seen_at == "2026-05-01T00:00:00+00:00"
 
@@ -80,6 +84,8 @@ def test_rediscovery_updates_metadata_but_preserves_status(tmp_path: Path) -> No
         title="new title",
         view_count=100,
         duration_seconds=30,
+        rank_score=0.9,
+        rank_breakdown={"views": 0.8, "age": 1.0},
         db_path=db_path,
         now="2026-05-02T00:00:00+00:00",
     )
@@ -90,6 +96,8 @@ def test_rediscovery_updates_metadata_but_preserves_status(tmp_path: Path) -> No
     assert clip.title == "new title"
     assert clip.view_count == 100
     assert clip.duration_seconds == 30
+    assert clip.rank_score == 0.9
+    assert clip.rank_breakdown == {"age": 1.0, "views": 0.8}
     assert clip.discovered_at == "2026-05-01T00:00:00+00:00"
     assert clip.last_seen_at == "2026-05-02T00:00:00+00:00"
     assert clip.render_dir == str(tmp_path / "renders" / "clip-1")
@@ -163,6 +171,38 @@ def test_rendered_clip_is_not_returned_by_unprocessed_query(tmp_path: Path) -> N
     mark_clip_rendered("clip-1", render_dir=tmp_path / "renders" / "clip-1", db_path=db_path)
 
     assert [clip.clip_id for clip in get_unprocessed_clips(db_path=db_path)] == ["clip-2"]
+
+
+def test_unprocessed_query_orders_ranked_clips_by_score(tmp_path: Path) -> None:
+    db_path = _db_path(tmp_path)
+    upsert_discovered_clip(
+        clip_id="clip-1",
+        url="https://clips.twitch.tv/clip-1",
+        rank_score=0.2,
+        rank_breakdown={"views": 0.2},
+        db_path=db_path,
+        now="2026-05-01T00:00:00+00:00",
+    )
+    upsert_discovered_clip(
+        clip_id="clip-2",
+        url="https://clips.twitch.tv/clip-2",
+        rank_score=0.9,
+        rank_breakdown={"views": 0.9},
+        db_path=db_path,
+        now="2026-05-02T00:00:00+00:00",
+    )
+    upsert_discovered_clip(
+        clip_id="clip-3",
+        url="https://clips.twitch.tv/clip-3",
+        db_path=db_path,
+        now="2026-05-03T00:00:00+00:00",
+    )
+
+    assert [clip.clip_id for clip in get_unprocessed_clips(db_path=db_path)] == [
+        "clip-2",
+        "clip-1",
+        "clip-3",
+    ]
 
 
 def test_get_clip_returns_none_for_unknown_clip(tmp_path: Path) -> None:
