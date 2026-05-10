@@ -119,10 +119,11 @@ class ClipforgeConfig:
         )
 
 
-def load_config() -> ClipforgeConfig:
+def load_config(*, load_dotenv_file: bool = True) -> ClipforgeConfig:
     """Load environment-backed settings for the local project."""
 
-    load_dotenv(PROJECT_ROOT / ".env")
+    if load_dotenv_file:
+        load_dotenv(PROJECT_ROOT / ".env")
     config = ClipforgeConfig(
         clipr_api_key=os.getenv("CLIPR_API_KEY"),
         twitch_client_id=os.getenv("TWITCH_CLIENT_ID"),

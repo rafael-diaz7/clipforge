@@ -22,7 +22,7 @@ from clipforge.core.config import (
 def test_load_config_uses_env_for_clipr_api_key(monkeypatch: pytest.MonkeyPatch) -> None:
     monkeypatch.setenv("CLIPR_API_KEY", "test-key")
 
-    config = load_config()
+    config = load_config(load_dotenv_file=False)
 
     assert config.clipr_api_key == "test-key"
 
@@ -33,7 +33,7 @@ def test_load_config_uses_env_for_twitch_credentials(
     monkeypatch.setenv("TWITCH_CLIENT_ID", "client-id")
     monkeypatch.setenv("TWITCH_CLIENT_SECRET", "client-secret")
 
-    config = load_config()
+    config = load_config(load_dotenv_file=False)
 
     assert config.twitch_client_id == "client-id"
     assert config.twitch_client_secret == "client-secret"
@@ -54,7 +54,7 @@ def test_load_config_uses_env_for_openai_transcription(
     monkeypatch.setenv("OPENAI_TRANSCRIPTION_MODEL", "whisper-test")
     monkeypatch.setenv("CLIPFORGE_GENERATE_CAPTIONS", "true")
 
-    config = load_config()
+    config = load_config(load_dotenv_file=False)
 
     assert config.openai_api_key == "openai-key"
     assert config.openai_transcription_model == "whisper-test"
@@ -69,7 +69,7 @@ def test_load_config_defaults_openai_transcription_model(
     monkeypatch.delenv("OPENAI_TRANSCRIPTION_MODEL", raising=False)
     monkeypatch.delenv("CLIPFORGE_GENERATE_CAPTIONS", raising=False)
 
-    config = load_config()
+    config = load_config(load_dotenv_file=False)
 
     assert config.openai_transcription_model == DEFAULT_OPENAI_TRANSCRIPTION_MODEL
     assert config.generate_captions is False
@@ -80,7 +80,7 @@ def test_load_config_uses_env_for_caption_font_file(
 ) -> None:
     monkeypatch.setenv("CLIPFORGE_CAPTION_FONT_FILE", "C:/Windows/Fonts/arial.ttf")
 
-    config = load_config()
+    config = load_config(load_dotenv_file=False)
 
     assert config.caption_font_file == Path("C:/Windows/Fonts/arial.ttf")
 
@@ -92,7 +92,7 @@ def test_load_config_uses_env_for_caption_renderer_options(
     monkeypatch.setenv("CLIPFORGE_ASS_TEMP_DIR", "data/tmp/ass")
     monkeypatch.setenv("CLIPFORGE_CAPTION_FONT_FALLBACKS", "Inter, Segoe UI Emoji")
 
-    config = load_config()
+    config = load_config(load_dotenv_file=False)
 
     assert config.require_caption_renderer_backend() == "ass"
     assert config.ass_temp_dir == Path("data/tmp/ass")
@@ -102,11 +102,10 @@ def test_load_config_uses_env_for_caption_renderer_options(
 def test_load_config_defaults_caption_renderer_to_drawtext(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    monkeypatch.setattr("clipforge.core.config.load_dotenv", lambda *_args: None)
     monkeypatch.delenv("CLIPFORGE_CAPTION_RENDERER", raising=False)
     monkeypatch.delenv("CLIPFORGE_CAPTION_FONT_FALLBACKS", raising=False)
 
-    config = load_config()
+    config = load_config(load_dotenv_file=False)
 
     assert config.caption_renderer_backend == DEFAULT_CAPTION_RENDERER_BACKEND
     assert config.require_caption_renderer_backend() == "drawtext"
@@ -119,7 +118,7 @@ def test_load_config_rejects_invalid_caption_renderer_backend(
     monkeypatch.setenv("CLIPFORGE_CAPTION_RENDERER", "missing")
 
     with pytest.raises(ConfigError, match="Invalid caption renderer backend"):
-        load_config()
+        load_config(load_dotenv_file=False)
 
 
 def test_config_requires_openai_api_key() -> None:
@@ -135,7 +134,7 @@ def test_load_config_rejects_invalid_generate_captions_bool(
     monkeypatch.setenv("CLIPFORGE_GENERATE_CAPTIONS", "sometimes")
 
     with pytest.raises(ConfigError, match="CLIPFORGE_GENERATE_CAPTIONS"):
-        load_config()
+        load_config(load_dotenv_file=False)
 
 
 def test_load_config_defaults_to_ytdlp_downloader(
@@ -143,7 +142,7 @@ def test_load_config_defaults_to_ytdlp_downloader(
 ) -> None:
     monkeypatch.delenv("CLIPFORGE_DOWNLOADER", raising=False)
 
-    config = load_config()
+    config = load_config(load_dotenv_file=False)
 
     assert config.downloader_backend == DEFAULT_DOWNLOADER_BACKEND
     assert config.require_downloader_backend() == "ytdlp"
@@ -155,7 +154,7 @@ def test_load_config_defaults_to_ytdlp_even_with_clipr_api_key(
     monkeypatch.delenv("CLIPFORGE_DOWNLOADER", raising=False)
     monkeypatch.setenv("CLIPR_API_KEY", "test-key")
 
-    config = load_config()
+    config = load_config(load_dotenv_file=False)
 
     assert config.clipr_api_key == "test-key"
     assert config.require_downloader_backend() == "ytdlp"
@@ -166,7 +165,7 @@ def test_load_config_uses_env_for_downloader_backend(
 ) -> None:
     monkeypatch.setenv("CLIPFORGE_DOWNLOADER", "CLIPR")
 
-    config = load_config()
+    config = load_config(load_dotenv_file=False)
 
     assert config.require_downloader_backend() == "clipr"
 
@@ -176,7 +175,7 @@ def test_load_config_accepts_ytdlp_downloader_backend(
 ) -> None:
     monkeypatch.setenv("CLIPFORGE_DOWNLOADER", "YTDLP")
 
-    config = load_config()
+    config = load_config(load_dotenv_file=False)
 
     assert config.require_downloader_backend() == "ytdlp"
 
@@ -187,7 +186,7 @@ def test_load_config_rejects_invalid_downloader_backend(
     monkeypatch.setenv("CLIPFORGE_DOWNLOADER", "missing")
 
     with pytest.raises(ConfigError, match="Invalid downloader backend"):
-        load_config()
+        load_config(load_dotenv_file=False)
 
 
 def test_config_defines_project_paths_with_pathlib() -> None:
