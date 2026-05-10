@@ -468,6 +468,69 @@ def mark_clip_failed(
     )
 
 
+def reset_clip_to_discovered(
+    clip_id: str,
+    *,
+    db_path: Path | str = DEFAULT_STATE_DB_PATH,
+) -> ClipState:
+    """Reset one clip to discovered and clear processing artifact fields."""
+
+    resolved_path = init_db(db_path)
+    with _connect(resolved_path) as connection:
+        cursor = connection.execute(
+            """
+            UPDATE clips
+            SET
+              status = 'discovered',
+              download_path = NULL,
+              metadata_path = NULL,
+              render_dir = NULL,
+              skip_reason = NULL,
+              error_message = NULL,
+              selected_render_layout = NULL,
+              selected_render_path = NULL,
+              export_path = NULL,
+              exported_at = NULL
+            WHERE clip_id = ?
+            """,
+            (clip_id,),
+        )
+        if cursor.rowcount == 0:
+            raise ClipStateError(f"Clip not found: {clip_id}.")
+
+    clip = get_clip(clip_id, db_path=resolved_path)
+    if clip is None:
+        raise ClipStateError(f"Clip not found after reset: {clip_id}.")
+    return clip
+
+
+def reset_all_clips_to_discovered(
+    *,
+    db_path: Path | str = DEFAULT_STATE_DB_PATH,
+) -> int:
+    """Reset every persisted clip to discovered and clear processing artifacts."""
+
+    resolved_path = init_db(db_path)
+    with _connect(resolved_path) as connection:
+        cursor = connection.execute(
+            """
+            UPDATE clips
+            SET
+              status = 'discovered',
+              download_path = NULL,
+              metadata_path = NULL,
+              render_dir = NULL,
+              skip_reason = NULL,
+              error_message = NULL,
+              selected_render_layout = NULL,
+              selected_render_path = NULL,
+              export_path = NULL,
+              exported_at = NULL
+            """
+        )
+        return cursor.rowcount
+
+
 def _update_clip_status(
     clip_id: str,
     status: str,

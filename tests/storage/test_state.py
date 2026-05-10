@@ -10,9 +10,12 @@ from clipforge.storage.state import (
     get_unprocessed_clips,
     init_db,
     mark_clip_downloaded,
+    mark_clip_exported,
     mark_clip_failed,
     mark_clip_rendered,
     mark_clip_skipped,
+    reset_all_clips_to_discovered,
+    reset_clip_to_discovered,
     upsert_discovered_clip,
 )
 
@@ -177,6 +180,79 @@ def test_rendered_clip_is_not_returned_by_unprocessed_query(tmp_path: Path) -> N
     assert [clip.clip_id for clip in get_unprocessed_clips(db_path=db_path)] == ["clip-2"]
 
 
+def test_reset_clip_to_discovered_clears_processing_artifact_fields(
+    tmp_path: Path,
+) -> None:
+    db_path = _db_path(tmp_path)
+    upsert_discovered_clip(
+        clip_id="clip-1",
+        url="https://clips.twitch.tv/clip-1",
+        rank_score=0.75,
+        rank_breakdown={"views": 0.75},
+        db_path=db_path,
+    )
+    mark_clip_downloaded(
+        "clip-1",
+        download_path=tmp_path / "downloads" / "clip-1.mp4",
+        metadata_path=tmp_path / "metadata" / "download.json",
+        db_path=db_path,
+    )
+    mark_clip_rendered(
+        "clip-1",
+        render_dir=tmp_path / "renders" / "clip-1",
+        metadata_path=tmp_path / "metadata" / "render.json",
+        db_path=db_path,
+    )
+    mark_clip_exported(
+        "clip-1",
+        selected_render_layout="hybrid",
+        selected_render_path=tmp_path / "renders" / "clip-1" / "hybrid.mp4",
+        export_path=tmp_path / "exports" / "clip-1.mp4",
+        db_path=db_path,
+    )
+
+    clip = reset_clip_to_discovered("clip-1", db_path=db_path)
+
+    assert clip.status == "discovered"
+    assert clip.rank_score == 0.75
+    assert clip.rank_breakdown == {"views": 0.75}
+    assert clip.download_path is None
+    assert clip.metadata_path is None
+    assert clip.render_dir is None
+    assert clip.skip_reason is None
+    assert clip.error_message is None
+    assert clip.selected_render_layout is None
+    assert clip.selected_render_path is None
+    assert clip.export_path is None
+    assert clip.exported_at is None
+    assert [state.clip_id for state in get_unprocessed_clips(db_path=db_path)] == ["clip-1"]
+
+
+def test_reset_all_clips_to_discovered_resets_every_clip(tmp_path: Path) -> None:
+    db_path = _db_path(tmp_path)
+    for clip_id in ("clip-rendered", "clip-failed"):
+        upsert_discovered_clip(
+            clip_id=clip_id,
+            url=f"https://clips.twitch.tv/{clip_id}",
+            db_path=db_path,
+        )
+    mark_clip_rendered(
+        "clip-rendered",
+        render_dir=tmp_path / "renders" / "clip-rendered",
+        db_path=db_path,
+    )
+    mark_clip_failed("clip-failed", error_message="render failed", db_path=db_path)
+
+    count = reset_all_clips_to_discovered(db_path=db_path)
+
+    assert count == 2
+    states = get_unprocessed_clips(db_path=db_path)
+    assert {state.clip_id for state in states} == {"clip-rendered", "clip-failed"}
+    assert all(state.status == "discovered" for state in states)
+    assert all(state.render_dir is None for state in states)
+    assert all(state.error_message is None for state in states)
+
+
 def test_unprocessed_query_orders_ranked_clips_by_score(tmp_path: Path) -> None:
     db_path = _db_path(tmp_path)
     upsert_discovered_clip(
@@ -249,3 +325,8 @@ def test_get_clip_returns_none_for_unknown_clip(tmp_path: Path) -> None:
 def test_marking_unknown_clip_raises(tmp_path: Path) -> None:
     with pytest.raises(ClipStateError, match="Clip not found"):
         mark_clip_failed("missing", error_message="boom", db_path=_db_path(tmp_path))
+
+
+def test_resetting_unknown_clip_raises(tmp_path: Path) -> None:
+    with pytest.raises(ClipStateError, match="Clip not found"):
+        reset_clip_to_discovered("missing", db_path=_db_path(tmp_path))

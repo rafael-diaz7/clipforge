@@ -34,6 +34,8 @@ from clipforge.storage.state import (
     get_clip,
     get_unprocessed_clips,
     mark_clip_failed,
+    reset_all_clips_to_discovered,
+    reset_clip_to_discovered,
 )
 
 
@@ -273,6 +275,20 @@ def build_parser() -> argparse.ArgumentParser:
         dest="rerank_channel",
         help="Only rerank clips for this Twitch channel login.",
     )
+    clips_reset_parser = clips_subparsers.add_parser(
+        "reset",
+        help="Reset saved clip state back to discovered.",
+    )
+    clips_reset_group = clips_reset_parser.add_mutually_exclusive_group(required=True)
+    clips_reset_group.add_argument(
+        "--clip-id",
+        help="Reset one saved clip ID back to discovered.",
+    )
+    clips_reset_group.add_argument(
+        "--all",
+        action="store_true",
+        help="Reset every saved clip back to discovered.",
+    )
     clips_review_parser = clips_subparsers.add_parser(
         "review",
         help="Discover, process, and manually export final renders for a streamer.",
@@ -484,6 +500,9 @@ def _handle_clips_command(args: argparse.Namespace) -> int:
     if args.clips_command == "rerank":
         return _handle_clips_rerank_command(args)
 
+    if args.clips_command == "reset":
+        return _handle_clips_reset_command(args)
+
     if args.clips_command == "review":
         return _handle_clips_review_command(args)
 
@@ -605,6 +624,19 @@ def _handle_clips_rerank_command(args: argparse.Namespace) -> int:
     count = rerank_persisted_clips(config=config, channel=channel)
     suffix = "clip" if count == 1 else "clips"
     print(f"Reranked {count} {suffix}")
+    return 0
+
+
+def _handle_clips_reset_command(args: argparse.Namespace) -> int:
+    config = load_config()
+    if args.all:
+        count = reset_all_clips_to_discovered(db_path=config.state_db_path)
+    else:
+        reset_clip_to_discovered(args.clip_id, db_path=config.state_db_path)
+        count = 1
+
+    suffix = "clip" if count == 1 else "clips"
+    print(f"Reset {count} {suffix} to discovered")
     return 0
 
 

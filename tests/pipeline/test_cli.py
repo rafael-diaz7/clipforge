@@ -9,7 +9,12 @@ from clipforge.media.captions import CaptionMetadata, CaptionSegment, save_capti
 from clipforge.media.download import DownloadResult
 from clipforge.pipeline.cli import main
 from clipforge.integrations.twitch import TwitchClip
-from clipforge.storage.state import get_clip, mark_clip_rendered, upsert_discovered_clip
+from clipforge.storage.state import (
+    get_clip,
+    mark_clip_failed,
+    mark_clip_rendered,
+    upsert_discovered_clip,
+)
 from tests.constants import TWITCH_CLIP_URL
 
 
@@ -1392,6 +1397,92 @@ def test_main_reranks_clips_from_state_without_changing_status(
     assert state is not None
     assert state.status == "rendered"
     assert state.rank_score != 0.01
+
+
+def test_main_resets_one_clip_to_discovered(
+    monkeypatch,
+    capsys,
+    tmp_path: Path,
+) -> None:
+    config = ClipforgeConfig(state_db_path=tmp_path / "state" / "clipforge.sqlite")
+    upsert_discovered_clip(
+        clip_id="clip-rendered",
+        url="https://clips.twitch.tv/clip-rendered",
+        rank_score=1.0,
+        db_path=config.state_db_path,
+    )
+    mark_clip_rendered(
+        "clip-rendered",
+        render_dir=tmp_path / "renders" / "clip-rendered",
+        metadata_path=tmp_path / "metadata" / "clip-rendered.json",
+        db_path=config.state_db_path,
+    )
+
+    monkeypatch.setattr("clipforge.pipeline.cli.load_config", lambda: config)
+
+    exit_code = main(["clips", "reset", "--clip-id", "clip-rendered"])
+
+    state = get_clip("clip-rendered", db_path=config.state_db_path)
+    assert exit_code == 0
+    assert capsys.readouterr().out.splitlines() == ["Reset 1 clip to discovered"]
+    assert state is not None
+    assert state.status == "discovered"
+    assert state.render_dir is None
+    assert state.metadata_path is None
+
+
+def test_main_resets_all_clips_to_discovered(
+    monkeypatch,
+    capsys,
+    tmp_path: Path,
+) -> None:
+    config = ClipforgeConfig(state_db_path=tmp_path / "state" / "clipforge.sqlite")
+    for clip_id in ("clip-rendered", "clip-failed"):
+        upsert_discovered_clip(
+            clip_id=clip_id,
+            url=f"https://clips.twitch.tv/{clip_id}",
+            db_path=config.state_db_path,
+        )
+    mark_clip_rendered(
+        "clip-rendered",
+        render_dir=tmp_path / "renders" / "clip-rendered",
+        db_path=config.state_db_path,
+    )
+    mark_clip_failed(
+        "clip-failed",
+        error_message="render failed",
+        db_path=config.state_db_path,
+    )
+
+    monkeypatch.setattr("clipforge.pipeline.cli.load_config", lambda: config)
+
+    exit_code = main(["clips", "reset", "--all"])
+
+    rendered = get_clip("clip-rendered", db_path=config.state_db_path)
+    failed = get_clip("clip-failed", db_path=config.state_db_path)
+    assert exit_code == 0
+    assert capsys.readouterr().out.splitlines() == ["Reset 2 clips to discovered"]
+    assert rendered is not None
+    assert failed is not None
+    assert rendered.status == "discovered"
+    assert failed.status == "discovered"
+    assert rendered.render_dir is None
+    assert failed.error_message is None
+
+
+def test_main_returns_non_zero_when_reset_clip_is_missing(
+    monkeypatch,
+    capsys,
+    tmp_path: Path,
+) -> None:
+    config = ClipforgeConfig(state_db_path=tmp_path / "state" / "clipforge.sqlite")
+    monkeypatch.setattr("clipforge.pipeline.cli.load_config", lambda: config)
+
+    exit_code = main(["clips", "reset", "--clip-id", "missing"])
+
+    captured = capsys.readouterr()
+    assert exit_code == 1
+    assert "Clip not found: missing" in captured.err
 
 
 def test_main_routes_clips_review_command(monkeypatch, capsys, tmp_path: Path) -> None:

@@ -154,6 +154,12 @@ Reprocess a rendered clip after changing layout or caption settings:
 clipforge clips process --clip-id "<clip_id>" --force
 ```
 
+Reset one clip back to the pending/discovered queue:
+
+```powershell
+clipforge clips reset --clip-id "<clip_id>"
+```
+
 Outputs are written under `data/downloads/`, `data/renders/`, and
 `data/metadata/`. The SQLite state database tracks clip status and artifact
 paths between runs.
@@ -253,6 +259,21 @@ clipforge clips process --clip-id "<clip_id>" --force --generate-captions
 ```
 
 `--force` is only supported with `--clip-id`.
+
+### Reset State
+
+Move one saved clip back to `discovered` and clear stored processing, render,
+failure, and export artifact paths:
+
+```powershell
+clipforge clips reset --clip-id "<clip_id>"
+```
+
+Reset every saved clip when you want to rebuild the full queue:
+
+```powershell
+clipforge clips reset --all
+```
 
 ## Direct Pipeline Commands
 
