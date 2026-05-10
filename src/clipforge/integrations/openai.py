@@ -16,6 +16,7 @@ from clipforge.media.captions import (
     CaptionMetadata,
     CaptionSegment,
     CaptionTranscriptionError,
+    CaptionWord,
 )
 from clipforge.utils import response_text_excerpt
 from clipforge.utils.json_validation import required_list, required_number
@@ -29,6 +30,13 @@ LOGGER = logging.getLogger(__name__)
 DurationProbe = Callable[[Path], float]
 AudioExtractor = Callable[[Path, Path], None]
 SubprocessRunner = Callable[..., subprocess.CompletedProcess[str]]
+
+
+@dataclass(frozen=True)
+class _OpenAITranscriptionWord:
+    start_time: float
+    end_time: float
+    text: str
 
 
 @dataclass(frozen=True)
@@ -203,6 +211,9 @@ def parse_openai_transcription_payload(
             )
             is not None
         )
+        words = _parse_openai_transcription_words(payload)
+        if words:
+            segments = _segments_with_words(segments, words)
         return CaptionMetadata(clip_id=clip_id, segments=segments)
 
     text = payload.get("text")
@@ -276,6 +287,7 @@ def _transcription_request_data(model: str) -> list[tuple[str, str]]:
         ("model", model),
         ("response_format", "verbose_json"),
         ("timestamp_granularities[]", "segment"),
+        ("timestamp_granularities[]", "word"),
     ]
 
 
@@ -341,6 +353,135 @@ def _parse_openai_transcription_segment(
         ),
         text=text,
     )
+
+
+def _parse_openai_transcription_words(
+    payload: dict[str, Any],
+) -> tuple[_OpenAITranscriptionWord, ...]:
+    if "words" not in payload or payload["words"] is None:
+        return ()
+
+    words_payload = required_list(
+        payload,
+        "words",
+        context="OpenAI transcription response",
+        error_cls=CaptionTranscriptionError,
+    )
+    return tuple(
+        word
+        for index, word_payload in enumerate(words_payload)
+        if (
+            word := _parse_openai_transcription_word(
+                word_payload,
+                index=index,
+            )
+        )
+        is not None
+    )
+
+
+def _parse_openai_transcription_word(
+    payload: Any,
+    *,
+    index: int,
+) -> _OpenAITranscriptionWord | None:
+    context = f"OpenAI transcription response.words[{index}]"
+    if not isinstance(payload, dict):
+        raise CaptionTranscriptionError(f"{context} must be an object.")
+
+    text = payload.get("word", payload.get("text"))
+    if not isinstance(text, str):
+        raise CaptionTranscriptionError(f"{context}.word must be a string.")
+    if not text.strip():
+        return None
+
+    start_time = required_number(
+        payload,
+        "start",
+        context=context,
+        error_cls=CaptionTranscriptionError,
+    )
+    end_time = required_number(
+        payload,
+        "end",
+        context=context,
+        error_cls=CaptionTranscriptionError,
+    )
+    if end_time <= start_time:
+        return None
+
+    return _OpenAITranscriptionWord(
+        start_time=start_time,
+        end_time=end_time,
+        text=text,
+    )
+
+
+def _segments_with_words(
+    segments: tuple[CaptionSegment, ...],
+    words: tuple[_OpenAITranscriptionWord, ...],
+) -> tuple[CaptionSegment, ...]:
+    sorted_segments = tuple(
+        sorted(
+            segments,
+            key=lambda segment: (
+                segment.start_time,
+                segment.end_time,
+                segment.text,
+            ),
+        )
+    )
+    segment_words: list[list[CaptionWord]] = [[] for _segment in sorted_segments]
+
+    for word in words:
+        segment_index = _word_segment_index(word, sorted_segments)
+        if segment_index is None:
+            continue
+
+        segment = sorted_segments[segment_index]
+        start_time = max(segment.start_time, word.start_time)
+        end_time = min(segment.end_time, word.end_time)
+        if end_time <= start_time:
+            continue
+
+        segment_words[segment_index].append(
+            CaptionWord(
+                start_time=start_time,
+                end_time=end_time,
+                text=word.text,
+            )
+        )
+
+    return tuple(
+        CaptionSegment(
+            start_time=segment.start_time,
+            end_time=segment.end_time,
+            text=segment.text,
+            words=tuple(words_for_segment),
+        )
+        for segment, words_for_segment in zip(
+            sorted_segments,
+            segment_words,
+            strict=True,
+        )
+    )
+
+
+def _word_segment_index(
+    word: _OpenAITranscriptionWord,
+    segments: tuple[CaptionSegment, ...],
+) -> int | None:
+    best_index: int | None = None
+    best_overlap = 0.0
+    for index, segment in enumerate(segments):
+        overlap = min(segment.end_time, word.end_time) - max(
+            segment.start_time,
+            word.start_time,
+        )
+        if overlap > best_overlap:
+            best_index = index
+            best_overlap = overlap
+    return best_index
 
 
 def _openai_error_message(

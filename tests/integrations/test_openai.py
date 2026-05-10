@@ -15,7 +15,10 @@ from clipforge.media.captions import (
     CaptionMetadata,
     CaptionSegment,
     CaptionTranscriptionError,
+    CaptionWord,
 )
+from clipforge.media.layouts import OutputSize
+from clipforge.media.render import CaptionStyle, _caption_cues, generate_ass_subtitle
 from tests.constants import TWITCH_CLIP_SLUG
 
 
@@ -88,6 +91,112 @@ def test_parse_openai_transcription_payload_normalizes_segments() -> None:
             CaptionSegment(start_time=1.25, end_time=2.5, text="world"),
         ),
     )
+
+
+def test_parse_openai_transcription_payload_populates_segment_words() -> None:
+    metadata = parse_openai_transcription_payload(
+        {
+            "text": "hello world again",
+            "segments": [
+                {"start": 0.0, "end": 1.0, "text": "hello world"},
+                {"start": 1.0, "end": 2.0, "text": "again"},
+            ],
+            "words": [
+                {"start": 0.1, "end": 0.3, "word": "hello"},
+                {"start": 0.4, "end": 0.9, "word": "world"},
+                {"start": 1.1, "end": 1.5, "word": "again"},
+            ],
+        },
+        clip_id=CAPTION_CLIP_ID,
+    )
+
+    assert metadata == CaptionMetadata(
+        clip_id=CAPTION_CLIP_ID,
+        segments=(
+            CaptionSegment(
+                start_time=0.0,
+                end_time=1.0,
+                text="hello world",
+                words=(
+                    CaptionWord(start_time=0.1, end_time=0.3, text="hello"),
+                    CaptionWord(start_time=0.4, end_time=0.9, text="world"),
+                ),
+            ),
+            CaptionSegment(
+                start_time=1.0,
+                end_time=2.0,
+                text="again",
+                words=(CaptionWord(start_time=1.1, end_time=1.5, text="again"),),
+            ),
+        ),
+    )
+
+
+def test_parse_openai_transcription_payload_assigns_overlapping_words_once() -> None:
+    metadata = parse_openai_transcription_payload(
+        {
+            "segments": [
+                {"start": 0.0, "end": 1.0, "text": "hello"},
+                {"start": 1.0, "end": 2.0, "text": "world"},
+            ],
+            "words": [
+                {"start": 0.8, "end": 1.4, "word": "world"},
+            ],
+        },
+        clip_id=CAPTION_CLIP_ID,
+    )
+
+    assert metadata.segments[0].words == ()
+    assert metadata.segments[1].words == (
+        CaptionWord(start_time=1.0, end_time=1.4, text="world"),
+    )
+
+
+def test_parse_openai_transcription_payload_handles_empty_words() -> None:
+    metadata = parse_openai_transcription_payload(
+        {
+            "segments": [
+                {"start": 0.0, "end": 1.0, "text": "hello"},
+            ],
+            "words": [
+                {"start": 0.1, "end": 0.2, "word": "   "},
+            ],
+        },
+        clip_id=CAPTION_CLIP_ID,
+    )
+
+    assert metadata == CaptionMetadata(
+        clip_id=CAPTION_CLIP_ID,
+        segments=(CaptionSegment(start_time=0.0, end_time=1.0, text="hello"),),
+    )
+
+
+def test_generated_openai_words_can_drive_ass_active_word_rendering() -> None:
+    metadata = parse_openai_transcription_payload(
+        {
+            "segments": [
+                {"start": 0.0, "end": 1.0, "text": "hello world"},
+            ],
+            "words": [
+                {"start": 0.0, "end": 0.4, "word": "hello"},
+                {"start": 0.5, "end": 1.0, "word": "world"},
+            ],
+        },
+        clip_id=CAPTION_CLIP_ID,
+    )
+
+    ass_text = generate_ass_subtitle(
+        _caption_cues(
+            metadata.segments,
+            caption_style=CaptionStyle(max_chars_per_line=24),
+            output_size=OutputSize(width=1080, height=1920),
+        ),
+        caption_style=CaptionStyle(max_chars_per_line=24),
+        output_size=OutputSize(width=1080, height=1920),
+    )
+
+    assert "{\\c&H00FFFF&}hello{\\c&HFFFFFF&} world" in ass_text
+    assert "hello {\\c&H00FFFF&}world{\\c&HFFFFFF&}" in ass_text
 
 
 def test_parse_openai_transcription_payload_can_use_full_clip_fallback() -> None:
@@ -179,6 +288,7 @@ def test_openai_transcription_client_uses_verbose_json_for_whisper(
         ("model", "whisper-1"),
         ("response_format", "verbose_json"),
         ("timestamp_granularities[]", "segment"),
+        ("timestamp_granularities[]", "word"),
     ]
     assert session.calls[0]["filename"] == "source.mp3"
     assert session.calls[0]["file_bytes"] == b"audio bytes"
