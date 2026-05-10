@@ -69,6 +69,14 @@ def test_load_example_layouts_loads_three_mvp_templates() -> None:
     assert all(layout.output.width == 1080 for layout in layouts)
     assert all(layout.output.height == 1920 for layout in layouts)
     assert len(layouts[2].regions) == 2
+    assert layouts[0].caption_region is None
+    assert layouts[1].caption_region is None
+    assert layouts[2].caption_region == NormalizedRect(
+        x=0.0,
+        y=0.34,
+        width=1.0,
+        height=0.1,
+    )
 
 
 def test_load_layout_reports_missing_file(tmp_path: Path) -> None:
@@ -266,14 +274,21 @@ def test_generate_detected_layouts_from_high_confidence_overlay(tmp_path: Path) 
         x=0.0,
         y=0.0,
         width=1.0,
-        height=0.4,
+        height=0.34,
     )
     assert hybrid_gameplay.output_region == NormalizedRect(
         x=0.0,
-        y=0.4,
+        y=0.34,
         width=1.0,
-        height=0.6,
+        height=0.66,
     )
+    assert layouts[1].caption_region == NormalizedRect(
+        x=0.0,
+        y=0.34,
+        width=1.0,
+        height=0.1,
+    )
+    assert layouts[1].caption_region.y == pytest.approx(hybrid_streamer.output_region.height)
     assert focus_streamer.output_region.height > hybrid_streamer.output_region.height
 
     payload = _read_json(paths[0])
@@ -313,7 +328,13 @@ def test_generated_layouts_directly_reuse_selected_overlay_rect(tmp_path: Path) 
         x=0.0,
         y=0.0,
         width=1.0,
-        height=0.4,
+        height=0.34,
+    )
+    assert hybrid.caption_region == NormalizedRect(
+        x=0.0,
+        y=0.34,
+        width=1.0,
+        height=0.1,
     )
 
 

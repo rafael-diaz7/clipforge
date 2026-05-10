@@ -73,7 +73,7 @@ def write_metadata(
         "download_media_url": download_result.media_url,
         "source_path": str(source_path),
         "outputs": list(outputs),
-        "layouts": [asdict(layout) for layout in layouts],
+        "layouts": [_layout_metadata_payload(layout) for layout in layouts],
         "target_resolution": {
             "width": config.target_width,
             "height": config.target_height,
@@ -102,6 +102,13 @@ def _default_clip_discovery_export_path(
         / safe_channel
         / f"{date_prefix}-{safe_channel}.json"
     )
+
+
+def _layout_metadata_payload(layout: Layout) -> dict[str, Any]:
+    payload = asdict(layout)
+    if layout.caption_region is None:
+        payload.pop("caption_region", None)
+    return payload
 
 
 def _date_prefix_from_timestamp(value: str | None) -> str:

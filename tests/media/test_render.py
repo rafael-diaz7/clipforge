@@ -24,12 +24,16 @@ from clipforge.media.render import (
 )
 
 
-def _layout(*regions: LayoutRegion) -> Layout:
+def _layout(
+    *regions: LayoutRegion,
+    caption_region: NormalizedRect | None = None,
+) -> Layout:
     return Layout(
         name="test_layout",
         description="Test layout.",
         output=OutputSize(width=1080, height=1920),
         regions=regions,
+        caption_region=caption_region,
     )
 
 
@@ -139,6 +143,29 @@ def test_build_filter_complex_can_append_caption_overlays() -> None:
     assert "enable='between(t\\,0.5\\,1.75)'" in filter_complex
     assert "enable='between(t\\,2\\,3)'" in filter_complex
     assert filter_complex.endswith("[out]")
+
+
+def test_build_filter_complex_centers_captions_in_layout_caption_region() -> None:
+    caption_metadata = CaptionMetadata(
+        clip_id="clip-123",
+        segments=(CaptionSegment(start_time=0, end_time=1, text="hello"),),
+    )
+    layout = _layout(
+        _region(
+            name="gameplay",
+            output_region=NormalizedRect(x=0.0, y=0.34, width=1.0, height=0.66),
+        ),
+        _region(
+            name="facecam",
+            output_region=NormalizedRect(x=0.0, y=0.0, width=1.0, height=0.34),
+        ),
+        caption_region=NormalizedRect(x=0.0, y=0.34, width=1.0, height=0.1),
+    )
+
+    filter_complex = build_filter_complex(layout, caption_metadata=caption_metadata)
+
+    assert "drawtext=text=hello" in filter_complex
+    assert "y=max(653\\,653+(h-653-1075-56)/2)" in filter_complex
 
 
 def test_build_filter_complex_limits_long_caption_display_time() -> None:

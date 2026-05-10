@@ -107,6 +107,7 @@ def test_write_metadata_records_full_pipeline_artifacts(tmp_path: Path) -> None:
     assert payload["source_path"] == str(source_path)
     assert payload["outputs"] == list(outputs)
     assert [layout["name"] for layout in payload["layouts"]] == ["center_gameplay"]
+    assert "caption_region" not in payload["layouts"][0]
     assert payload["target_resolution"] == {"width": 1080, "height": 1920}
     assert "caption_metadata_path" not in payload
     assert payload["created_at"].endswith("+00:00")

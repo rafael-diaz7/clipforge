@@ -26,6 +26,10 @@ GENERATED_LAYOUT_NAMES = ("detected_streamer_focus", "detected_hybrid")
 ANALYSIS_DIR = DATA_DIR / "analysis"
 DYNAMIC_LAYOUT_CONFIDENCE_THRESHOLD = 0.58
 SUPPORTED_REGION_EFFECTS = frozenset({"blur"})
+HYBRID_STREAMER_REGION_NAMES = frozenset({"facecam", "streamer"})
+HYBRID_GAMEPLAY_REGION_NAME = "gameplay"
+HYBRID_STREAMER_OUTPUT_HEIGHT = 0.34
+HYBRID_CAPTION_BAND_HEIGHT = 0.10
 
 
 @dataclass(frozen=True)
@@ -64,6 +68,7 @@ class Layout:
     description: str
     output: OutputSize
     regions: tuple[LayoutRegion, ...]
+    caption_region: NormalizedRect | None = None
 
 
 def load_layout(path: Path) -> Layout:
@@ -180,12 +185,14 @@ def parse_layout(payload: Any) -> Layout:
         _parse_region(region_payload, index=index)
         for index, region_payload in enumerate(regions_payload)
     )
+    caption_region = _parse_caption_region(payload, regions)
 
     return Layout(
         name=name,
         description=description,
         output=output,
         regions=regions,
+        caption_region=caption_region,
     )
 
 
@@ -225,6 +232,61 @@ def _parse_region(payload: Any, *, index: int) -> LayoutRegion:
             context=f"{context}.output_region",
         ),
         effect=_parse_region_effect(payload.get("effect"), context=f"{context}.effect"),
+    )
+
+
+def _parse_caption_region(
+    payload: dict[str, Any],
+    regions: tuple[LayoutRegion, ...],
+) -> NormalizedRect | None:
+    explicit_caption_region = payload.get("caption_region")
+    if explicit_caption_region is not None:
+        if not isinstance(explicit_caption_region, dict):
+            raise LayoutError("layout.caption_region must be an object.")
+        caption_region = _parse_rect(
+            explicit_caption_region,
+            context="layout.caption_region",
+        )
+    else:
+        caption_region = _derived_caption_region(regions)
+
+    return caption_region
+
+
+def _derived_caption_region(
+    regions: tuple[LayoutRegion, ...],
+) -> NormalizedRect | None:
+    streamer_regions = [
+        region.output_region
+        for region in regions
+        if region.name in HYBRID_STREAMER_REGION_NAMES
+    ]
+    gameplay_regions = [
+        region.output_region
+        for region in regions
+        if region.name == HYBRID_GAMEPLAY_REGION_NAME
+    ]
+    if not streamer_regions or not gameplay_regions:
+        return None
+
+    streamer_bottom = max(region.y + region.height for region in streamer_regions)
+    gameplay_top = min(region.y for region in gameplay_regions)
+    gameplay_bottom = max(region.y + region.height for region in gameplay_regions)
+    if gameplay_top < streamer_bottom:
+        return None
+
+    if gameplay_top == streamer_bottom:
+        caption_height = min(HYBRID_CAPTION_BAND_HEIGHT, gameplay_bottom - streamer_bottom)
+    else:
+        caption_height = gameplay_top - streamer_bottom
+    if caption_height <= 0:
+        return None
+
+    return NormalizedRect(
+        x=0.0,
+        y=_round(streamer_bottom),
+        width=1.0,
+        height=_round(caption_height),
     )
 
 
@@ -297,7 +359,18 @@ def _dynamic_layout_payloads(
     full_source = NormalizedRect(x=0.0, y=0.0, width=1.0, height=1.0)
     full_output = NormalizedRect(x=0.0, y=0.0, width=1.0, height=1.0)
     focus_streamer_output = NormalizedRect(x=0.0, y=0.19, width=1.0, height=0.62)
-    hybrid_streamer_output = NormalizedRect(x=0.0, y=0.0, width=1.0, height=0.40)
+    hybrid_streamer_output = NormalizedRect(
+        x=0.0,
+        y=0.0,
+        width=1.0,
+        height=HYBRID_STREAMER_OUTPUT_HEIGHT,
+    )
+    hybrid_gameplay_output = NormalizedRect(
+        x=0.0,
+        y=HYBRID_STREAMER_OUTPUT_HEIGHT,
+        width=1.0,
+        height=1.0 - HYBRID_STREAMER_OUTPUT_HEIGHT,
+    )
 
     return {
         "detected_streamer_focus": {
@@ -336,14 +409,7 @@ def _dynamic_layout_payloads(
                 {
                     "name": "gameplay",
                     "source_region": _rect_to_payload(gameplay_source),
-                    "output_region": _rect_to_payload(
-                        NormalizedRect(
-                            x=0.0,
-                            y=hybrid_streamer_output.height,
-                            width=1.0,
-                            height=1.0 - hybrid_streamer_output.height,
-                        )
-                    ),
+                    "output_region": _rect_to_payload(hybrid_gameplay_output),
                 },
                 {
                     "name": "streamer",

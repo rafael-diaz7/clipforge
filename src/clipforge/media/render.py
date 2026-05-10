@@ -5,7 +5,7 @@ from __future__ import annotations
 import logging
 import subprocess
 import textwrap
-from dataclasses import dataclass
+from dataclasses import dataclass, replace
 from enum import Enum
 from pathlib import Path
 from typing import Any, Mapping, Protocol
@@ -48,22 +48,27 @@ class CaptionVerticalSafeArea:
 
     top: int = 0
     bottom: int = 220
+    center: bool = False
 
     def __post_init__(self) -> None:
         if self.top < 0 or self.bottom < 0:
             raise RenderError("Caption vertical safe area values must be non-negative.")
 
     def to_dict(self) -> dict[str, int]:
-        return {
+        payload = {
             "top": self.top,
             "bottom": self.bottom,
         }
+        if self.center:
+            payload["center"] = self.center
+        return payload
 
     @classmethod
     def from_dict(cls, payload: Mapping[str, Any]) -> "CaptionVerticalSafeArea":
         return cls(
             top=int(payload.get("top", 0)),
             bottom=int(payload.get("bottom", 220)),
+            center=bool(payload.get("center", False)),
         )
 
 
@@ -339,6 +344,7 @@ def build_filter_complex(
     _require_caption_renderer_backend(caption_renderer_backend)
 
     output_size = layout.output
+    caption_style = _caption_style_for_layout(layout, caption_style)
     caption_segments = caption_metadata.segments if caption_metadata is not None else ()
     filter_parts = [
         f"color=c=black:s={output_size.width}x{output_size.height}:r=30[base]",
@@ -593,15 +599,23 @@ def _caption_line_y(
     caption_style: CaptionStyle,
 ) -> str:
     safe_margin_bottom = _caption_safe_margin_bottom(caption_style)
-    block_height = (
-        len(lines) * caption_style.font_size
-        + (len(lines) - 1) * caption_style.line_spacing
-    )
+    block_height = _caption_block_height(len(lines), caption_style)
+    line_offset = line_index * (caption_style.font_size + caption_style.line_spacing)
+    if _caption_should_center_vertically(caption_style):
+        safe_margin_top = _caption_safe_margin_top(caption_style)
+        y = (
+            f"{safe_margin_top}+(h-{safe_margin_top}-{safe_margin_bottom}-"
+            f"{block_height})/2"
+        )
+        if line_offset:
+            y += f"+{line_offset}"
+        return f"max({safe_margin_top}\\,{y})"
+
     y = (
         f"h-{block_height}-{safe_margin_bottom}"
         if line_index == 0
         else f"h-{block_height}-{safe_margin_bottom}+"
-        f"{line_index * (caption_style.font_size + caption_style.line_spacing)}"
+        f"{line_offset}"
     )
     min_y = (
         _caption_safe_margin_top(caption_style)
@@ -787,7 +801,7 @@ def _ass_style_block(caption_style: CaptionStyle) -> str:
                 f"{_ass_color(caption_style.font_color, default='&H00FFFFFF')},"
                 f"{_ass_color(caption_style.font_color, default='&H00FFFFFF')},"
                 "&H00000000,"
-                "&H80000000,"
+                "&HFF000000,"
                 "1,0,0,0,"
                 "100,100,0,0,"
                 "1,"
@@ -847,7 +861,17 @@ def _ass_caption_line_y(
     output_size: OutputSize,
 ) -> int:
     line_step = caption_style.font_size + caption_style.line_spacing
-    bottom_y = output_size.height - _caption_safe_margin_bottom(caption_style)
+    if _caption_should_center_vertically(caption_style):
+        safe_margin_top = _caption_safe_margin_top(caption_style)
+        safe_area_height = (
+            output_size.height
+            - safe_margin_top
+            - _caption_safe_margin_bottom(caption_style)
+        )
+        block_height = _caption_block_height(line_count, caption_style)
+        bottom_y = safe_margin_top + round((safe_area_height + block_height) / 2)
+    else:
+        bottom_y = output_size.height - _caption_safe_margin_bottom(caption_style)
     raw_y = bottom_y - (line_count - line_index - 1) * line_step
     return max(_caption_safe_margin_top(caption_style), raw_y)
 
@@ -878,6 +902,38 @@ def _caption_safe_margin_bottom(caption_style: CaptionStyle) -> int:
     if caption_style.vertical_safe_area is None:
         return caption_style.safe_margin_bottom
     return caption_style.vertical_safe_area.bottom
+
+
+def _caption_should_center_vertically(caption_style: CaptionStyle) -> bool:
+    return (
+        caption_style.vertical_safe_area is not None
+        and caption_style.vertical_safe_area.center
+    )
+
+
+def _caption_block_height(line_count: int, caption_style: CaptionStyle) -> int:
+    return (
+        line_count * caption_style.font_size
+        + (line_count - 1) * caption_style.line_spacing
+    )
+
+
+def _caption_style_for_layout(
+    layout: Layout,
+    caption_style: CaptionStyle,
+) -> CaptionStyle:
+    if layout.caption_region is None or caption_style.vertical_safe_area is not None:
+        return caption_style
+
+    caption_rect = rect_to_pixels(layout.caption_region, layout.output)
+    return replace(
+        caption_style,
+        vertical_safe_area=CaptionVerticalSafeArea(
+            top=caption_rect.y,
+            bottom=layout.output.height - caption_rect.y - caption_rect.height,
+            center=True,
+        ),
+    )
 
 
 def _format_ass_time(seconds: float) -> str:
