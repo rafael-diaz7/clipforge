@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import logging
+import re
 import subprocess
 import textwrap
 from dataclasses import dataclass, replace
@@ -837,6 +838,17 @@ def _ass_dialogue_lines(
     caption_style: CaptionStyle,
     output_size: OutputSize,
 ) -> tuple[str, ...]:
+    if cue.words:
+        return _ass_active_word_dialogue_lines(cue, caption_style, output_size)
+
+    return _ass_plain_dialogue_lines(cue, caption_style, output_size)
+
+
+def _ass_plain_dialogue_lines(
+    cue: CaptionCue,
+    caption_style: CaptionStyle,
+    output_size: OutputSize,
+) -> tuple[str, ...]:
     dialogue_lines = []
     line_count = len(cue.lines)
     for line_index, line in enumerate(cue.lines):
@@ -852,6 +864,150 @@ def _ass_dialogue_lines(
             f"{escape_ass_text(text)}"
         )
     return tuple(dialogue_lines)
+
+
+def _ass_active_word_dialogue_lines(
+    cue: CaptionCue,
+    caption_style: CaptionStyle,
+    output_size: OutputSize,
+) -> tuple[str, ...]:
+    dialogue_lines = []
+    line_word_offsets = _caption_line_word_offsets(cue.lines)
+    for start_time, end_time, active_word_index in _caption_word_intervals(cue):
+        for line_index, line in enumerate(cue.lines):
+            y = _ass_caption_line_y(len(cue.lines), line_index, caption_style, output_size)
+            active_line_word_index = _active_line_word_index(
+                active_word_index,
+                line_word_offsets[line_index],
+                line,
+            )
+            dialogue_lines.append(
+                _ass_dialogue_line(
+                    start_time=start_time,
+                    end_time=end_time,
+                    line=line,
+                    active_line_word_index=active_line_word_index,
+                    y=y,
+                    caption_style=caption_style,
+                    output_size=output_size,
+                )
+            )
+    return tuple(dialogue_lines)
+
+
+def _ass_dialogue_line(
+    *,
+    start_time: float,
+    end_time: float,
+    line: str,
+    active_line_word_index: int | None,
+    y: int,
+    caption_style: CaptionStyle,
+    output_size: OutputSize,
+) -> str:
+    text = line.upper() if caption_style.uppercase else line
+    return (
+        "Dialogue: "
+        f"0,{_format_ass_time(start_time)},{_format_ass_time(end_time)},"
+        f"{_ass_field(caption_style.ass_style_name)},,"
+        f"{caption_style.safe_margin_x},{caption_style.safe_margin_x},"
+        f"{_caption_safe_margin_bottom(caption_style)},,"
+        f"{{{_ass_caption_override_tags(output_size.width // 2, y)}}}"
+        f"{_ass_caption_text(text, active_line_word_index, caption_style)}"
+    )
+
+
+def _caption_word_intervals(
+    cue: CaptionCue,
+) -> tuple[tuple[float, float, int | None], ...]:
+    boundaries = {cue.start_time, cue.end_time}
+    for word in cue.words:
+        if word.start_time < cue.end_time and word.end_time > cue.start_time:
+            boundaries.add(max(cue.start_time, word.start_time))
+            boundaries.add(min(cue.end_time, word.end_time))
+
+    ordered_boundaries = tuple(sorted(boundaries))
+    intervals = []
+    for start_time, end_time in zip(
+        ordered_boundaries[:-1],
+        ordered_boundaries[1:],
+        strict=True,
+    ):
+        if end_time <= start_time:
+            continue
+        timestamp = start_time + (end_time - start_time) / 2
+        intervals.append(
+            (start_time, end_time, _active_caption_word_index(cue.words, timestamp))
+        )
+    return tuple(intervals)
+
+
+def _active_caption_word_index(
+    words: tuple[CaptionWord, ...],
+    timestamp: float,
+) -> int | None:
+    for index, word in enumerate(words):
+        if word.start_time <= timestamp <= word.end_time:
+            return index
+    return None
+
+
+def _caption_line_word_offsets(lines: tuple[str, ...]) -> tuple[int, ...]:
+    offsets = []
+    cursor = 0
+    for line in lines:
+        offsets.append(cursor)
+        cursor += len(_caption_line_word_spans(line))
+    return tuple(offsets)
+
+
+def _active_line_word_index(
+    active_word_index: int | None,
+    line_word_offset: int,
+    line: str,
+) -> int | None:
+    if active_word_index is None:
+        return None
+    line_word_index = active_word_index - line_word_offset
+    if 0 <= line_word_index < len(_caption_line_word_spans(line)):
+        return line_word_index
+    return None
+
+
+def _ass_caption_text(
+    text: str,
+    active_word_index: int | None,
+    caption_style: CaptionStyle,
+) -> str:
+    if active_word_index is None:
+        return escape_ass_text(text)
+
+    spans = _caption_line_word_spans(text)
+    if active_word_index >= len(spans):
+        return escape_ass_text(text)
+
+    start, end = spans[active_word_index]
+    highlight_color = _ass_inline_color(
+        caption_style.active_word_color,
+        default="&H0000FFFF",
+    )
+    base_color = _ass_inline_color(
+        caption_style.font_color,
+        default="&H00FFFFFF",
+    )
+    return "".join(
+        (
+            escape_ass_text(text[:start]),
+            f"{{\\c{highlight_color}}}",
+            escape_ass_text(text[start:end]),
+            f"{{\\c{base_color}}}",
+            escape_ass_text(text[end:]),
+        )
+    )
+
+
+def _caption_line_word_spans(text: str) -> tuple[tuple[int, int], ...]:
+    return tuple((match.start(), match.end()) for match in re.finditer(r"\S+", text))
 
 
 def _ass_caption_line_y(
@@ -983,15 +1139,9 @@ def _ass_color(value: str, *, default: str) -> str:
     return default
 
 
-def _escape_ass_text(value: str) -> str:
-    return (
-        value.replace("\\", "\\\\")
-        .replace("{", "\\{")
-        .replace("}", "\\}")
-        .replace("\r\n", "\n")
-        .replace("\r", "\n")
-        .replace("\n", "\\N")
-    )
+def _ass_inline_color(value: str, *, default: str) -> str:
+    color = _ass_color(value, default=default)
+    return f"&H{color[-6:]}&"
 
 
 def _ass_fontsdir_option(caption_style: CaptionStyle) -> str:

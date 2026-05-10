@@ -350,6 +350,132 @@ def test_generate_ass_subtitle_uses_explicit_polish_fields() -> None:
     assert "{\\an2\\pos(540,1620)}hello" in ass_text
 
 
+def test_generate_ass_subtitle_keeps_captions_without_words_unchanged() -> None:
+    ass_text = generate_ass_subtitle(
+        (CaptionCue(start_time=0, end_time=1, lines=("hello world",)),),
+        caption_style=CaptionStyle(),
+        output_size=OutputSize(width=1080, height=1920),
+    )
+
+    assert "Dialogue: 0,0:00:00.00,0:00:01.00,Default,,96,96,220,," in ass_text
+    assert "{\\an2\\pos(540,1700)}hello world" in ass_text
+    assert "\\c" not in ass_text
+
+
+def test_generate_ass_subtitle_highlights_active_word_by_timing() -> None:
+    ass_text = generate_ass_subtitle(
+        (
+            CaptionCue(
+                start_time=0,
+                end_time=2,
+                lines=("hello world",),
+                words=(
+                    CaptionWord(start_time=0.25, end_time=0.75, text="hello"),
+                    CaptionWord(start_time=1.0, end_time=1.5, text="world"),
+                ),
+            ),
+        ),
+        caption_style=CaptionStyle(active_word_color="#ffee00"),
+        output_size=OutputSize(width=1080, height=1920),
+    )
+
+    assert (
+        "Dialogue: 0,0:00:00.25,0:00:00.75,Default,,96,96,220,,"
+        "{\\an2\\pos(540,1700)}{\\c&H00EEFF&}hello{\\c&HFFFFFF&} world"
+    ) in ass_text
+    assert (
+        "Dialogue: 0,0:00:01.00,0:00:01.50,Default,,96,96,220,,"
+        "{\\an2\\pos(540,1700)}hello {\\c&H00EEFF&}world{\\c&HFFFFFF&}"
+    ) in ass_text
+
+
+def test_generate_ass_subtitle_highlights_repeated_word_by_occurrence() -> None:
+    ass_text = generate_ass_subtitle(
+        (
+            CaptionCue(
+                start_time=0,
+                end_time=2,
+                lines=("go go go",),
+                words=(
+                    CaptionWord(start_time=0.0, end_time=0.4, text="go"),
+                    CaptionWord(start_time=0.8, end_time=1.2, text="go"),
+                    CaptionWord(start_time=1.6, end_time=2.0, text="go"),
+                ),
+            ),
+        ),
+        caption_style=CaptionStyle(),
+        output_size=OutputSize(width=1080, height=1920),
+    )
+
+    assert (
+        "Dialogue: 0,0:00:00.80,0:00:01.20,Default,,96,96,220,,"
+        "{\\an2\\pos(540,1700)}go {\\c&H00FFFF&}go{\\c&HFFFFFF&} go"
+    ) in ass_text
+
+
+def test_generate_ass_subtitle_does_not_highlight_outside_word_timings() -> None:
+    ass_text = generate_ass_subtitle(
+        (
+            CaptionCue(
+                start_time=0,
+                end_time=2,
+                lines=("hello",),
+                words=(CaptionWord(start_time=0.5, end_time=1.0, text="hello"),),
+            ),
+        ),
+        caption_style=CaptionStyle(),
+        output_size=OutputSize(width=1080, height=1920),
+    )
+
+    assert "Dialogue: 0,0:00:00.00,0:00:00.50" in ass_text
+    assert "Dialogue: 0,0:00:01.00,0:00:02.00" in ass_text
+    assert "{\\an2\\pos(540,1700)}hello\n" in ass_text
+    assert ass_text.count("\\c&H00FFFF&") == 1
+
+
+def test_ass_active_word_caption_placement_stays_in_caption_region(
+    tmp_path: Path,
+) -> None:
+    source = tmp_path / "source.mp4"
+    output = tmp_path / "render.mp4"
+    ass_temp_dir = tmp_path / "ass"
+    caption_metadata = CaptionMetadata(
+        clip_id="clip-123",
+        segments=(
+            CaptionSegment(
+                start_time=0,
+                end_time=1,
+                text="hello",
+                words=(CaptionWord(start_time=0, end_time=1, text="hello"),),
+            ),
+        ),
+    )
+    layout = _layout(
+        _region(
+            name="gameplay",
+            output_region=NormalizedRect(x=0.0, y=0.34, width=1.0, height=0.66),
+        ),
+        _region(
+            name="facecam",
+            output_region=NormalizedRect(x=0.0, y=0.0, width=1.0, height=0.34),
+        ),
+        caption_region=NormalizedRect(x=0.0, y=0.34, width=1.0, height=0.1),
+    )
+
+    build_ffmpeg_command(
+        source,
+        output,
+        layout,
+        caption_metadata=caption_metadata,
+        caption_renderer_backend="ass",
+        ass_temp_dir=ass_temp_dir,
+    )
+
+    ass_text = (ass_temp_dir / "render.ass").read_text(encoding="utf-8")
+    assert "&HFF000000" in ass_text
+    assert "{\\an2\\pos(540,777)}{\\c&H00FFFF&}hello{\\c&HFFFFFF&}" in ass_text
+
+
 def test_build_filter_complex_can_use_custom_caption_font_file() -> None:
     caption_metadata = CaptionMetadata(
         clip_id="clip-123",
