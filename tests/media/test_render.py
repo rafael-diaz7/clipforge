@@ -13,14 +13,19 @@ from clipforge.media.render import (
     CaptionStyle,
     CaptionVerticalSafeArea,
     RenderError,
+    Watermark,
     _caption_chunk_duration,
     _caption_cues,
     build_ffmpeg_command,
     build_filter_complex,
     generate_ass_subtitle,
+    load_streamer_watermark,
     rect_to_pixels,
     render_layout,
     run_ffmpeg_command,
+    streamer_watermark_env_key,
+    streamer_watermark_path,
+    watermark_placement,
 )
 
 
@@ -51,6 +56,18 @@ def _region(
     )
 
 
+def _write_png_header(path: Path, *, width: int = 400, height: int = 100) -> Path:
+    path.parent.mkdir(parents=True, exist_ok=True)
+    path.write_bytes(
+        b"\x89PNG\r\n\x1a\n"
+        + (13).to_bytes(4, byteorder="big")
+        + b"IHDR"
+        + width.to_bytes(4, byteorder="big")
+        + height.to_bytes(4, byteorder="big")
+    )
+    return path
+
+
 def test_rect_to_pixels_converts_normalized_output_region() -> None:
     rect = NormalizedRect(x=0.0, y=0.36, width=1.0, height=0.64)
 
@@ -60,6 +77,187 @@ def test_rect_to_pixels_converts_normalized_output_region() -> None:
     assert pixels.y == 691
     assert pixels.width == 1080
     assert pixels.height == 1229
+
+
+@pytest.mark.parametrize(
+    ("channel_name", "expected"),
+    (
+        ("ohnepixel", "OHNEPIXEL_WATERMARK"),
+        ("JasonTheWeen", "JASONTHEWEEN_WATERMARK"),
+        ("doublelift", "DOUBLELIFT_WATERMARK"),
+        ("case-streamer name", "CASE_STREAMER_NAME_WATERMARK"),
+    ),
+)
+def test_streamer_watermark_env_key_normalizes_channel_name(
+    channel_name: str,
+    expected: str,
+) -> None:
+    assert streamer_watermark_env_key(channel_name) == expected
+
+
+def test_streamer_watermark_path_discovers_configured_env_value(tmp_path: Path) -> None:
+    path = streamer_watermark_path(
+        "ohnepixel",
+        environ={"OHNEPIXEL_WATERMARK": "assets/watermarks/ohnepixel.png"},
+        base_dir=tmp_path,
+    )
+
+    assert path == tmp_path / "assets" / "watermarks" / "ohnepixel.png"
+
+
+def test_load_streamer_watermark_loads_configured_png_dimensions(tmp_path: Path) -> None:
+    watermark_path = _write_png_header(
+        tmp_path / "assets" / "watermarks" / "ohnepixel.png",
+        width=300,
+        height=80,
+    )
+
+    watermark = load_streamer_watermark(
+        "ohnepixel",
+        environ={"OHNEPIXEL_WATERMARK": "assets/watermarks/ohnepixel.png"},
+        base_dir=tmp_path,
+    )
+
+    assert watermark == Watermark(
+        path=watermark_path,
+        native_width=300,
+        native_height=80,
+    )
+
+
+def test_load_streamer_watermark_no_ops_when_env_is_absent() -> None:
+    assert load_streamer_watermark("ohnepixel", environ={}) is None
+
+
+def test_load_streamer_watermark_reports_missing_configured_file(tmp_path: Path) -> None:
+    with pytest.raises(RenderError, match="OHNEPIXEL_WATERMARK"):
+        load_streamer_watermark(
+            "ohnepixel",
+            environ={"OHNEPIXEL_WATERMARK": "missing.png"},
+            base_dir=tmp_path,
+        )
+
+
+def test_load_streamer_watermark_reports_invalid_png(tmp_path: Path) -> None:
+    watermark_path = tmp_path / "watermark.png"
+    watermark_path.write_bytes(b"not-png")
+
+    with pytest.raises(RenderError, match="valid PNG"):
+        load_streamer_watermark(
+            "ohnepixel",
+            environ={"OHNEPIXEL_WATERMARK": str(watermark_path)},
+        )
+
+
+def test_watermark_placement_uses_top_right_margin_and_scaled_width() -> None:
+    placement = watermark_placement(
+        Watermark(path=Path("watermark.png"), native_width=400, native_height=100),
+        OutputSize(width=1080, height=1920),
+    )
+
+    assert placement.width == 184
+    assert placement.height == 46
+    assert placement.x == 864
+    assert placement.y == 32
+
+
+def test_watermark_placement_does_not_upscale_small_watermarks() -> None:
+    placement = watermark_placement(
+        Watermark(path=Path("watermark.png"), native_width=120, native_height=40),
+        OutputSize(width=1080, height=1920),
+    )
+
+    assert placement.width == 120
+    assert placement.height == 40
+    assert placement.x == 928
+
+
+def test_watermark_placement_keeps_large_watermark_inside_frame() -> None:
+    placement = watermark_placement(
+        Watermark(path=Path("watermark.png"), native_width=2000, native_height=30000),
+        OutputSize(width=1080, height=1920),
+    )
+
+    assert placement.width <= 1080
+    assert placement.height <= 1920
+    assert placement.x >= 0
+    assert placement.y >= 0
+
+
+def test_build_filter_complex_can_overlay_watermark() -> None:
+    watermark = Watermark(
+        path=Path("watermark.png"),
+        native_width=400,
+        native_height=100,
+    )
+
+    filter_complex = build_filter_complex(_layout(_region()), watermark=watermark)
+
+    assert (
+        "[base][region0]overlay=0:0:format=auto:shortest=1[watermarkbase]"
+        in filter_complex
+    )
+    assert "[1:v]scale=184:46,format=rgba[watermark]" in filter_complex
+    assert (
+        "[watermarkbase][watermark]overlay=864:32:format=auto:shortest=1[out]"
+        in filter_complex
+    )
+
+
+def test_build_filter_complex_applies_watermark_after_captions() -> None:
+    caption_metadata = CaptionMetadata(
+        clip_id="clip-123",
+        segments=(CaptionSegment(start_time=0, end_time=1, text="hello"),),
+    )
+    watermark = Watermark(
+        path=Path("watermark.png"),
+        native_width=400,
+        native_height=100,
+    )
+
+    filter_complex = build_filter_complex(
+        _layout(_region()),
+        caption_metadata=caption_metadata,
+        watermark=watermark,
+    )
+
+    assert "drawtext=text=hello" in filter_complex
+    assert "[captionbase]drawtext=" in filter_complex
+    assert "'[watermarkbase];[1:v]scale=184:46" in filter_complex
+    assert filter_complex.endswith(
+        "[watermarkbase][watermark]overlay=864:32:format=auto:shortest=1[out]"
+    )
+
+
+def test_build_ffmpeg_command_adds_watermark_png_input(tmp_path: Path) -> None:
+    source = tmp_path / "source.mp4"
+    output = tmp_path / "render.mp4"
+    watermark_path = tmp_path / "watermark.png"
+    watermark = Watermark(path=watermark_path, native_width=400, native_height=100)
+
+    command = build_ffmpeg_command(
+        source,
+        output,
+        _layout(_region()),
+        watermark=watermark,
+    )
+
+    assert command[:6] == ["ffmpeg", "-y", "-i", str(source), "-i", str(watermark_path)]
+    filter_complex = command[command.index("-filter_complex") + 1]
+    assert "[1:v]scale=184:46,format=rgba[watermark]" in filter_complex
+
+
+def test_build_ffmpeg_command_without_watermark_matches_existing_input_shape(
+    tmp_path: Path,
+) -> None:
+    source = tmp_path / "source.mp4"
+    output = tmp_path / "render.mp4"
+
+    command = build_ffmpeg_command(source, output, _layout(_region()))
+
+    assert command[:4] == ["ffmpeg", "-y", "-i", str(source)]
+    assert command[4] == "-filter_complex"
+    assert str(output) == command[-1]
 
 
 def test_build_filter_complex_builds_single_region_graph() -> None:

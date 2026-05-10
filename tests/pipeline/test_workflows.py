@@ -9,6 +9,7 @@ from clipforge.core.config import ClipforgeConfig, EXAMPLE_LAYOUTS_DIR
 from clipforge.media.download import DownloadResult
 from clipforge.media.captions import CaptionMetadata, CaptionSegment, save_captions
 from clipforge.media.layouts import load_example_layout
+from clipforge.media.render import Watermark
 from clipforge.pipeline.workflows import (
     ClipProcessingError,
     process_clip,
@@ -21,6 +22,7 @@ from tests.constants import TWITCH_CLIP_SLUG, TWITCH_CLIP_URL
 
 def _config(tmp_path: Path) -> ClipforgeConfig:
     return ClipforgeConfig(
+        project_root=tmp_path,
         downloads_dir=tmp_path / "downloads",
         renders_dir=tmp_path / "renders",
         metadata_dir=tmp_path / "metadata",
@@ -28,6 +30,18 @@ def _config(tmp_path: Path) -> ClipforgeConfig:
         state_db_path=tmp_path / "state" / "clipforge.sqlite",
         example_layouts_dir=EXAMPLE_LAYOUTS_DIR,
     )
+
+
+def _write_png_header(path: Path, *, width: int = 400, height: int = 100) -> Path:
+    path.parent.mkdir(parents=True, exist_ok=True)
+    path.write_bytes(
+        b"\x89PNG\r\n\x1a\n"
+        + (13).to_bytes(4, byteorder="big")
+        + b"IHDR"
+        + width.to_bytes(4, byteorder="big")
+        + height.to_bytes(4, byteorder="big")
+    )
+    return path
 
 
 def test_render_candidate_uses_layout_name_for_output_path(
@@ -441,7 +455,13 @@ def test_process_clip_can_generate_captions_before_rendering(
     monkeypatch,
 ) -> None:
     config = _config(tmp_path)
-    source_path = tmp_path / "downloads" / TWITCH_CLIP_SLUG / "ytdlp" / f"{TWITCH_CLIP_SLUG}.mp4"
+    source_path = (
+        tmp_path
+        / "downloads"
+        / TWITCH_CLIP_SLUG
+        / "ytdlp"
+        / f"{TWITCH_CLIP_SLUG}.mp4"
+    )
     caption_path = tmp_path / "metadata" / "captions" / f"{TWITCH_CLIP_SLUG}.json"
     events: list[str] = []
 
@@ -519,7 +539,13 @@ def test_process_clip_reuses_existing_caption_metadata(
     capsys,
 ) -> None:
     config = _config(tmp_path)
-    source_path = tmp_path / "downloads" / TWITCH_CLIP_SLUG / "ytdlp" / f"{TWITCH_CLIP_SLUG}.mp4"
+    source_path = (
+        tmp_path
+        / "downloads"
+        / TWITCH_CLIP_SLUG
+        / "ytdlp"
+        / f"{TWITCH_CLIP_SLUG}.mp4"
+    )
     caption_path = save_captions(
         clip_id=TWITCH_CLIP_SLUG,
         segments=(CaptionSegment(start_time=0, end_time=1, text="existing"),),
@@ -735,6 +761,89 @@ def test_process_clip_marks_existing_state_as_rendered(
             / "hybrid.mp4"
         ),
     ]
+
+
+def test_process_clip_applies_streamer_watermark_from_env(
+    tmp_path: Path,
+    monkeypatch,
+) -> None:
+    config = _config(tmp_path)
+    watermark_path = _write_png_header(
+        tmp_path / "assets" / "watermarks" / "ohnepixel.png",
+        width=300,
+        height=80,
+    )
+    monkeypatch.setenv(
+        "OHNEPIXEL_WATERMARK",
+        "assets/watermarks/ohnepixel.png",
+    )
+    upsert_discovered_clip(
+        clip_id=TWITCH_CLIP_SLUG,
+        url=TWITCH_CLIP_URL,
+        streamer_login="ohnepixel",
+        db_path=config.state_db_path,
+    )
+    source_path = tmp_path / "downloads" / TWITCH_CLIP_SLUG / "ytdlp" / f"{TWITCH_CLIP_SLUG}.mp4"
+    watermarks: list[Watermark] = []
+
+    monkeypatch.setattr(
+        "clipforge.pipeline.workflows.download_twitch_clip",
+        lambda *args, **kwargs: DownloadResult(source_path=source_path, backend="ytdlp"),
+    )
+
+    def fake_render(
+        source: Path,
+        output: Path,
+        layout,
+        *,
+        watermark: Watermark,
+    ) -> Path:
+        watermarks.append(watermark)
+        output.parent.mkdir(parents=True, exist_ok=True)
+        output.write_text(layout.name, encoding="utf-8")
+        return output
+
+    monkeypatch.setattr("clipforge.pipeline.workflows.render_layout", fake_render)
+
+    process_clip(TWITCH_CLIP_URL, use_generated_layouts=False, config=config)
+
+    assert len(watermarks) == 3
+    assert all(watermark.path == watermark_path for watermark in watermarks)
+    assert all(watermark.native_width == 300 for watermark in watermarks)
+    assert all(watermark.native_height == 80 for watermark in watermarks)
+
+
+def test_process_clip_keeps_render_calls_unchanged_without_watermark_env(
+    tmp_path: Path,
+    monkeypatch,
+) -> None:
+    config = _config(tmp_path)
+    upsert_discovered_clip(
+        clip_id=TWITCH_CLIP_SLUG,
+        url=TWITCH_CLIP_URL,
+        streamer_login="ohnepixel",
+        db_path=config.state_db_path,
+    )
+    source_path = tmp_path / "downloads" / TWITCH_CLIP_SLUG / "ytdlp" / f"{TWITCH_CLIP_SLUG}.mp4"
+    events: list[str] = []
+
+    monkeypatch.delenv("OHNEPIXEL_WATERMARK", raising=False)
+    monkeypatch.setattr(
+        "clipforge.pipeline.workflows.download_twitch_clip",
+        lambda *args, **kwargs: DownloadResult(source_path=source_path, backend="ytdlp"),
+    )
+
+    def fake_render(source: Path, output: Path, layout) -> Path:
+        events.append(layout.name)
+        output.parent.mkdir(parents=True, exist_ok=True)
+        output.write_text(layout.name, encoding="utf-8")
+        return output
+
+    monkeypatch.setattr("clipforge.pipeline.workflows.render_layout", fake_render)
+
+    process_clip(TWITCH_CLIP_URL, use_generated_layouts=False, config=config)
+
+    assert events == ["center_gameplay", "facecam_focus", "hybrid"]
 
 
 def test_process_clip_generates_analysis_artifacts_and_renders_outputs(

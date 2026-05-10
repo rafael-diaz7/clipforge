@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import logging
+import os
 import re
 import subprocess
 import textwrap
@@ -31,12 +32,48 @@ CAPTION_RENDERER_DRAWTEXT = "drawtext"
 SUPPORTED_CAPTION_RENDERER_BACKENDS = frozenset(
     {CAPTION_RENDERER_ASS, CAPTION_RENDERER_DRAWTEXT}
 )
+PNG_SIGNATURE = b"\x89PNG\r\n\x1a\n"
+DEFAULT_WATERMARK_MARGIN = 32
+DEFAULT_WATERMARK_MAX_WIDTH_RATIO = 0.17
+DEFAULT_WATERMARK_OPACITY = 1.0
 LOGGER = logging.getLogger(__name__)
 
 
 @dataclass(frozen=True)
 class PixelRect:
     """A rectangle described in output pixels."""
+
+    x: int
+    y: int
+    width: int
+    height: int
+
+
+@dataclass(frozen=True)
+class Watermark:
+    """PNG watermark render settings."""
+
+    path: Path
+    native_width: int
+    native_height: int
+    margin: int = DEFAULT_WATERMARK_MARGIN
+    max_width_ratio: float = DEFAULT_WATERMARK_MAX_WIDTH_RATIO
+    opacity: float = DEFAULT_WATERMARK_OPACITY
+
+    def __post_init__(self) -> None:
+        if self.native_width <= 0 or self.native_height <= 0:
+            raise RenderError("Watermark PNG dimensions must be positive.")
+        if self.margin < 0:
+            raise RenderError("Watermark margin must be non-negative.")
+        if self.max_width_ratio <= 0:
+            raise RenderError("Watermark max width ratio must be positive.")
+        if not 0 <= self.opacity <= 1:
+            raise RenderError("Watermark opacity must be between 0 and 1.")
+
+
+@dataclass(frozen=True)
+class WatermarkPlacement:
+    """Resolved watermark dimensions and top-right position."""
 
     x: int
     y: int
@@ -295,6 +332,7 @@ def build_ffmpeg_command(
     caption_style: CaptionStyle = DEFAULT_CAPTION_STYLE,
     caption_renderer_backend: str = DEFAULT_CAPTION_RENDERER_BACKEND,
     ass_temp_dir: Path | None = None,
+    watermark: Watermark | None = None,
     ffmpeg_binary: str = "ffmpeg",
 ) -> list[str]:
     """Build an FFmpeg argv list that renders one layout to an MP4."""
@@ -312,34 +350,42 @@ def build_ffmpeg_command(
         caption_style=caption_style,
         caption_renderer_backend=caption_renderer_backend,
         ass_subtitle_path=ass_subtitle_path,
+        watermark=watermark,
     )
 
-    return [
+    command = [
         ffmpeg_binary,
         "-y",
         "-i",
         str(source_path),
-        "-filter_complex",
-        filter_complex,
-        "-map",
-        "[out]",
-        "-map",
-        "0:a?",
-        "-c:v",
-        "libx264",
-        "-c:a",
-        "aac",
-        "-pix_fmt",
-        "yuv420p",
-        "-movflags",
-        "+faststart",
-        "-shortest",
-        "-s",
-        f"{output_size.width}x{output_size.height}",
-        "-f",
-        "mp4",
-        str(output_path),
     ]
+    if watermark is not None:
+        command.extend(("-i", str(watermark.path)))
+    command.extend(
+        [
+            "-filter_complex",
+            filter_complex,
+            "-map",
+            "[out]",
+            "-map",
+            "0:a?",
+            "-c:v",
+            "libx264",
+            "-c:a",
+            "aac",
+            "-pix_fmt",
+            "yuv420p",
+            "-movflags",
+            "+faststart",
+            "-shortest",
+            "-s",
+            f"{output_size.width}x{output_size.height}",
+            "-f",
+            "mp4",
+            str(output_path),
+        ]
+    )
+    return command
 
 
 def build_filter_complex(
@@ -349,6 +395,7 @@ def build_filter_complex(
     caption_style: CaptionStyle = DEFAULT_CAPTION_STYLE,
     caption_renderer_backend: str = DEFAULT_CAPTION_RENDERER_BACKEND,
     ass_subtitle_path: Path | None = None,
+    watermark: Watermark | None = None,
 ) -> str:
     """Build the FFmpeg filter graph for a layout."""
 
@@ -360,6 +407,7 @@ def build_filter_complex(
     output_size = layout.output
     caption_style = _caption_style_for_layout(layout, caption_style)
     caption_segments = caption_metadata.segments if caption_metadata is not None else ()
+    needs_watermark = watermark is not None
     filter_parts = [
         f"color=c=black:s={output_size.width}x{output_size.height}:r=30[base]",
         f"[0:v]split={len(layout.regions)}{_split_labels(len(layout.regions))}",
@@ -369,7 +417,12 @@ def build_filter_complex(
     for index, region in enumerate(layout.regions):
         region_label = f"region{index}"
         if index == len(layout.regions) - 1:
-            composed_label = "captionbase" if caption_segments else "out"
+            if caption_segments:
+                composed_label = "captionbase"
+            elif needs_watermark:
+                composed_label = "watermarkbase"
+            else:
+                composed_label = "out"
         else:
             composed_label = f"composed{index}"
         output_rect = rect_to_pixels(region.output_region, output_size)
@@ -391,6 +444,18 @@ def build_filter_complex(
                 output_size=output_size,
                 caption_renderer_backend=caption_renderer_backend,
                 ass_subtitle_path=ass_subtitle_path,
+                input_label="captionbase",
+                output_label="watermarkbase" if needs_watermark else "out",
+            )
+        )
+
+    if watermark is not None:
+        filter_parts.extend(
+            _watermark_filters(
+                watermark,
+                output_size=output_size,
+                input_label="watermarkbase",
+                output_label="out",
             )
         )
 
@@ -447,6 +512,7 @@ def render_layout(
     caption_style: CaptionStyle = DEFAULT_CAPTION_STYLE,
     caption_renderer_backend: str = DEFAULT_CAPTION_RENDERER_BACKEND,
     ass_temp_dir: Path | None = None,
+    watermark: Watermark | None = None,
     ffmpeg_binary: str = "ffmpeg",
 ) -> Path:
     """Render one layout and return the output path."""
@@ -462,6 +528,7 @@ def render_layout(
         caption_style=caption_style,
         caption_renderer_backend=caption_renderer_backend,
         ass_temp_dir=ass_temp_dir,
+        watermark=watermark,
         ffmpeg_binary=ffmpeg_binary,
     )
     try:
@@ -473,6 +540,98 @@ def render_layout(
         ) from exc
 
     return output_path
+
+
+def streamer_watermark_env_key(channel_name: str) -> str:
+    """Return the env var key used for a streamer's watermark."""
+
+    normalized = re.sub(r"[^A-Za-z0-9]+", "_", channel_name.strip()).strip("_")
+    if not normalized:
+        raise RenderError("Streamer channel name is required for watermark lookup.")
+    return f"{normalized.upper()}_WATERMARK"
+
+
+def streamer_watermark_path(
+    channel_name: str,
+    *,
+    environ: Mapping[str, str] | None = None,
+    base_dir: Path | None = None,
+) -> Path | None:
+    """Return the configured watermark path for a streamer, if one exists."""
+
+    env = environ if environ is not None else os.environ
+    env_key = streamer_watermark_env_key(channel_name)
+    value = env.get(env_key)
+    if value is None or not value.strip():
+        return None
+
+    path = Path(value.strip()).expanduser()
+    if base_dir is not None and not path.is_absolute():
+        path = base_dir / path
+    return path
+
+
+def load_streamer_watermark(
+    channel_name: str | None,
+    *,
+    environ: Mapping[str, str] | None = None,
+    base_dir: Path | None = None,
+    margin: int = DEFAULT_WATERMARK_MARGIN,
+    max_width_ratio: float = DEFAULT_WATERMARK_MAX_WIDTH_RATIO,
+    opacity: float = DEFAULT_WATERMARK_OPACITY,
+) -> Watermark | None:
+    """Load a configured streamer PNG watermark, or return None when absent."""
+
+    if channel_name is None or not channel_name.strip():
+        return None
+
+    watermark_path = streamer_watermark_path(
+        channel_name,
+        environ=environ,
+        base_dir=base_dir,
+    )
+    if watermark_path is None:
+        return None
+    if not watermark_path.is_file():
+        env_key = streamer_watermark_env_key(channel_name)
+        raise RenderError(
+            f"Configured watermark file for {env_key} was not found: {watermark_path}"
+        )
+
+    width, height = _png_dimensions(watermark_path)
+    return Watermark(
+        path=watermark_path,
+        native_width=width,
+        native_height=height,
+        margin=margin,
+        max_width_ratio=max_width_ratio,
+        opacity=opacity,
+    )
+
+
+def watermark_placement(
+    watermark: Watermark,
+    output_size: OutputSize,
+) -> WatermarkPlacement:
+    """Resolve watermark size and top-right position for an output frame."""
+
+    max_width = max(1, round(output_size.width * watermark.max_width_ratio))
+    target_width = min(watermark.native_width, max_width, output_size.width)
+    target_height = max(
+        1,
+        round(watermark.native_height * target_width / watermark.native_width),
+    )
+
+    if target_height > output_size.height:
+        target_height = output_size.height
+        target_width = max(
+            1,
+            round(watermark.native_width * target_height / watermark.native_height),
+        )
+
+    x = max(0, output_size.width - target_width - watermark.margin)
+    y = min(watermark.margin, max(0, output_size.height - target_height))
+    return WatermarkPlacement(x=x, y=y, width=target_width, height=target_height)
 
 
 def _split_labels(count: int) -> str:
@@ -494,6 +653,45 @@ def _region_filter(region: LayoutRegion, output_rect: PixelRect) -> str:
     return filter_chain
 
 
+def _watermark_filters(
+    watermark: Watermark,
+    *,
+    output_size: OutputSize,
+    input_label: str,
+    output_label: str,
+) -> tuple[str, str]:
+    placement = watermark_placement(watermark, output_size)
+    opacity_filter = (
+        ""
+        if watermark.opacity == DEFAULT_WATERMARK_OPACITY
+        else f",colorchannelmixer=aa={_fmt(watermark.opacity)}"
+    )
+    return (
+        f"[1:v]scale={placement.width}:{placement.height},format=rgba"
+        f"{opacity_filter}[watermark]",
+        f"[{input_label}][watermark]overlay="
+        f"{placement.x}:{placement.y}:format=auto:shortest=1[{output_label}]",
+    )
+
+
+def _png_dimensions(path: Path) -> tuple[int, int]:
+    try:
+        header = path.read_bytes()[:24]
+    except OSError as exc:
+        raise RenderError(f"Could not read configured watermark PNG: {path}") from exc
+
+    if len(header) < 24 or not header.startswith(PNG_SIGNATURE):
+        raise RenderError(f"Configured watermark file is not a valid PNG: {path}")
+    if header[12:16] != b"IHDR":
+        raise RenderError(f"Configured watermark PNG has an invalid IHDR chunk: {path}")
+
+    width = int.from_bytes(header[16:20], byteorder="big")
+    height = int.from_bytes(header[20:24], byteorder="big")
+    if width <= 0 or height <= 0:
+        raise RenderError(f"Configured watermark PNG has invalid dimensions: {path}")
+    return width, height
+
+
 def _fmt(value: float) -> str:
     return f"{value:.10g}"
 
@@ -505,6 +703,8 @@ def _caption_filters(
     output_size: OutputSize,
     caption_renderer_backend: str,
     ass_subtitle_path: Path | None,
+    input_label: str,
+    output_label: str,
 ) -> tuple[str, ...]:
     cues = _caption_cues(segments, caption_style=caption_style, output_size=output_size)
     LOGGER.info(
@@ -520,8 +720,8 @@ def _caption_filters(
         cues,
         caption_style=caption_style,
         output_size=output_size,
-        input_label="captionbase",
-        output_label="out",
+        input_label=input_label,
+        output_label=output_label,
     )
 
 

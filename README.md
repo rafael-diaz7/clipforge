@@ -23,6 +23,7 @@ posting.
 - Reprocess an already-rendered clip intentionally with `--force`.
 - Download Twitch clips with `yt-dlp` by default, with Clipr available as an optional backend.
 - Render vertical candidates from reusable layout JSON files.
+- Automatically apply configured streamer PNG watermarks during renders.
 - Optionally generate timed caption metadata with the OpenAI transcription API.
 - Burn caption metadata into renders with FFmpeg `drawtext` or generated `.ass` subtitle files.
 
@@ -91,10 +92,35 @@ Clipforge loads `.env` from the project root.
 | `CLIPFORGE_CAPTION_RENDERER` | No | `drawtext` | Caption renderer. Supported values: `drawtext`, `ass`. |
 | `CLIPFORGE_ASS_TEMP_DIR` | No | `data/metadata/ass` | Directory for generated `.ass` files when using the `ass` renderer. |
 | `CLIPFORGE_CAPTION_FONT_FALLBACKS` | No | `Arial` | Comma-separated fallback font names for generated ASS styles. |
+| `{CHANNEL_NAME}_WATERMARK` | No | none | Optional PNG watermark path for one streamer, using an uppercase env-safe channel key. |
 
 `yt-dlp` is installed as a Python dependency and is the default downloader even
 if `CLIPR_API_KEY` is present. Set `CLIPFORGE_DOWNLOADER=clipr` only when you
 want Clipforge to use Clipr.
+
+## Streamer Watermarks
+
+Clipforge can automatically apply a PNG watermark for a streamer during normal
+rendering. Configure one environment variable per channel:
+
+```text
+OHNEPIXEL_WATERMARK=C:/watermarks/ohnepixel.png
+DOUBLELIFT_WATERMARK=assets/watermarks/doublelift.png
+```
+
+The key is the channel name normalized to an uppercase env-safe value plus
+`_WATERMARK`. For example, `ohnepixel` becomes `OHNEPIXEL_WATERMARK`,
+`JasonTheWeen` becomes `JASONTHEWEEN_WATERMARK`, and `doublelift` becomes
+`DOUBLELIFT_WATERMARK`.
+
+When a saved clip is rendered for that streamer, Clipforge looks up the matching
+env var and applies the PNG automatically. Review and export workflows inherit
+this through the normal processing pipeline, so no watermark CLI flag is needed.
+If no matching env var is set, renders behave as before.
+
+Watermarks are placed in the top-right corner with a 32px top/right margin. The
+PNG aspect ratio is preserved, the rendered width is capped at roughly 17% of
+the output width, and smaller PNGs are not upscaled.
 
 ## Quick Start
 

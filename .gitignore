@@ -12,6 +12,8 @@ data/clips/
 data/metadata/
 data/state/
 data/analysis/
+data/exports/
+data/assets/
 
 *.mp4
 *.mov

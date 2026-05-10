@@ -32,7 +32,7 @@ from clipforge.media.layouts import (
     load_layout,
 )
 from clipforge.media.overlay import analyze_overlay
-from clipforge.media.render import render_layout
+from clipforge.media.render import load_streamer_watermark, render_layout
 from clipforge.media.render import CaptionStyle
 from clipforge.pipeline.artifacts import write_metadata
 from clipforge.pipeline.state_sync import record_rendered_clip
@@ -98,6 +98,7 @@ def render_candidate(
         layout,
         caption_metadata=caption_metadata,
         caption_style=caption_style,
+        channel=None,
         config=config,
     )
 
@@ -400,6 +401,7 @@ def _ensure_rendered_candidate_layout(
             layout,
             caption_metadata=caption_metadata,
             caption_style=caption_style,
+            channel=channel,
             config=config,
         ),
         False,
@@ -567,6 +569,7 @@ def _render_candidate_layout(
         layout,
         caption_metadata=caption_metadata,
         caption_style=caption_style,
+        channel=channel,
         config=config,
     )
 
@@ -584,10 +587,16 @@ def _render_layout_with_optional_captions(
     *,
     caption_metadata: CaptionMetadata | None,
     caption_style: CaptionStyle,
+    channel: str | None,
     config: ClipforgeConfig,
 ) -> Path:
+    watermark = load_streamer_watermark(channel, base_dir=config.project_root)
+    render_kwargs = {}
+    if watermark is not None:
+        render_kwargs["watermark"] = watermark
+
     if caption_metadata is None:
-        return render_layout(source_path, output_path, layout)
+        return render_layout(source_path, output_path, layout, **render_kwargs)
     if caption_style == CaptionStyle():
         return render_layout(
             source_path,
@@ -596,6 +605,7 @@ def _render_layout_with_optional_captions(
             caption_metadata=caption_metadata,
             caption_renderer_backend=config.require_caption_renderer_backend(),
             ass_temp_dir=config.ass_temp_dir,
+            **render_kwargs,
         )
     return render_layout(
         source_path,
@@ -605,6 +615,7 @@ def _render_layout_with_optional_captions(
         caption_style=caption_style,
         caption_renderer_backend=config.require_caption_renderer_backend(),
         ass_temp_dir=config.ass_temp_dir,
+        **render_kwargs,
     )
 
 
