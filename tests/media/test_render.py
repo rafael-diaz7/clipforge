@@ -199,7 +199,8 @@ def test_build_filter_complex_can_overlay_watermark() -> None:
     )
     assert "[1:v]scale=184:46,format=rgba[watermark]" in filter_complex
     assert (
-        "[watermarkbase][watermark]overlay=864:32:format=auto:shortest=1[out]"
+        "[watermarkbase][watermark]overlay="
+        "864:32:format=auto:eof_action=repeat:repeatlast=1[out]"
         in filter_complex
     )
 
@@ -225,7 +226,8 @@ def test_build_filter_complex_applies_watermark_after_captions() -> None:
     assert "[captionbase]drawtext=" in filter_complex
     assert "'[watermarkbase];[1:v]scale=184:46" in filter_complex
     assert filter_complex.endswith(
-        "[watermarkbase][watermark]overlay=864:32:format=auto:shortest=1[out]"
+        "[watermarkbase][watermark]overlay="
+        "864:32:format=auto:eof_action=repeat:repeatlast=1[out]"
     )
 
 

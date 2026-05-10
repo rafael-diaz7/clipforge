@@ -670,7 +670,8 @@ def _watermark_filters(
         f"[1:v]scale={placement.width}:{placement.height},format=rgba"
         f"{opacity_filter}[watermark]",
         f"[{input_label}][watermark]overlay="
-        f"{placement.x}:{placement.y}:format=auto:shortest=1[{output_label}]",
+        f"{placement.x}:{placement.y}:format=auto:"
+        f"eof_action=repeat:repeatlast=1[{output_label}]",
     )
 
 
