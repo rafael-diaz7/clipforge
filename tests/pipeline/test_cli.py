@@ -1394,6 +1394,56 @@ def test_main_reranks_clips_from_state_without_changing_status(
     assert state.rank_score != 0.01
 
 
+def test_main_routes_clips_review_command(monkeypatch, capsys, tmp_path: Path) -> None:
+    config = ClipforgeConfig(state_db_path=tmp_path / "state" / "clipforge.sqlite")
+    calls: list[dict[str, object]] = []
+    export_path = tmp_path / "exports" / "ready" / "jynxzi" / "clip-1" / "hybrid.mp4"
+
+    def fake_review_streamer_clips(**kwargs) -> tuple[Path, ...]:
+        calls.append(kwargs)
+        return (export_path,)
+
+    monkeypatch.setattr("clipforge.pipeline.cli.load_config", lambda: config)
+    monkeypatch.setattr(
+        "clipforge.pipeline.cli.review_streamer_clips",
+        fake_review_streamer_clips,
+    )
+
+    exit_code = main(
+        [
+            "clips",
+            "review",
+            "--streamer",
+            "jynxzi",
+            "--count",
+            "3",
+            "--force",
+            "--generate-captions",
+            "--clip-id",
+            "clip-1",
+        ]
+    )
+
+    assert exit_code == 0
+    assert len(calls) == 1
+    call = calls[0]
+    assert call["streamer"] == "jynxzi"
+    assert call["count"] == 3
+    assert call["force"] is True
+    assert call["generate_captions"] is True
+    assert call["force_captions"] is False
+    assert call["clip_ids"] == ["clip-1"]
+    assert call["started_at"] is not None
+    assert call["ended_at"] is not None
+    assert call["discovery_limit"] == 10
+    assert call["use_generated_layouts"] is True
+    assert call["config"] == config
+    assert capsys.readouterr().out.splitlines() == [
+        "ready exports:",
+        str(export_path),
+    ]
+
+
 def test_main_rejects_clips_output_without_json_format(monkeypatch, capsys) -> None:
     def fake_list_channel_clips(*args, **kwargs) -> tuple[TwitchClip, ...]:
         raise AssertionError("Twitch should not be called for invalid CLI options.")

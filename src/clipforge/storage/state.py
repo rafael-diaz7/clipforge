@@ -21,12 +21,84 @@ CLIP_STATUSES = frozenset(
         "downloaded",
         "rendered",
         "approved",
+        "selected",
+        "exported",
         "posted",
         "skipped",
         "failed",
     }
 )
 UNPROCESSED_STATUSES = ("discovered", "queued")
+REVIEW_EXCLUDED_STATUSES = (
+    "approved",
+    "selected",
+    "exported",
+    "posted",
+    "skipped",
+    "failed",
+)
+
+_CLIPS_COLUMNS = (
+    "clip_id",
+    "url",
+    "streamer_login",
+    "title",
+    "view_count",
+    "created_at",
+    "duration_seconds",
+    "rank_score",
+    "rank_breakdown",
+    "discovered_at",
+    "last_seen_at",
+    "status",
+    "download_path",
+    "metadata_path",
+    "render_dir",
+    "skip_reason",
+    "error_message",
+    "selected_render_layout",
+    "selected_render_path",
+    "export_path",
+    "exported_at",
+)
+
+_CREATE_CLIPS_TABLE_SQL = """
+CREATE TABLE IF NOT EXISTS clips (
+  clip_id TEXT PRIMARY KEY,
+  url TEXT NOT NULL,
+  streamer_login TEXT,
+  title TEXT,
+  view_count INTEGER,
+  created_at TEXT,
+  duration_seconds REAL,
+  rank_score REAL,
+  rank_breakdown TEXT,
+  discovered_at TEXT NOT NULL,
+  last_seen_at TEXT NOT NULL,
+  status TEXT NOT NULL DEFAULT 'discovered'
+    CHECK (status IN (
+      'discovered',
+      'queued',
+      'downloaded',
+      'rendered',
+      'approved',
+      'selected',
+      'exported',
+      'posted',
+      'skipped',
+      'failed'
+    )),
+  download_path TEXT,
+  metadata_path TEXT,
+  render_dir TEXT,
+  skip_reason TEXT,
+  error_message TEXT,
+  selected_render_layout TEXT,
+  selected_render_path TEXT,
+  export_path TEXT,
+  exported_at TEXT
+);
+"""
 
 
 class ClipStateError(RuntimeError):
@@ -52,6 +124,10 @@ class ClipState:
     render_dir: str | None
     skip_reason: str | None
     error_message: str | None
+    selected_render_layout: str | None
+    selected_render_path: str | None
+    export_path: str | None
+    exported_at: str | None
 
 
 def init_db(db_path: Path | str = DEFAULT_STATE_DB_PATH) -> Path:
@@ -61,39 +137,8 @@ def init_db(db_path: Path | str = DEFAULT_STATE_DB_PATH) -> Path:
     resolved_path.parent.mkdir(parents=True, exist_ok=True)
 
     with _connect(resolved_path) as connection:
-        connection.execute(
-            """
-            CREATE TABLE IF NOT EXISTS clips (
-              clip_id TEXT PRIMARY KEY,
-              url TEXT NOT NULL,
-              streamer_login TEXT,
-              title TEXT,
-              view_count INTEGER,
-              created_at TEXT,
-              duration_seconds REAL,
-              rank_score REAL,
-              rank_breakdown TEXT,
-              discovered_at TEXT NOT NULL,
-              last_seen_at TEXT NOT NULL,
-              status TEXT NOT NULL DEFAULT 'discovered'
-                CHECK (status IN (
-                  'discovered',
-                  'queued',
-                  'downloaded',
-                  'rendered',
-                  'approved',
-                  'posted',
-                  'skipped',
-                  'failed'
-                )),
-              download_path TEXT,
-              metadata_path TEXT,
-              render_dir TEXT,
-              skip_reason TEXT,
-              error_message TEXT
-            );
-            """
-        )
+        connection.execute(_CREATE_CLIPS_TABLE_SQL)
+        _migrate_clips_table(connection)
         connection.execute(
             """
             CREATE INDEX IF NOT EXISTS idx_clips_status_last_seen
@@ -103,6 +148,10 @@ def init_db(db_path: Path | str = DEFAULT_STATE_DB_PATH) -> Path:
         _ensure_column(connection, "clips", "created_at", "TEXT")
         _ensure_column(connection, "clips", "rank_score", "REAL")
         _ensure_column(connection, "clips", "rank_breakdown", "TEXT")
+        _ensure_column(connection, "clips", "selected_render_layout", "TEXT")
+        _ensure_column(connection, "clips", "selected_render_path", "TEXT")
+        _ensure_column(connection, "clips", "export_path", "TEXT")
+        _ensure_column(connection, "clips", "exported_at", "TEXT")
 
     return resolved_path
 
@@ -198,6 +247,39 @@ def get_unprocessed_clips(
     if limit is not None:
         if limit < 1:
             raise ClipStateError("Unprocessed clip limit must be at least 1.")
+        sql += " LIMIT ?"
+        params.append(limit)
+
+    with _connect(resolved_path) as connection:
+        rows = connection.execute(sql, params).fetchall()
+    return tuple(_clip_from_row(row) for row in rows)
+
+
+def get_review_eligible_clips(
+    *,
+    db_path: Path | str = DEFAULT_STATE_DB_PATH,
+    limit: int | None = None,
+    streamer_login: str | None = None,
+) -> tuple[ClipState, ...]:
+    """Return clips eligible for manual final-render review."""
+
+    resolved_path = init_db(db_path)
+    params: list[Any] = list(REVIEW_EXCLUDED_STATUSES)
+    placeholders = ", ".join("?" for _ in REVIEW_EXCLUDED_STATUSES)
+    sql = f"""
+        SELECT *
+        FROM clips
+        WHERE status NOT IN ({placeholders})
+    """
+    if streamer_login is not None:
+        sql += " AND LOWER(streamer_login) = LOWER(?)"
+        params.append(streamer_login)
+    sql += """
+        ORDER BY rank_score IS NULL ASC, rank_score DESC, discovered_at ASC, clip_id ASC
+    """
+    if limit is not None:
+        if limit < 1:
+            raise ClipStateError("Review clip limit must be at least 1.")
         sql += " LIMIT ?"
         params.append(limit)
 
@@ -342,6 +424,30 @@ def mark_clip_skipped(
     )
 
 
+def mark_clip_exported(
+    clip_id: str,
+    *,
+    selected_render_layout: str,
+    selected_render_path: Path | str,
+    export_path: Path | str,
+    db_path: Path | str = DEFAULT_STATE_DB_PATH,
+    exported_at: str | None = None,
+) -> ClipState:
+    """Mark a clip as exported and persist the selected render metadata."""
+
+    return _update_clip_status(
+        clip_id,
+        "exported",
+        db_path=db_path,
+        selected_render_layout=selected_render_layout,
+        selected_render_path=str(selected_render_path),
+        export_path=str(export_path),
+        exported_at=exported_at or utc_timestamp(),
+        clear_skip_reason=True,
+        clear_error_message=True,
+    )
+
+
 def mark_clip_failed(
     clip_id: str,
     *,
@@ -368,6 +474,10 @@ def _update_clip_status(
     render_dir: str | None = None,
     skip_reason: str | None = None,
     error_message: str | None = None,
+    selected_render_layout: str | None = None,
+    selected_render_path: str | None = None,
+    export_path: str | None = None,
+    exported_at: str | None = None,
     clear_skip_reason: bool = False,
     clear_error_message: bool = False,
 ) -> ClipState:
@@ -385,7 +495,11 @@ def _update_clip_status(
               metadata_path = COALESCE(?, metadata_path),
               render_dir = COALESCE(?, render_dir),
               skip_reason = CASE WHEN ? THEN NULL ELSE COALESCE(?, skip_reason) END,
-              error_message = CASE WHEN ? THEN NULL ELSE COALESCE(?, error_message) END
+              error_message = CASE WHEN ? THEN NULL ELSE COALESCE(?, error_message) END,
+              selected_render_layout = COALESCE(?, selected_render_layout),
+              selected_render_path = COALESCE(?, selected_render_path),
+              export_path = COALESCE(?, export_path),
+              exported_at = COALESCE(?, exported_at)
             WHERE clip_id = ?
             """,
             (
@@ -397,6 +511,10 @@ def _update_clip_status(
                 skip_reason,
                 clear_error_message,
                 error_message,
+                selected_render_layout,
+                selected_render_path,
+                export_path,
+                exported_at,
                 clip_id,
             ),
         )
@@ -415,18 +533,50 @@ def _connect(db_path: Path) -> sqlite3.Connection:
     return connection
 
 
+def _migrate_clips_table(connection: sqlite3.Connection) -> None:
+    table_sql = connection.execute(
+        """
+        SELECT sql
+        FROM sqlite_master
+        WHERE type = 'table' AND name = 'clips'
+        """
+    ).fetchone()["sql"]
+    if "'exported'" in table_sql and "'selected'" in table_sql:
+        return
+
+    existing_columns = _table_columns(connection, "clips")
+    connection.execute("ALTER TABLE clips RENAME TO clips_old")
+    connection.execute(_CREATE_CLIPS_TABLE_SQL)
+    select_values = [
+        column if column in existing_columns else "NULL"
+        for column in _CLIPS_COLUMNS
+    ]
+    connection.execute(
+        f"""
+        INSERT INTO clips ({", ".join(_CLIPS_COLUMNS)})
+        SELECT {", ".join(select_values)}
+        FROM clips_old
+        """
+    )
+    connection.execute("DROP TABLE clips_old")
+
+
 def _ensure_column(
     connection: sqlite3.Connection,
     table: str,
     column: str,
     definition: str,
 ) -> None:
-    existing_columns = {
+    existing_columns = _table_columns(connection, table)
+    if column not in existing_columns:
+        connection.execute(f"ALTER TABLE {table} ADD COLUMN {column} {definition}")
+
+
+def _table_columns(connection: sqlite3.Connection, table: str) -> set[str]:
+    return {
         row["name"]
         for row in connection.execute(f"PRAGMA table_info({table})").fetchall()
     }
-    if column not in existing_columns:
-        connection.execute(f"ALTER TABLE {table} ADD COLUMN {column} {definition}")
 
 
 def _optional_path_string(path: Path | str | None) -> str | None:
@@ -470,4 +620,8 @@ def _clip_from_row(row: sqlite3.Row) -> ClipState:
         render_dir=data["render_dir"],
         skip_reason=data["skip_reason"],
         error_message=data["error_message"],
+        selected_render_layout=data["selected_render_layout"],
+        selected_render_path=data["selected_render_path"],
+        export_path=data["export_path"],
+        exported_at=data["exported_at"],
     )

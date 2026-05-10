@@ -28,6 +28,7 @@ from clipforge.pipeline.workflows import (
     render_candidate,
     resolve_download_url,
 )
+from clipforge.pipeline.review import review_streamer_clips
 from clipforge.storage.state import (
     UNPROCESSED_STATUSES,
     get_clip,
@@ -272,6 +273,47 @@ def build_parser() -> argparse.ArgumentParser:
         dest="rerank_channel",
         help="Only rerank clips for this Twitch channel login.",
     )
+    clips_review_parser = clips_subparsers.add_parser(
+        "review",
+        help="Discover, process, and manually export final renders for a streamer.",
+    )
+    clips_review_parser.add_argument(
+        "--streamer",
+        required=True,
+        help="Twitch streamer login to discover and review.",
+    )
+    clips_review_parser.add_argument(
+        "--count",
+        type=int,
+        default=3,
+        help="Number of top-ranked eligible clips to review. Defaults to 3.",
+    )
+    clips_review_parser.add_argument(
+        "--force",
+        action="store_true",
+        help="Overwrite existing ready-to-post exports.",
+    )
+    clips_review_parser.add_argument(
+        "--generate-captions",
+        action="store_true",
+        default=None,
+        help="Generate caption metadata before rendering.",
+    )
+    clips_review_parser.add_argument(
+        "--force-captions",
+        action="store_true",
+        help="Regenerate caption metadata even when deterministic metadata already exists.",
+    )
+    clips_review_parser.add_argument(
+        "--clip-id",
+        action="append",
+        help="Review a specific saved clip ID. May be passed more than once.",
+    )
+    clips_review_parser.add_argument(
+        "--static-layouts",
+        action="store_true",
+        help="Ignore generated analysis layouts and render static layouts.",
+    )
 
     analyze_parser = subparsers.add_parser(
         "analyze",
@@ -462,6 +504,9 @@ def _handle_clips_command(args: argparse.Namespace) -> int:
     if args.clips_command == "rerank":
         return _handle_clips_rerank_command(args)
 
+    if args.clips_command == "review":
+        return _handle_clips_review_command(args)
+
     if not args.channel:
         raise CLIError("clips discovery requires --channel.")
 
@@ -584,6 +629,32 @@ def _handle_clips_rerank_command(args: argparse.Namespace) -> int:
     count = rerank_persisted_clips(config=config, channel=channel)
     suffix = "clip" if count == 1 else "clips"
     print(f"Reranked {count} {suffix}")
+    return 0
+
+
+def _handle_clips_review_command(args: argparse.Namespace) -> int:
+    started_at, ended_at = _clip_date_filters(
+        started_at=args.started_at,
+        ended_at=args.ended_at,
+    )
+    config = load_config()
+    exported_paths = review_streamer_clips(
+        streamer=args.streamer,
+        count=args.count,
+        force=args.force,
+        generate_captions=args.generate_captions,
+        force_captions=args.force_captions,
+        clip_ids=args.clip_id or (),
+        started_at=started_at,
+        ended_at=ended_at,
+        discovery_limit=max(args.count, args.limit),
+        use_generated_layouts=not args.static_layouts,
+        config=config,
+    )
+    if exported_paths:
+        print("ready exports:")
+        for path in exported_paths:
+            print(path)
     return 0
 
 

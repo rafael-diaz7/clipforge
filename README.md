@@ -110,6 +110,12 @@ Review the saved pending list:
 clipforge clips pending --channel "<channel_login>"
 ```
 
+Discover, process, and choose one final render per top clip:
+
+```powershell
+clipforge clips review --streamer "<channel_login>" --count 3
+```
+
 Process the top ranked pending clip:
 
 ```powershell
@@ -170,6 +176,23 @@ clipforge clips pending --channel "<channel_login>" --limit 10
 ```
 
 Add `--show-url` when you want the full clip URLs in the table.
+
+Run the manual final-render review workflow:
+
+```powershell
+clipforge clips review --streamer "<channel_login>" --count 3
+```
+
+This discovers recent clips, updates SQLite state, selects the top-ranked
+eligible clips from the DB, processes them through the normal pipeline, prompts
+for one render per clip, and copies only selected renders to:
+
+```text
+data/exports/ready/<streamer>/<clip_id>/<layout_name>.mp4
+```
+
+Already exported or posted clips are not selected again. Existing ready exports
+are preserved unless `--force` is passed.
 
 ### Process
 
