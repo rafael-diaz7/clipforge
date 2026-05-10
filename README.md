@@ -118,8 +118,8 @@ env var and applies the PNG automatically. Review and export workflows inherit
 this through the normal processing pipeline, so no watermark CLI flag is needed.
 If no matching env var is set, renders behave as before.
 
-Watermarks are placed in the top-right corner with a 32px top/right margin. The
-PNG aspect ratio is preserved, the rendered width is capped at roughly 17% of
+Watermarks are placed at the bottom center with a 32px bottom margin. The
+PNG aspect ratio is preserved, the rendered width is capped at roughly 34% of
 the output width, and smaller PNGs are not upscaled.
 
 ## Quick Start

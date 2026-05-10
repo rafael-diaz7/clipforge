@@ -149,16 +149,16 @@ def test_load_streamer_watermark_reports_invalid_png(tmp_path: Path) -> None:
         )
 
 
-def test_watermark_placement_uses_top_right_margin_and_scaled_width() -> None:
+def test_watermark_placement_uses_bottom_center_margin_and_scaled_width() -> None:
     placement = watermark_placement(
         Watermark(path=Path("watermark.png"), native_width=400, native_height=100),
         OutputSize(width=1080, height=1920),
     )
 
-    assert placement.width == 184
-    assert placement.height == 46
-    assert placement.x == 864
-    assert placement.y == 32
+    assert placement.width == 367
+    assert placement.height == 92
+    assert placement.x == 356
+    assert placement.y == 1796
 
 
 def test_watermark_placement_does_not_upscale_small_watermarks() -> None:
@@ -169,7 +169,8 @@ def test_watermark_placement_does_not_upscale_small_watermarks() -> None:
 
     assert placement.width == 120
     assert placement.height == 40
-    assert placement.x == 928
+    assert placement.x == 480
+    assert placement.y == 1848
 
 
 def test_watermark_placement_keeps_large_watermark_inside_frame() -> None:
@@ -197,10 +198,10 @@ def test_build_filter_complex_can_overlay_watermark() -> None:
         "[base][region0]overlay=0:0:format=auto:shortest=1[watermarkbase]"
         in filter_complex
     )
-    assert "[1:v]scale=184:46,format=rgba[watermark]" in filter_complex
+    assert "[1:v]scale=367:92,format=rgba[watermark]" in filter_complex
     assert (
         "[watermarkbase][watermark]overlay="
-        "864:32:format=auto:eof_action=repeat:repeatlast=1[out]"
+        "356:1796:format=auto:eof_action=repeat:repeatlast=1[out]"
         in filter_complex
     )
 
@@ -224,10 +225,10 @@ def test_build_filter_complex_applies_watermark_after_captions() -> None:
 
     assert "drawtext=text=hello" in filter_complex
     assert "[captionbase]drawtext=" in filter_complex
-    assert "'[watermarkbase];[1:v]scale=184:46" in filter_complex
+    assert "'[watermarkbase];[1:v]scale=367:92" in filter_complex
     assert filter_complex.endswith(
         "[watermarkbase][watermark]overlay="
-        "864:32:format=auto:eof_action=repeat:repeatlast=1[out]"
+        "356:1796:format=auto:eof_action=repeat:repeatlast=1[out]"
     )
 
 
@@ -246,7 +247,7 @@ def test_build_ffmpeg_command_adds_watermark_png_input(tmp_path: Path) -> None:
 
     assert command[:6] == ["ffmpeg", "-y", "-i", str(source), "-i", str(watermark_path)]
     filter_complex = command[command.index("-filter_complex") + 1]
-    assert "[1:v]scale=184:46,format=rgba[watermark]" in filter_complex
+    assert "[1:v]scale=367:92,format=rgba[watermark]" in filter_complex
 
 
 def test_build_ffmpeg_command_without_watermark_matches_existing_input_shape(

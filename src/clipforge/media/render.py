@@ -34,7 +34,7 @@ SUPPORTED_CAPTION_RENDERER_BACKENDS = frozenset(
 )
 PNG_SIGNATURE = b"\x89PNG\r\n\x1a\n"
 DEFAULT_WATERMARK_MARGIN = 32
-DEFAULT_WATERMARK_MAX_WIDTH_RATIO = 0.17
+DEFAULT_WATERMARK_MAX_WIDTH_RATIO = 0.34
 DEFAULT_WATERMARK_OPACITY = 1.0
 LOGGER = logging.getLogger(__name__)
 
@@ -73,7 +73,7 @@ class Watermark:
 
 @dataclass(frozen=True)
 class WatermarkPlacement:
-    """Resolved watermark dimensions and top-right position."""
+    """Resolved watermark dimensions and bottom-center position."""
 
     x: int
     y: int
@@ -613,7 +613,7 @@ def watermark_placement(
     watermark: Watermark,
     output_size: OutputSize,
 ) -> WatermarkPlacement:
-    """Resolve watermark size and top-right position for an output frame."""
+    """Resolve watermark size and bottom-center position for an output frame."""
 
     max_width = max(1, round(output_size.width * watermark.max_width_ratio))
     target_width = min(watermark.native_width, max_width, output_size.width)
@@ -629,8 +629,8 @@ def watermark_placement(
             round(watermark.native_width * target_height / watermark.native_height),
         )
 
-    x = max(0, output_size.width - target_width - watermark.margin)
-    y = min(watermark.margin, max(0, output_size.height - target_height))
+    x = max(0, (output_size.width - target_width) // 2)
+    y = max(0, output_size.height - target_height - watermark.margin)
     return WatermarkPlacement(x=x, y=y, width=target_width, height=target_height)
 
 
