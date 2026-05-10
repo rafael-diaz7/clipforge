@@ -8,8 +8,8 @@ from dataclasses import dataclass
 from pathlib import Path
 from typing import Any
 
-from clipforge.core.config import DATA_DIR, EXAMPLE_LAYOUTS_DIR
-from clipforge.utils.paths import ensure_directory, safe_filename
+from clipforge.core.config import ANALYSIS_DIR, EXAMPLE_LAYOUTS_DIR
+from clipforge.utils.paths import clip_analysis_dir, ensure_directory, safe_filename
 from clipforge.utils.json_validation import required_int
 from clipforge.utils.json_validation import required_list
 from clipforge.utils.json_validation import required_number
@@ -23,7 +23,6 @@ class LayoutError(RuntimeError):
 
 DEFAULT_LAYOUT_NAMES = ("center_gameplay", "facecam_focus", "hybrid")
 GENERATED_LAYOUT_NAMES = ("detected_streamer_focus", "detected_hybrid")
-ANALYSIS_DIR = DATA_DIR / "analysis"
 DYNAMIC_LAYOUT_CONFIDENCE_THRESHOLD = 0.58
 SUPPORTED_REGION_EFFECTS = frozenset({"blur"})
 HYBRID_STREAMER_REGION_NAMES = frozenset({"facecam", "streamer"})
@@ -122,13 +121,13 @@ def generate_detected_layout_candidates(
     """Generate deterministic layout JSON candidates from overlay analysis metadata."""
 
     safe_clip_id = _safe_clip_id(clip_id)
-    clip_analysis_dir = analysis_dir / safe_clip_id
-    overlay_path = clip_analysis_dir / "overlay.json"
+    analysis_clip_dir = clip_analysis_dir(analysis_dir, safe_clip_id)
+    overlay_path = analysis_clip_dir / "overlay.json"
     if not overlay_path.is_file():
         raise LayoutError(f"Overlay metadata not found: {overlay_path}")
 
     overlay_metadata = _read_overlay_metadata(overlay_path)
-    layouts_dir = ensure_directory(clip_analysis_dir / "layouts")
+    layouts_dir = ensure_directory(analysis_clip_dir / "layouts")
     if _can_generate_dynamic_layouts(
         overlay_metadata,
         confidence_threshold=confidence_threshold,

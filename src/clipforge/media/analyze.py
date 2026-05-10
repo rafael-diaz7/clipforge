@@ -8,13 +8,12 @@ from dataclasses import dataclass
 from pathlib import Path
 from typing import Callable
 
-from clipforge.core.config import DATA_DIR
-from clipforge.utils.paths import ensure_directory, safe_filename
+from clipforge.core.config import ANALYSIS_DIR
+from clipforge.utils.paths import clip_analysis_dir, ensure_directory, safe_filename
 
 
 DEFAULT_FRAME_SAMPLE_COUNT = 12
 DEFAULT_FRAME_SAMPLE_INTERVAL_SECONDS = 2.0
-ANALYSIS_DIR = DATA_DIR / "analysis"
 
 
 class AnalysisError(RuntimeError):
@@ -106,8 +105,8 @@ def sample_frames(
         count=count,
         interval_seconds=interval_seconds,
     )
-    clip_analysis_dir = analysis_dir / safe_clip_id
-    frames_dir = ensure_directory(clip_analysis_dir / "frames")
+    analysis_clip_dir = clip_analysis_dir(analysis_dir, safe_clip_id)
+    frames_dir = ensure_directory(analysis_clip_dir / "frames")
     frame_paths = _frame_paths(frames_dir, len(sampled_timestamps))
     commands = build_frame_sample_commands(
         source_path,
@@ -132,7 +131,7 @@ def sample_frames(
             interval_seconds=interval_seconds,
         ),
     )
-    metadata_path = clip_analysis_dir / "frames.json"
+    metadata_path = analysis_clip_dir / "frames.json"
     metadata_path.write_text(
         json.dumps(metadata.to_dict(), indent=2),
         encoding="utf-8",

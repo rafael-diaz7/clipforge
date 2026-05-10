@@ -18,6 +18,7 @@ from clipforge.media.caption_escaping import (
 )
 from clipforge.media.captions import CaptionMetadata, CaptionSegment, CaptionWord
 from clipforge.media.layouts import Layout, LayoutRegion, NormalizedRect, OutputSize
+from clipforge.utils.paths import ensure_directory
 
 
 class RenderError(RuntimeError):
@@ -268,7 +269,7 @@ class AssCaptionRenderer:
         input_label: str,
         output_label: str,
     ) -> tuple[str, ...]:
-        self.subtitle_path.parent.mkdir(parents=True, exist_ok=True)
+        ensure_directory(self.subtitle_path.parent)
         self.subtitle_path.write_text(
             generate_ass_subtitle(
                 cues,

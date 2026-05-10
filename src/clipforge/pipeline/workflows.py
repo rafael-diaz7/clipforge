@@ -7,7 +7,12 @@ import logging
 from pathlib import Path
 
 from clipforge.core.config import ClipforgeConfig, load_config
-from clipforge.utils.paths import ensure_directory, safe_filename, twitch_clip_slug_from_url
+from clipforge.utils.paths import (
+    clip_analysis_dir,
+    ensure_directory,
+    safe_filename,
+    twitch_clip_slug_from_url,
+)
 from clipforge.integrations.clipr import CliprClient
 from clipforge.media.download import download_clip, download_twitch_clip
 from clipforge.media.captions import (
@@ -415,7 +420,7 @@ def _generated_layout_paths(clip_id: str, *, config: ClipforgeConfig) -> tuple[P
 
 
 def _clip_analysis_dir(clip_id: str, *, config: ClipforgeConfig) -> Path:
-    return config.analysis_dir / safe_filename(clip_id)
+    return clip_analysis_dir(config.analysis_dir, clip_id)
 
 
 def _frames_artifacts_ready(metadata_path: Path) -> bool:
@@ -490,8 +495,7 @@ def _candidate_layouts(
             layouts_dir=config.example_layouts_dir,
         )
 
-    safe_clip_id = safe_filename(clip_id)
-    generated_layouts_dir = config.analysis_dir / safe_clip_id / "layouts"
+    generated_layouts_dir = _clip_analysis_dir(clip_id, config=config) / "layouts"
     layouts: list[Layout] = []
     for layout_name in DEFAULT_LAYOUT_NAMES:
         generated_name = GENERATED_LAYOUT_REPLACEMENTS.get(layout_name)

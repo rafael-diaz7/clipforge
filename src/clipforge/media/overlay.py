@@ -9,12 +9,11 @@ from dataclasses import dataclass
 from pathlib import Path
 from typing import Protocol
 
-from clipforge.core.config import DATA_DIR
+from clipforge.core.config import ANALYSIS_DIR
 from clipforge.media.analyze import AnalysisError
-from clipforge.utils.paths import ensure_directory, safe_filename
+from clipforge.utils.paths import clip_analysis_dir, ensure_directory, safe_filename
 
 
-ANALYSIS_DIR = DATA_DIR / "analysis"
 DEFAULT_OVERLAY_CONFIDENCE_THRESHOLD = 0.58
 CLUSTER_CENTER_THRESHOLD = 0.12
 CLUSTER_SIZE_THRESHOLD = 0.09
@@ -301,8 +300,8 @@ def analyze_overlay(
     """Analyze saved sampled frames and write overlay inference metadata."""
 
     safe_clip_id = _safe_clip_id(clip_id)
-    clip_analysis_dir = analysis_dir / safe_clip_id
-    frames_metadata_path = clip_analysis_dir / "frames.json"
+    analysis_clip_dir = clip_analysis_dir(analysis_dir, safe_clip_id)
+    frames_metadata_path = analysis_clip_dir / "frames.json"
     if not frames_metadata_path.is_file():
         raise AnalysisError(f"Frame metadata not found: {frames_metadata_path}")
 
@@ -310,7 +309,7 @@ def analyze_overlay(
     metadata_clip_id = str(frames_metadata.get("clip_id") or clip_id)
     frame_paths = _frame_paths_from_metadata(frames_metadata, base_path=frames_metadata_path.parent)
     _require_existing_frames(frame_paths)
-    output_path = clip_analysis_dir / "overlay.json"
+    output_path = analysis_clip_dir / "overlay.json"
 
     detector_instance: FaceDetector
     try:
@@ -392,9 +391,9 @@ def write_overlay_debug_images(
     """Draw overlay inference candidates on sampled frames and return the debug dir."""
 
     safe_clip_id = _safe_clip_id(clip_id)
-    clip_analysis_dir = analysis_dir / safe_clip_id
-    frames_metadata_path = clip_analysis_dir / "frames.json"
-    overlay_path = clip_analysis_dir / "overlay.json"
+    analysis_clip_dir = clip_analysis_dir(analysis_dir, safe_clip_id)
+    frames_metadata_path = analysis_clip_dir / "frames.json"
+    overlay_path = analysis_clip_dir / "overlay.json"
     if not frames_metadata_path.is_file():
         raise AnalysisError(f"Frame metadata not found: {frames_metadata_path}")
     if not overlay_path.is_file():
@@ -407,7 +406,7 @@ def write_overlay_debug_images(
     annotations = _debug_annotations(overlay_metadata)
     banner = _debug_banner(overlay_metadata)
     writer = image_writer or OpenCVOverlayDebugImageWriter()
-    debug_dir = ensure_directory(clip_analysis_dir / "debug")
+    debug_dir = ensure_directory(analysis_clip_dir / "debug")
 
     for index, frame_path in enumerate(frame_paths, start=1):
         output_path = debug_dir / f"{frame_path.stem}_overlay_debug{frame_path.suffix or '.jpg'}"

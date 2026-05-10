@@ -8,8 +8,8 @@ from dataclasses import dataclass
 from pathlib import Path
 from typing import Any
 
-from clipforge.core.config import STATE_DB_PATH, STATE_DIR
-from clipforge.utils.paths import utc_timestamp
+from clipforge.core.config import STATE_DB_PATH
+from clipforge.utils.paths import ensure_directory, utc_timestamp
 
 
 DEFAULT_STATE_DB_PATH = STATE_DB_PATH
@@ -61,6 +61,10 @@ _CLIPS_COLUMNS = (
     "export_path",
     "exported_at",
 )
+
+_RANKED_CLIPS_ORDER_SQL = """
+        ORDER BY rank_score IS NULL ASC, rank_score DESC, discovered_at ASC, clip_id ASC
+    """
 
 _CREATE_CLIPS_TABLE_SQL = """
 CREATE TABLE IF NOT EXISTS clips (
@@ -134,7 +138,7 @@ def init_db(db_path: Path | str = DEFAULT_STATE_DB_PATH) -> Path:
     """Create the clip state database if it does not already exist."""
 
     resolved_path = Path(db_path)
-    resolved_path.parent.mkdir(parents=True, exist_ok=True)
+    ensure_directory(resolved_path.parent)
 
     with _connect(resolved_path) as connection:
         connection.execute(_CREATE_CLIPS_TABLE_SQL)
@@ -241,18 +245,9 @@ def get_unprocessed_clips(
     if streamer_login is not None:
         sql += " AND LOWER(streamer_login) = LOWER(?)"
         params.append(streamer_login)
-    sql += """
-        ORDER BY rank_score IS NULL ASC, rank_score DESC, discovered_at ASC, clip_id ASC
-    """
-    if limit is not None:
-        if limit < 1:
-            raise ClipStateError("Unprocessed clip limit must be at least 1.")
-        sql += " LIMIT ?"
-        params.append(limit)
-
-    with _connect(resolved_path) as connection:
-        rows = connection.execute(sql, params).fetchall()
-    return tuple(_clip_from_row(row) for row in rows)
+    sql += _RANKED_CLIPS_ORDER_SQL
+    sql += _limit_clause(limit, label="Unprocessed clip", params=params)
+    return _select_clips(db_path=resolved_path, sql=sql, params=params)
 
 
 def get_review_eligible_clips(
@@ -274,18 +269,9 @@ def get_review_eligible_clips(
     if streamer_login is not None:
         sql += " AND LOWER(streamer_login) = LOWER(?)"
         params.append(streamer_login)
-    sql += """
-        ORDER BY rank_score IS NULL ASC, rank_score DESC, discovered_at ASC, clip_id ASC
-    """
-    if limit is not None:
-        if limit < 1:
-            raise ClipStateError("Review clip limit must be at least 1.")
-        sql += " LIMIT ?"
-        params.append(limit)
-
-    with _connect(resolved_path) as connection:
-        rows = connection.execute(sql, params).fetchall()
-    return tuple(_clip_from_row(row) for row in rows)
+    sql += _RANKED_CLIPS_ORDER_SQL
+    sql += _limit_clause(limit, label="Review clip", params=params)
+    return _select_clips(db_path=resolved_path, sql=sql, params=params)
 
 
 def get_persisted_clips(
@@ -306,9 +292,27 @@ def get_persisted_clips(
         params.append(streamer_login)
     sql += " ORDER BY clip_id ASC"
 
-    with _connect(resolved_path) as connection:
+    return _select_clips(db_path=resolved_path, sql=sql, params=params)
+
+
+def _select_clips(
+    *,
+    db_path: Path,
+    sql: str,
+    params: list[Any],
+) -> tuple[ClipState, ...]:
+    with _connect(db_path) as connection:
         rows = connection.execute(sql, params).fetchall()
     return tuple(_clip_from_row(row) for row in rows)
+
+
+def _limit_clause(limit: int | None, *, label: str, params: list[Any]) -> str:
+    if limit is None:
+        return ""
+    if limit < 1:
+        raise ClipStateError(f"{label} limit must be at least 1.")
+    params.append(limit)
+    return " LIMIT ?"
 
 
 def get_clip(

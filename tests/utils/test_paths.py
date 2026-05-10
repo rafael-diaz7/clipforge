@@ -1,6 +1,7 @@
 from pathlib import Path
 
 from clipforge.utils.paths import (
+    clip_analysis_dir,
     clip_slug_from_url,
     ensure_directory,
     ensure_project_subdir,
@@ -45,6 +46,12 @@ def test_ensure_project_subdir_creates_path_under_root(tmp_path: Path) -> None:
 
     assert target == (tmp_path / "data" / "downloads").resolve()
     assert target.is_dir()
+
+
+def test_clip_analysis_dir_uses_safe_clip_id(tmp_path: Path) -> None:
+    assert clip_analysis_dir(tmp_path / "analysis", " Clip:One! ") == (
+        tmp_path / "analysis" / "Clip_One"
+    )
 
 
 def test_utc_timestamp_returns_utc_iso_string() -> None:

@@ -383,17 +383,7 @@ def main(argv: Sequence[str] | None = None) -> int:
 
     try:
         if args.url and args.command is None:
-            process_kwargs = {}
-            if args.generate_captions is not None:
-                process_kwargs["generate_captions"] = args.generate_captions
-            if args.force_captions:
-                process_kwargs["force_captions"] = True
-            if args.static_layouts:
-                process_kwargs["use_generated_layouts"] = False
-            if process_kwargs:
-                process_clip(args.url, **process_kwargs)
-            else:
-                process_clip(args.url)
+            process_clip(args.url, **_process_clip_kwargs(args))
             return 0
 
         if args.command is None:
@@ -440,17 +430,7 @@ def main(argv: Sequence[str] | None = None) -> int:
             return 0
 
         if args.command == "process":
-            process_kwargs = {}
-            if args.generate_captions is not None:
-                process_kwargs["generate_captions"] = args.generate_captions
-            if args.force_captions:
-                process_kwargs["force_captions"] = True
-            if args.static_layouts:
-                process_kwargs["use_generated_layouts"] = False
-            if process_kwargs:
-                process_clip(args.url, **process_kwargs)
-            else:
-                process_clip(args.url)
+            process_clip(args.url, **_process_clip_kwargs(args))
             return 0
 
         if args.command == "clips":
@@ -596,15 +576,11 @@ def _handle_clips_process_command(args: argparse.Namespace) -> int:
     failures = 0
     for clip in clips:
         try:
-            process_kwargs = {"config": config}
-            if args.generate_captions is not None:
-                process_kwargs["generate_captions"] = args.generate_captions
-            if args.force_captions:
-                process_kwargs["force_captions"] = True
-            if args.force:
-                process_kwargs["force"] = True
-            if args.static_layouts:
-                process_kwargs["use_generated_layouts"] = False
+            process_kwargs = _process_clip_kwargs(
+                args,
+                config=config,
+                include_force=True,
+            )
             metadata_path = process_clip(clip.url, **process_kwargs)
         except Exception as exc:
             failures += 1
@@ -688,6 +664,26 @@ def _format_state_clip_table(clips, *, show_url: bool = False) -> tuple[str, ...
     formatted_rows.append(_format_table_row(("-" * width for width in widths), widths))
     formatted_rows.extend(_format_table_row(row, widths) for row in rows)
     return tuple(formatted_rows)
+
+
+def _process_clip_kwargs(
+    args: argparse.Namespace,
+    *,
+    config: object | None = None,
+    include_force: bool = False,
+) -> dict[str, object]:
+    kwargs: dict[str, object] = {}
+    if config is not None:
+        kwargs["config"] = config
+    if args.generate_captions is not None:
+        kwargs["generate_captions"] = args.generate_captions
+    if args.force_captions:
+        kwargs["force_captions"] = True
+    if include_force and args.force:
+        kwargs["force"] = True
+    if args.static_layouts:
+        kwargs["use_generated_layouts"] = False
+    return kwargs
 
 
 def _format_table_row(values, widths: list[int]) -> str:

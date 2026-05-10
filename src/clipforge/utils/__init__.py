@@ -3,6 +3,7 @@
 from .config_validation import require_config_value, require_config_values
 from .paths import (
     HTTP_URL_SCHEMES,
+    clip_analysis_dir,
     clip_slug_from_url,
     ensure_directory,
     ensure_project_subdir,
@@ -18,6 +19,7 @@ from .paths import (
 
 __all__ = [
     "HTTP_URL_SCHEMES",
+    "clip_analysis_dir",
     "clip_slug_from_url",
     "ensure_directory",
     "ensure_project_subdir",

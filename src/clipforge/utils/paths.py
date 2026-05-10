@@ -27,6 +27,11 @@ def ensure_project_subdir(root: Path, *parts: str | Path) -> Path:
     return ensure_directory(resolve_project_path(root, *parts))
 
 
+def clip_analysis_dir(analysis_dir: Path, clip_id: str) -> Path:
+    """Return the analysis artifact directory for one clip."""
+    return analysis_dir / safe_filename(clip_id)
+
+
 def safe_filename(value: str, *, fallback: str = "clip") -> str:
     """Return a filesystem-safe filename stem or filename."""
     cleaned = _SAFE_FILENAME_PATTERN.sub("_", value.strip()).strip("._-")
