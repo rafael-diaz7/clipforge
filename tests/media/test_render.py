@@ -330,6 +330,9 @@ def test_caption_style_serializes_future_caption_fields() -> None:
     assert payload["uppercase"] is True
     assert payload["highlight_color"] == "#ffee00"
     assert payload["active_word_color"] == "#00e5ff"
+    assert payload["ass_active_word_activation_delay_seconds"] == 0.04
+    assert payload["ass_active_word_min_display_seconds"] == 0.14
+    assert payload["ass_active_word_gap_tolerance_seconds"] == 0.12
     assert payload["animation_preset"] == "scale_pop"
     assert payload["vertical_safe_area"] == {"top": 140, "bottom": 260}
     assert CaptionStyle.from_dict(payload) == style
@@ -380,12 +383,62 @@ def test_generate_ass_subtitle_highlights_active_word_by_timing() -> None:
     )
 
     assert (
-        "Dialogue: 0,0:00:00.25,0:00:00.75,Default,,96,96,220,,"
+        "Dialogue: 0,0:00:00.29,0:00:00.75,Default,,96,96,220,,"
         "{\\an2\\pos(540,1700)}{\\c&H00EEFF&}hello{\\c&HFFFFFF&} world"
     ) in ass_text
     assert (
-        "Dialogue: 0,0:00:01.00,0:00:01.50,Default,,96,96,220,,"
+        "Dialogue: 0,0:00:01.04,0:00:01.50,Default,,96,96,220,,"
         "{\\an2\\pos(540,1700)}hello {\\c&H00EEFF&}world{\\c&HFFFFFF&}"
+    ) in ass_text
+
+
+def test_generate_ass_subtitle_keeps_short_active_word_windows_visible() -> None:
+    ass_text = generate_ass_subtitle(
+        (
+            CaptionCue(
+                start_time=0,
+                end_time=1,
+                lines=("a b",),
+                words=(
+                    CaptionWord(start_time=0.0, end_time=0.03, text="a"),
+                    CaptionWord(start_time=0.5, end_time=0.9, text="b"),
+                ),
+            ),
+        ),
+        caption_style=CaptionStyle(),
+        output_size=OutputSize(width=1080, height=1920),
+    )
+
+    assert (
+        "Dialogue: 0,0:00:00.04,0:00:00.18,Default,,96,96,220,,"
+        "{\\an2\\pos(540,1700)}{\\c&H00FFFF&}a{\\c&HFFFFFF&} b"
+    ) in ass_text
+
+
+def test_generate_ass_subtitle_bridges_tiny_active_word_gaps() -> None:
+    ass_text = generate_ass_subtitle(
+        (
+            CaptionCue(
+                start_time=0,
+                end_time=1,
+                lines=("one two",),
+                words=(
+                    CaptionWord(start_time=0.0, end_time=0.2, text="one"),
+                    CaptionWord(start_time=0.22, end_time=0.5, text="two"),
+                ),
+            ),
+        ),
+        caption_style=CaptionStyle(),
+        output_size=OutputSize(width=1080, height=1920),
+    )
+
+    assert (
+        "Dialogue: 0,0:00:00.04,0:00:00.26,Default,,96,96,220,,"
+        "{\\an2\\pos(540,1700)}{\\c&H00FFFF&}one{\\c&HFFFFFF&} two"
+    ) in ass_text
+    assert (
+        "Dialogue: 0,0:00:00.26,0:00:00.50,Default,,96,96,220,,"
+        "{\\an2\\pos(540,1700)}one {\\c&H00FFFF&}two{\\c&HFFFFFF&}"
     ) in ass_text
 
 
@@ -408,7 +461,7 @@ def test_generate_ass_subtitle_highlights_repeated_word_by_occurrence() -> None:
     )
 
     assert (
-        "Dialogue: 0,0:00:00.80,0:00:01.20,Default,,96,96,220,,"
+        "Dialogue: 0,0:00:00.84,0:00:01.20,Default,,96,96,220,,"
         "{\\an2\\pos(540,1700)}go {\\c&H00FFFF&}go{\\c&HFFFFFF&} go"
     ) in ass_text
 
@@ -427,10 +480,31 @@ def test_generate_ass_subtitle_does_not_highlight_outside_word_timings() -> None
         output_size=OutputSize(width=1080, height=1920),
     )
 
-    assert "Dialogue: 0,0:00:00.00,0:00:00.50" in ass_text
+    assert "Dialogue: 0,0:00:00.00,0:00:00.54" in ass_text
     assert "Dialogue: 0,0:00:01.00,0:00:02.00" in ass_text
     assert "{\\an2\\pos(540,1700)}hello\n" in ass_text
     assert ass_text.count("\\c&H00FFFF&") == 1
+
+
+def test_generate_ass_subtitle_caps_final_active_word_extension() -> None:
+    ass_text = generate_ass_subtitle(
+        (
+            CaptionCue(
+                start_time=0,
+                end_time=1.2,
+                lines=("go",),
+                words=(CaptionWord(start_time=0.9, end_time=0.93, text="go"),),
+            ),
+        ),
+        caption_style=CaptionStyle(),
+        output_size=OutputSize(width=1080, height=1920),
+    )
+
+    assert (
+        "Dialogue: 0,0:00:00.94,0:00:01.05,Default,,96,96,220,,"
+        "{\\an2\\pos(540,1700)}{\\c&H00FFFF&}go{\\c&HFFFFFF&}"
+    ) in ass_text
+    assert "Dialogue: 0,0:00:01.05,0:00:01.20" in ass_text
 
 
 def test_ass_active_word_caption_placement_stays_in_caption_region(

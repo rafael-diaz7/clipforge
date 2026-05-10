@@ -114,6 +114,9 @@ class CaptionStyle:
     uppercase: bool = False
     highlight_color: str = "yellow"
     active_word_color: str = "yellow"
+    ass_active_word_activation_delay_seconds: float = 0.04
+    ass_active_word_min_display_seconds: float = 0.14
+    ass_active_word_gap_tolerance_seconds: float = 0.12
     animation_preset: CaptionAnimationPreset = CaptionAnimationPreset.NONE
     ass_style_name: str = "Default"
 
@@ -151,6 +154,15 @@ class CaptionStyle:
             "uppercase": self.uppercase,
             "highlight_color": self.highlight_color,
             "active_word_color": self.active_word_color,
+            "ass_active_word_activation_delay_seconds": (
+                self.ass_active_word_activation_delay_seconds
+            ),
+            "ass_active_word_min_display_seconds": (
+                self.ass_active_word_min_display_seconds
+            ),
+            "ass_active_word_gap_tolerance_seconds": (
+                self.ass_active_word_gap_tolerance_seconds
+            ),
             "animation_preset": self.animation_preset.value,
             "ass_style_name": self.ass_style_name,
         }
@@ -873,7 +885,10 @@ def _ass_active_word_dialogue_lines(
 ) -> tuple[str, ...]:
     dialogue_lines = []
     line_word_offsets = _caption_line_word_offsets(cue.lines)
-    for start_time, end_time, active_word_index in _caption_word_intervals(cue):
+    for start_time, end_time, active_word_index in _caption_word_intervals(
+        cue,
+        caption_style,
+    ):
         for line_index, line in enumerate(cue.lines):
             y = _ass_caption_line_y(len(cue.lines), line_index, caption_style, output_size)
             active_line_word_index = _active_line_word_index(
@@ -919,37 +934,52 @@ def _ass_dialogue_line(
 
 def _caption_word_intervals(
     cue: CaptionCue,
+    caption_style: CaptionStyle,
 ) -> tuple[tuple[float, float, int | None], ...]:
-    boundaries = {cue.start_time, cue.end_time}
-    for word in cue.words:
-        if word.start_time < cue.end_time and word.end_time > cue.start_time:
-            boundaries.add(max(cue.start_time, word.start_time))
-            boundaries.add(min(cue.end_time, word.end_time))
+    word_spans = tuple(
+        (index, max(cue.start_time, word.start_time), min(cue.end_time, word.end_time))
+        for index, word in enumerate(cue.words)
+        if word.start_time < cue.end_time and word.end_time > cue.start_time
+    )
+    if not word_spans:
+        return ((cue.start_time, cue.end_time, None),)
 
-    ordered_boundaries = tuple(sorted(boundaries))
-    intervals = []
-    for start_time, end_time in zip(
-        ordered_boundaries[:-1],
-        ordered_boundaries[1:],
-        strict=True,
-    ):
-        if end_time <= start_time:
-            continue
-        timestamp = start_time + (end_time - start_time) / 2
-        intervals.append(
-            (start_time, end_time, _active_caption_word_index(cue.words, timestamp))
+    activation_delay = max(0.0, caption_style.ass_active_word_activation_delay_seconds)
+    min_display = max(0.0, caption_style.ass_active_word_min_display_seconds)
+    gap_tolerance = max(0.0, caption_style.ass_active_word_gap_tolerance_seconds)
+
+    intervals: list[tuple[float, float, int | None]] = []
+    cursor = cue.start_time
+    for position, (word_index, raw_start_time, raw_end_time) in enumerate(word_spans):
+        next_raw_start_time = (
+            word_spans[position + 1][1] if position + 1 < len(word_spans) else None
         )
+        start_time = min(cue.end_time, raw_start_time + activation_delay)
+        if start_time > cursor:
+            intervals.append((cursor, start_time, None))
+        start_time = max(start_time, cursor)
+
+        if next_raw_start_time is None:
+            latest_end_time = min(cue.end_time, raw_end_time + gap_tolerance)
+        else:
+            next_start_time = min(cue.end_time, next_raw_start_time + activation_delay)
+            latest_end_time = next_start_time
+
+        target_end_time = max(raw_end_time, start_time + min_display)
+        if (
+            next_raw_start_time is not None
+            and next_raw_start_time - raw_end_time <= gap_tolerance
+        ):
+            target_end_time = max(target_end_time, latest_end_time)
+
+        end_time = min(latest_end_time, target_end_time)
+        if end_time > start_time:
+            intervals.append((start_time, end_time, word_index))
+            cursor = end_time
+
+    if cursor < cue.end_time:
+        intervals.append((cursor, cue.end_time, None))
     return tuple(intervals)
-
-
-def _active_caption_word_index(
-    words: tuple[CaptionWord, ...],
-    timestamp: float,
-) -> int | None:
-    for index, word in enumerate(words):
-        if word.start_time <= timestamp <= word.end_time:
-            return index
-    return None
 
 
 def _caption_line_word_offsets(lines: tuple[str, ...]) -> tuple[int, ...]:
