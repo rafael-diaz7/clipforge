@@ -16,6 +16,9 @@ from clipforge.media.overlay import (
 )
 
 
+TARGET_STREAMER_CROP_ASPECT_RATIO = ((9 / 16) / 0.40) / (16 / 9)
+
+
 class SyntheticDetector:
     def __init__(self, detections: dict[str, tuple[FaceDetection, ...]]) -> None:
         self._detections = detections
@@ -238,13 +241,15 @@ def test_analyze_overlay_reads_frame_metadata_and_writes_overlay_metadata(
     }
     assert payload["selected_overlay_rect"] == {
         "x": 0.0,
-        "y": 0.538732,
+        "y": 0.58133,
         "width": 0.28,
-        "height": 0.4554,
+        "height": 0.353975,
     }
     assert payload["selected_rect"] == payload["selected_overlay_rect"]
     assert payload["candidate_clusters"][0]["face_rect"] == payload["selected_face_rect"]
     assert payload["candidate_clusters"][0]["overlay_rect"] == payload["selected_overlay_rect"]
+    _assert_rect_contains(payload["selected_overlay_rect"], payload["selected_face_rect"])
+    _assert_target_streamer_crop_aspect(payload["selected_overlay_rect"])
 
 
 def test_streamer_crop_expands_selected_face_rect(tmp_path: Path) -> None:
@@ -269,6 +274,9 @@ def test_streamer_crop_expands_selected_face_rect(tmp_path: Path) -> None:
     assert crop_rect["y"] <= face_rect["y"]
     assert crop_rect["x"] + crop_rect["width"] >= face_rect["x"] + face_rect["width"]
     assert crop_rect["y"] + crop_rect["height"] >= face_rect["y"] + face_rect["height"]
+    _assert_rect_contains(crop_rect, face_rect)
+    _assert_rect_within_source_bounds(crop_rect)
+    _assert_target_streamer_crop_aspect(crop_rect)
 
 
 def test_streamer_crop_centers_horizontally_on_face_near_edge(tmp_path: Path) -> None:
@@ -290,6 +298,7 @@ def test_streamer_crop_centers_horizontally_on_face_near_edge(tmp_path: Path) ->
     crop_center_x = crop_rect["x"] + crop_rect["width"] / 2
     assert payload["fallback"] is False
     assert abs(face_center_x - crop_center_x) <= 0.005
+    _assert_target_streamer_crop_aspect(crop_rect)
 
 
 def test_streamer_crop_places_head_slightly_above_vertical_center(tmp_path: Path) -> None:
@@ -314,6 +323,36 @@ def test_streamer_crop_places_head_slightly_above_vertical_center(tmp_path: Path
     assert payload["fallback"] is False
     assert face_center_y < crop_center_y
     assert below_head > above_head
+    _assert_rect_contains(crop_rect, face_rect)
+    _assert_target_streamer_crop_aspect(crop_rect)
+
+
+def test_streamer_crop_shrinks_to_preserve_aspect_near_source_bounds(
+    tmp_path: Path,
+) -> None:
+    analysis_dir, frame_names = _write_frames_metadata(tmp_path, clip_id="clip-123", count=8)
+    detector = SyntheticDetector(
+        {name: (_detection(0.03, 0.52, 0.20, 0.20),) for name in frame_names}
+    )
+
+    overlay_path = analyze_overlay(
+        clip_id="clip-123",
+        analysis_dir=analysis_dir,
+        detector=detector,
+    )
+
+    payload = _read_json(overlay_path)
+    face_rect = payload["selected_face_rect"]
+    crop_rect = payload["selected_overlay_rect"]
+    face_center_x = face_rect["x"] + face_rect["width"] / 2
+    crop_center_x = crop_rect["x"] + crop_rect["width"] / 2
+    assert payload["fallback"] is False
+    assert crop_rect["x"] == 0.0
+    assert crop_rect["width"] == pytest.approx(face_center_x * 2)
+    assert crop_center_x == pytest.approx(face_center_x)
+    _assert_rect_contains(crop_rect, face_rect)
+    _assert_rect_within_source_bounds(crop_rect)
+    _assert_target_streamer_crop_aspect(crop_rect)
 
 
 def test_streamer_crop_stays_tight_around_left_side_face(tmp_path: Path) -> None:
@@ -334,6 +373,7 @@ def test_streamer_crop_stays_tight_around_left_side_face(tmp_path: Path) -> None
     assert crop_rect["x"] == 0.0
     assert crop_rect["width"] <= 0.32
     assert crop_rect["x"] + crop_rect["width"] <= 0.32
+    _assert_target_streamer_crop_aspect(crop_rect)
 
 
 def test_streamer_crop_does_not_expand_far_into_main_content(tmp_path: Path) -> None:
@@ -353,6 +393,7 @@ def test_streamer_crop_does_not_expand_far_into_main_content(tmp_path: Path) -> 
     assert payload["fallback"] is False
     assert crop_rect["width"] <= 0.36
     assert crop_rect["x"] + crop_rect["width"] < 0.40
+    _assert_target_streamer_crop_aspect(crop_rect)
 
 
 def test_overlay_expansion_clamps_at_frame_edges(tmp_path: Path) -> None:
@@ -376,6 +417,7 @@ def test_overlay_expansion_clamps_at_frame_edges(tmp_path: Path) -> None:
     assert overlay_rect["y"] + overlay_rect["height"] <= 1.0
     assert overlay_rect["x"] + overlay_rect["width"] == 1.0
     assert overlay_rect["y"] + overlay_rect["height"] >= 0.99
+    _assert_target_streamer_crop_aspect(overlay_rect)
 
 
 def test_write_overlay_debug_images_writes_one_debug_image_per_sampled_frame(
@@ -526,6 +568,40 @@ def _write_overlay_metadata(
 
 def _detection(x: float, y: float, width: float, height: float) -> FaceDetection:
     return FaceDetection(rect=NormalizedRect(x=x, y=y, width=width, height=height))
+
+
+def _assert_rect_contains(
+    outer: dict[str, float],
+    inner: dict[str, float],
+    *,
+    tolerance: float = 1e-6,
+) -> None:
+    assert outer["x"] <= inner["x"] + tolerance
+    assert outer["y"] <= inner["y"] + tolerance
+    assert outer["x"] + outer["width"] >= inner["x"] + inner["width"] - tolerance
+    assert outer["y"] + outer["height"] >= inner["y"] + inner["height"] - tolerance
+
+
+def _assert_rect_within_source_bounds(
+    rect: dict[str, float],
+    *,
+    tolerance: float = 1e-6,
+) -> None:
+    assert rect["x"] >= 0.0
+    assert rect["y"] >= 0.0
+    assert rect["x"] + rect["width"] <= 1.0 + tolerance
+    assert rect["y"] + rect["height"] <= 1.0 + tolerance
+
+
+def _assert_target_streamer_crop_aspect(
+    rect: dict[str, float],
+    *,
+    tolerance: float = 1e-5,
+) -> None:
+    assert rect["width"] / rect["height"] == pytest.approx(
+        TARGET_STREAMER_CROP_ASPECT_RATIO,
+        abs=tolerance,
+    )
 
 
 def _read_json(path: Path) -> dict[str, object]:

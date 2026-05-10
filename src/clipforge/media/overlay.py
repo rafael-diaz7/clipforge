@@ -25,6 +25,13 @@ STREAMER_CROP_MAX_WIDTH_FACE_RATIO = 1.65
 STREAMER_CROP_MAX_HEIGHT_FACE_RATIO = 2.10
 STREAMER_CROP_MAX_NORMALIZED_WIDTH = 0.36
 STREAMER_CROP_FACE_CENTER_Y_RATIO = 0.42
+SOURCE_ASPECT_RATIO = 16 / 9
+TARGET_ASPECT_RATIO = 9 / 16
+HYBRID_STREAMER_OUTPUT_HEIGHT_RATIO = 0.40
+# Convert the hybrid top region's display aspect into normalized source coordinates.
+STREAMER_CROP_TARGET_NORMALIZED_ASPECT_RATIO = (
+    TARGET_ASPECT_RATIO / HYBRID_STREAMER_OUTPUT_HEIGHT_RATIO
+) / SOURCE_ASPECT_RATIO
 
 
 class OverlayDetectorUnavailable(RuntimeError):
@@ -572,25 +579,22 @@ def _cluster_rect(cluster: _Cluster) -> NormalizedRect:
 
 
 def _expand_face_rect_to_streamer_crop_rect(face_rect: NormalizedRect) -> NormalizedRect:
-    width_cap = min(
+    natural_width = min(
         face_rect.width * STREAMER_CROP_MAX_WIDTH_FACE_RATIO,
         STREAMER_CROP_MAX_NORMALIZED_WIDTH,
     )
-    target_width = min(
-        width_cap,
+    natural_width = min(
+        natural_width,
         face_rect.width * (1.0 + STREAMER_CROP_HORIZONTAL_PADDING_RATIO * 2),
     )
-    target_width = max(
-        face_rect.width,
-        min(target_width, _centered_rect_extent(face_rect.center_x)),
-    )
+    natural_width = max(face_rect.width, natural_width)
 
-    height_cap = max(
+    natural_height = max(
         face_rect.height,
         face_rect.height * STREAMER_CROP_MAX_HEIGHT_FACE_RATIO,
     )
-    target_height = min(
-        height_cap,
+    natural_height = min(
+        natural_height,
         face_rect.height
         * (
             1.0
@@ -598,23 +602,57 @@ def _expand_face_rect_to_streamer_crop_rect(face_rect: NormalizedRect) -> Normal
             + STREAMER_CROP_BOTTOM_PADDING_RATIO
         ),
     )
-    target_height = max(
+    natural_height = max(
         face_rect.height,
-        min(
-            target_height,
-            _biased_rect_extent(
-                face_rect.center_y,
-                target_ratio=STREAMER_CROP_FACE_CENTER_Y_RATIO,
-            ),
-        ),
+        natural_height,
     )
 
-    x = face_rect.center_x - target_width / 2
-    y = face_rect.center_y - target_height * STREAMER_CROP_FACE_CENTER_Y_RATIO
+    target_height = max(
+        natural_height,
+        natural_width / STREAMER_CROP_TARGET_NORMALIZED_ASPECT_RATIO,
+        face_rect.width / STREAMER_CROP_TARGET_NORMALIZED_ASPECT_RATIO,
+    )
+    target_width = target_height * STREAMER_CROP_TARGET_NORMALIZED_ASPECT_RATIO
 
-    x = max(face_rect.x + face_rect.width - target_width, min(x, face_rect.x))
-    y = max(face_rect.y + face_rect.height - target_height, min(y, face_rect.y))
-    return _fit_rect_to_frame(x=x, y=y, width=target_width, height=target_height)
+    max_frame_height = min(1.0, 1.0 / STREAMER_CROP_TARGET_NORMALIZED_ASPECT_RATIO)
+    target_height = min(target_height, max_frame_height)
+    target_width = target_height * STREAMER_CROP_TARGET_NORMALIZED_ASPECT_RATIO
+
+    min_face_height = max(
+        face_rect.height,
+        face_rect.width / STREAMER_CROP_TARGET_NORMALIZED_ASPECT_RATIO,
+    )
+    anchored_height = min(
+        _centered_rect_extent(face_rect.center_x)
+        / STREAMER_CROP_TARGET_NORMALIZED_ASPECT_RATIO,
+        _biased_rect_extent(
+            face_rect.center_y,
+            target_ratio=STREAMER_CROP_FACE_CENTER_Y_RATIO,
+        ),
+    )
+    if min_face_height <= anchored_height < target_height:
+        target_height = anchored_height
+        target_width = target_height * STREAMER_CROP_TARGET_NORMALIZED_ASPECT_RATIO
+
+    return _fit_streamer_crop_to_face(
+        face_rect,
+        width=target_width,
+        height=target_height,
+    )
+
+
+def _fit_streamer_crop_to_face(
+    face_rect: NormalizedRect,
+    *,
+    width: float,
+    height: float,
+) -> NormalizedRect:
+    x = face_rect.center_x - width / 2
+    y = face_rect.center_y - height * STREAMER_CROP_FACE_CENTER_Y_RATIO
+
+    x = max(face_rect.x + face_rect.width - width, min(x, face_rect.x))
+    y = max(face_rect.y + face_rect.height - height, min(y, face_rect.y))
+    return _fit_rect_to_frame(x=x, y=y, width=width, height=height)
 
 
 def _centered_rect_extent(center: float) -> float:

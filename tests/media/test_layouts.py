@@ -255,8 +255,12 @@ def test_generate_detected_layouts_from_high_confidence_overlay(tmp_path: Path) 
     assert focus_streamer.name == "streamer"
     assert focus_streamer.source_region == NormalizedRect(**overlay_rect)
     assert focus_streamer.source_region != focus_background.source_region
-    assert focus_streamer.output_region.y > 0.0
-    assert focus_streamer.output_region.y + focus_streamer.output_region.height < 1.0
+    assert focus_streamer.output_region == NormalizedRect(
+        x=0.0,
+        y=0.19,
+        width=1.0,
+        height=0.62,
+    )
     assert hybrid_streamer.source_region == NormalizedRect(**overlay_rect)
     assert hybrid_streamer.output_region == NormalizedRect(
         x=0.0,
@@ -277,6 +281,40 @@ def test_generate_detected_layouts_from_high_confidence_overlay(tmp_path: Path) 
     assert payload["metadata"]["overlay_confidence"] == 0.82
     assert payload["metadata"]["fallback_generated"] is False
     assert payload["regions"][0]["effect"] == "blur"
+
+
+def test_generated_layouts_directly_reuse_selected_overlay_rect(tmp_path: Path) -> None:
+    analysis_dir = tmp_path / "analysis"
+    overlay_rect = {"x": 0.04, "y": 0.18, "width": 0.18, "height": 0.5}
+    _write_overlay_metadata(
+        analysis_dir,
+        clip_id="clip-123",
+        selected_overlay_rect=overlay_rect,
+        confidence=0.82,
+        fallback=False,
+    )
+
+    paths = generate_detected_layout_candidates(
+        clip_id="clip-123",
+        analysis_dir=analysis_dir,
+    )
+
+    focus = load_layout(paths[0])
+    hybrid = load_layout(paths[1])
+    assert focus.regions[1].source_region == NormalizedRect(**overlay_rect)
+    assert hybrid.regions[1].source_region == NormalizedRect(**overlay_rect)
+    assert focus.regions[1].output_region == NormalizedRect(
+        x=0.0,
+        y=0.19,
+        width=1.0,
+        height=0.62,
+    )
+    assert hybrid.regions[1].output_region == NormalizedRect(
+        x=0.0,
+        y=0.0,
+        width=1.0,
+        height=0.4,
+    )
 
 
 def test_fallback_overlay_generates_static_layout_candidates(tmp_path: Path) -> None:

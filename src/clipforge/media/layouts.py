@@ -25,8 +25,6 @@ DEFAULT_LAYOUT_NAMES = ("center_gameplay", "facecam_focus", "hybrid")
 GENERATED_LAYOUT_NAMES = ("detected_streamer_focus", "detected_hybrid")
 ANALYSIS_DIR = DATA_DIR / "analysis"
 DYNAMIC_LAYOUT_CONFIDENCE_THRESHOLD = 0.58
-SOURCE_ASPECT_RATIO = 16 / 9
-TARGET_ASPECT_RATIO = 9 / 16
 SUPPORTED_REGION_EFFECTS = frozenset({"blur"})
 
 
@@ -298,10 +296,7 @@ def _dynamic_layout_payloads(
 
     full_source = NormalizedRect(x=0.0, y=0.0, width=1.0, height=1.0)
     full_output = NormalizedRect(x=0.0, y=0.0, width=1.0, height=1.0)
-    focus_streamer_output = _centered_streamer_output_region(
-        overlay_rect,
-        desired_height=0.62,
-    )
+    focus_streamer_output = NormalizedRect(x=0.0, y=0.19, width=1.0, height=0.62)
     hybrid_streamer_output = NormalizedRect(x=0.0, y=0.0, width=1.0, height=0.40)
 
     return {
@@ -491,45 +486,6 @@ def _rect_from_payload(payload: dict[str, object], *, context: str) -> Normalize
     return rect
 
 
-def _streamer_output_region(
-    source_region: NormalizedRect,
-    *,
-    desired_height: float,
-) -> NormalizedRect:
-    source_aspect_ratio = _source_region_aspect_ratio(source_region)
-    full_width_output_aspect_ratio = TARGET_ASPECT_RATIO / desired_height
-    width = (
-        source_aspect_ratio * desired_height / TARGET_ASPECT_RATIO
-        if full_width_output_aspect_ratio > source_aspect_ratio
-        else 1.0
-    )
-    width = _clamp(width, minimum=0.0, maximum=1.0)
-    return NormalizedRect(
-        x=_round((1.0 - width) / 2),
-        y=0.0,
-        width=_round(width),
-        height=_round(desired_height),
-    )
-
-
-def _centered_streamer_output_region(
-    source_region: NormalizedRect,
-    *,
-    desired_height: float,
-) -> NormalizedRect:
-    region = _streamer_output_region(source_region, desired_height=desired_height)
-    return NormalizedRect(
-        x=region.x,
-        y=_round((1.0 - region.height) / 2),
-        width=region.width,
-        height=region.height,
-    )
-
-
-def _source_region_aspect_ratio(rect: NormalizedRect) -> float:
-    return (rect.width * SOURCE_ASPECT_RATIO) / rect.height
-
-
 def _read_overlay_metadata(path: Path) -> dict[str, object]:
     try:
         payload = json.loads(path.read_text(encoding="utf-8"))
@@ -569,10 +525,6 @@ def _safe_clip_id(clip_id: str) -> str:
     if not clip_id.strip():
         raise LayoutError("clip_id must not be empty.")
     return safe_filename(clip_id)
-
-
-def _clamp(value: float, *, minimum: float, maximum: float) -> float:
-    return max(minimum, min(maximum, value))
 
 
 def _round(value: float) -> float:
