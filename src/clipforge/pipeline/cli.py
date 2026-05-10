@@ -556,6 +556,8 @@ def _handle_clips_process_command(args: argparse.Namespace) -> int:
                 process_kwargs["generate_captions"] = args.generate_captions
             if args.force_captions:
                 process_kwargs["force_captions"] = True
+            if args.force:
+                process_kwargs["force"] = True
             if args.static_layouts:
                 process_kwargs["use_generated_layouts"] = False
             metadata_path = process_clip(clip.url, **process_kwargs)

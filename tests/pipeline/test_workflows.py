@@ -3,11 +3,14 @@ from __future__ import annotations
 import json
 from pathlib import Path
 
+import pytest
+
 from clipforge.core.config import ClipforgeConfig, EXAMPLE_LAYOUTS_DIR
 from clipforge.media.download import DownloadResult
 from clipforge.media.captions import CaptionMetadata, CaptionSegment, save_captions
 from clipforge.media.layouts import load_example_layout
 from clipforge.pipeline.workflows import (
+    ClipProcessingError,
     process_clip,
     render_all_candidates,
     render_candidate,
@@ -294,6 +297,7 @@ def test_process_clip_writes_metadata(
 
     metadata_path = process_clip(
         TWITCH_CLIP_URL,
+        use_generated_layouts=False,
         config=config,
     )
 
@@ -369,6 +373,8 @@ def test_process_clip_uses_generated_layouts_when_present(
         source_template="hybrid",
         layout_name="detected_hybrid",
     )
+    _write_frame_analysis(config.analysis_dir, clip_id=TWITCH_CLIP_SLUG)
+    _write_overlay_analysis(config.analysis_dir, clip_id=TWITCH_CLIP_SLUG)
 
     def fake_download_twitch_clip(
         url: str,
@@ -493,6 +499,7 @@ def test_process_clip_can_generate_captions_before_rendering(
     metadata_path = process_clip(
         TWITCH_CLIP_URL,
         generate_captions=True,
+        use_generated_layouts=False,
         config=config,
     )
 
@@ -562,6 +569,7 @@ def test_process_clip_reuses_existing_caption_metadata(
     metadata_path = process_clip(
         TWITCH_CLIP_URL,
         generate_captions=True,
+        use_generated_layouts=False,
         config=config,
     )
 
@@ -643,6 +651,7 @@ def test_process_clip_force_captions_regenerates_existing_caption_metadata(
         TWITCH_CLIP_URL,
         generate_captions=True,
         force_captions=True,
+        use_generated_layouts=False,
         config=config,
     )
 
@@ -689,7 +698,7 @@ def test_process_clip_marks_existing_state_as_rendered(
         lambda source, output, layout: output,
     )
 
-    metadata_path = process_clip(TWITCH_CLIP_URL, config=config)
+    metadata_path = process_clip(TWITCH_CLIP_URL, use_generated_layouts=False, config=config)
 
     metadata = json.loads(metadata_path.read_text(encoding="utf-8"))
     state = get_clip(TWITCH_CLIP_SLUG, db_path=config.state_db_path)
@@ -726,6 +735,280 @@ def test_process_clip_marks_existing_state_as_rendered(
             / "hybrid.mp4"
         ),
     ]
+
+
+def test_process_clip_generates_analysis_artifacts_and_renders_outputs(
+    tmp_path: Path,
+    monkeypatch,
+) -> None:
+    config = _config(tmp_path)
+    source_path = tmp_path / "downloads" / TWITCH_CLIP_SLUG / "ytdlp" / f"{TWITCH_CLIP_SLUG}.mp4"
+    events: list[str] = []
+
+    def fake_download_twitch_clip(
+        url: str,
+        *,
+        clip_id: str | None,
+        config: ClipforgeConfig,
+        on_media_url_resolved,
+    ) -> DownloadResult:
+        events.append("download")
+        source_path.parent.mkdir(parents=True, exist_ok=True)
+        source_path.write_bytes(b"video")
+        return DownloadResult(source_path=source_path, backend="ytdlp")
+
+    def fake_sample_frames(
+        source: Path,
+        *,
+        clip_id: str,
+        analysis_dir: Path,
+    ) -> Path:
+        assert source == source_path
+        events.append("frames")
+        return _write_frame_analysis(analysis_dir, clip_id=clip_id)
+
+    def fake_analyze_overlay(*, clip_id: str, analysis_dir: Path) -> Path:
+        events.append("overlay")
+        return _write_overlay_analysis(analysis_dir, clip_id=clip_id)
+
+    def fake_generate_layouts(
+        *,
+        clip_id: str,
+        analysis_dir: Path,
+        example_layouts_dir: Path,
+    ) -> tuple[Path, ...]:
+        del example_layouts_dir
+        events.append("layouts")
+        return (
+            _write_detected_layout(
+                analysis_dir,
+                clip_id=clip_id,
+                source_template="facecam_focus",
+                layout_name="detected_streamer_focus",
+            ),
+            _write_detected_layout(
+                analysis_dir,
+                clip_id=clip_id,
+                source_template="hybrid",
+                layout_name="detected_hybrid",
+            ),
+        )
+
+    def fake_render(source: Path, output: Path, layout) -> Path:
+        events.append(f"render:{layout.name}")
+        output.parent.mkdir(parents=True, exist_ok=True)
+        output.write_text(layout.name, encoding="utf-8")
+        return output
+
+    monkeypatch.setattr(
+        "clipforge.pipeline.workflows.download_twitch_clip",
+        fake_download_twitch_clip,
+    )
+    monkeypatch.setattr("clipforge.pipeline.workflows.sample_frames", fake_sample_frames)
+    monkeypatch.setattr("clipforge.pipeline.workflows.analyze_overlay", fake_analyze_overlay)
+    monkeypatch.setattr(
+        "clipforge.pipeline.workflows.generate_detected_layout_candidates",
+        fake_generate_layouts,
+    )
+    monkeypatch.setattr("clipforge.pipeline.workflows.render_layout", fake_render)
+
+    metadata_path = process_clip(TWITCH_CLIP_URL, config=config)
+
+    metadata = json.loads(metadata_path.read_text(encoding="utf-8"))
+    assert events == [
+        "download",
+        "frames",
+        "overlay",
+        "layouts",
+        "render:center_gameplay",
+        "render:detected_streamer_focus",
+        "render:detected_hybrid",
+    ]
+    assert (config.analysis_dir / TWITCH_CLIP_SLUG / "frames.json").is_file()
+    assert (config.analysis_dir / TWITCH_CLIP_SLUG / "overlay.json").is_file()
+    assert (
+        config.analysis_dir
+        / TWITCH_CLIP_SLUG
+        / "layouts"
+        / "detected_streamer_focus.json"
+    ).is_file()
+    assert [output["layout"] for output in metadata["outputs"]] == [
+        "center_gameplay",
+        "detected_streamer_focus",
+        "detected_hybrid",
+    ]
+    assert all(Path(output["path"]).is_file() for output in metadata["outputs"])
+
+
+def test_process_clip_reuses_existing_analysis_and_render_artifacts_without_force(
+    tmp_path: Path,
+    monkeypatch,
+) -> None:
+    config = _config(tmp_path)
+    source_path = tmp_path / "downloads" / TWITCH_CLIP_SLUG / "ytdlp" / f"{TWITCH_CLIP_SLUG}.mp4"
+    source_path.parent.mkdir(parents=True, exist_ok=True)
+    source_path.write_bytes(b"video")
+    _write_frame_analysis(config.analysis_dir, clip_id=TWITCH_CLIP_SLUG)
+    _write_overlay_analysis(config.analysis_dir, clip_id=TWITCH_CLIP_SLUG)
+    _write_detected_layout(
+        config.analysis_dir,
+        clip_id=TWITCH_CLIP_SLUG,
+        source_template="facecam_focus",
+        layout_name="detected_streamer_focus",
+    )
+    _write_detected_layout(
+        config.analysis_dir,
+        clip_id=TWITCH_CLIP_SLUG,
+        source_template="hybrid",
+        layout_name="detected_hybrid",
+    )
+    for name in ("center_gameplay", "detected_streamer_focus", "detected_hybrid"):
+        render_path = config.renders_dir / TWITCH_CLIP_SLUG / "ytdlp" / f"{name}.mp4"
+        render_path.parent.mkdir(parents=True, exist_ok=True)
+        render_path.write_text("existing", encoding="utf-8")
+
+    monkeypatch.setattr(
+        "clipforge.pipeline.workflows.download_twitch_clip",
+        lambda *args, **kwargs: DownloadResult(source_path=source_path, backend="ytdlp"),
+    )
+    monkeypatch.setattr(
+        "clipforge.pipeline.workflows.sample_frames",
+        lambda *args, **kwargs: (_ for _ in ()).throw(
+            AssertionError("frames should be reused")
+        ),
+    )
+    monkeypatch.setattr(
+        "clipforge.pipeline.workflows.analyze_overlay",
+        lambda *args, **kwargs: (_ for _ in ()).throw(
+            AssertionError("overlay should be reused")
+        ),
+    )
+    monkeypatch.setattr(
+        "clipforge.pipeline.workflows.generate_detected_layout_candidates",
+        lambda *args, **kwargs: (_ for _ in ()).throw(
+            AssertionError("layouts should be reused")
+        ),
+    )
+    monkeypatch.setattr(
+        "clipforge.pipeline.workflows.render_layout",
+        lambda *args, **kwargs: (_ for _ in ()).throw(
+            AssertionError("renders should be reused")
+        ),
+    )
+
+    metadata_path = process_clip(TWITCH_CLIP_URL, config=config)
+
+    metadata = json.loads(metadata_path.read_text(encoding="utf-8"))
+    assert [Path(output["path"]).read_text(encoding="utf-8") for output in metadata["outputs"]] == [
+        "existing",
+        "existing",
+        "existing",
+    ]
+
+
+def test_process_clip_force_regenerates_analysis_and_render_artifacts(
+    tmp_path: Path,
+    monkeypatch,
+) -> None:
+    config = _config(tmp_path)
+    source_path = tmp_path / "downloads" / TWITCH_CLIP_SLUG / "ytdlp" / f"{TWITCH_CLIP_SLUG}.mp4"
+    source_path.parent.mkdir(parents=True, exist_ok=True)
+    source_path.write_bytes(b"video")
+    _write_frame_analysis(config.analysis_dir, clip_id=TWITCH_CLIP_SLUG)
+    _write_overlay_analysis(config.analysis_dir, clip_id=TWITCH_CLIP_SLUG)
+    _write_detected_layout(
+        config.analysis_dir,
+        clip_id=TWITCH_CLIP_SLUG,
+        source_template="facecam_focus",
+        layout_name="detected_streamer_focus",
+    )
+    _write_detected_layout(
+        config.analysis_dir,
+        clip_id=TWITCH_CLIP_SLUG,
+        source_template="hybrid",
+        layout_name="detected_hybrid",
+    )
+    events: list[str] = []
+
+    def fake_sample_frames(source: Path, *, clip_id: str, analysis_dir: Path) -> Path:
+        events.append("frames")
+        return _write_frame_analysis(analysis_dir, clip_id=clip_id)
+
+    def fake_analyze_overlay(*, clip_id: str, analysis_dir: Path) -> Path:
+        events.append("overlay")
+        return _write_overlay_analysis(analysis_dir, clip_id=clip_id)
+
+    def fake_generate_layouts(
+        *,
+        clip_id: str,
+        analysis_dir: Path,
+        example_layouts_dir: Path,
+    ) -> tuple[Path, ...]:
+        del example_layouts_dir
+        events.append("layouts")
+        return (
+            _write_detected_layout(
+                analysis_dir,
+                clip_id=clip_id,
+                source_template="facecam_focus",
+                layout_name="detected_streamer_focus",
+            ),
+            _write_detected_layout(
+                analysis_dir,
+                clip_id=clip_id,
+                source_template="hybrid",
+                layout_name="detected_hybrid",
+            ),
+        )
+
+    def fake_render(source: Path, output: Path, layout) -> Path:
+        events.append(f"render:{layout.name}")
+        output.parent.mkdir(parents=True, exist_ok=True)
+        output.write_text("fresh", encoding="utf-8")
+        return output
+
+    monkeypatch.setattr(
+        "clipforge.pipeline.workflows.download_twitch_clip",
+        lambda *args, **kwargs: DownloadResult(source_path=source_path, backend="ytdlp"),
+    )
+    monkeypatch.setattr("clipforge.pipeline.workflows.sample_frames", fake_sample_frames)
+    monkeypatch.setattr("clipforge.pipeline.workflows.analyze_overlay", fake_analyze_overlay)
+    monkeypatch.setattr(
+        "clipforge.pipeline.workflows.generate_detected_layout_candidates",
+        fake_generate_layouts,
+    )
+    monkeypatch.setattr("clipforge.pipeline.workflows.render_layout", fake_render)
+
+    process_clip(TWITCH_CLIP_URL, force=True, config=config)
+
+    assert events == [
+        "frames",
+        "overlay",
+        "layouts",
+        "render:center_gameplay",
+        "render:detected_streamer_focus",
+        "render:detected_hybrid",
+    ]
+
+
+def test_process_clip_surfaces_failing_stage(
+    tmp_path: Path,
+    monkeypatch,
+) -> None:
+    config = _config(tmp_path)
+    source_path = tmp_path / "downloads" / TWITCH_CLIP_SLUG / "ytdlp" / f"{TWITCH_CLIP_SLUG}.mp4"
+
+    monkeypatch.setattr(
+        "clipforge.pipeline.workflows.download_twitch_clip",
+        lambda *args, **kwargs: DownloadResult(source_path=source_path, backend="ytdlp"),
+    )
+    monkeypatch.setattr(
+        "clipforge.pipeline.workflows.sample_frames",
+        lambda *args, **kwargs: (_ for _ in ()).throw(RuntimeError("ffmpeg exploded")),
+    )
+
+    with pytest.raises(ClipProcessingError, match="frames stage failed: ffmpeg exploded"):
+        process_clip(TWITCH_CLIP_URL, config=config)
 
 
 def test_render_candidate_accepts_layout_file_path(
@@ -818,6 +1101,53 @@ def _write_detected_layout(
                     }
                     for region in layout.regions
                 ],
+            }
+        ),
+        encoding="utf-8",
+    )
+    return path
+
+
+def _write_frame_analysis(analysis_dir: Path, *, clip_id: str) -> Path:
+    clip_dir = analysis_dir / clip_id
+    frames_dir = clip_dir / "frames"
+    frames_dir.mkdir(parents=True, exist_ok=True)
+    frame_path = frames_dir / "frame_0001.jpg"
+    frame_path.write_bytes(b"jpeg")
+    metadata_path = clip_dir / "frames.json"
+    metadata_path.write_text(
+        json.dumps(
+            {
+                "clip_id": clip_id,
+                "source_path": "source.mp4",
+                "sampled_timestamps": [0],
+                "frame_paths": [str(frame_path)],
+                "sampling_mode": {
+                    "type": "test",
+                    "count": 1,
+                    "interval_seconds": 1,
+                },
+            }
+        ),
+        encoding="utf-8",
+    )
+    return metadata_path
+
+
+def _write_overlay_analysis(analysis_dir: Path, *, clip_id: str) -> Path:
+    path = analysis_dir / clip_id / "overlay.json"
+    path.parent.mkdir(parents=True, exist_ok=True)
+    path.write_text(
+        json.dumps(
+            {
+                "clip_id": clip_id,
+                "selected_rect": None,
+                "selected_face_rect": None,
+                "selected_overlay_rect": None,
+                "confidence": 0.0,
+                "fallback": True,
+                "reason": "test fallback",
+                "candidate_clusters": [],
             }
         ),
         encoding="utf-8",

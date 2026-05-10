@@ -1061,7 +1061,8 @@ def test_main_reprocesses_rendered_clip_by_id_with_force(
     )
     calls: list[str] = []
 
-    def fake_process(url: str, *, config: ClipforgeConfig) -> Path:
+    def fake_process(url: str, *, force: bool, config: ClipforgeConfig) -> Path:
+        assert force is True
         calls.append(url)
         metadata_path = tmp_path / "metadata" / "new.json"
         mark_clip_rendered(
@@ -1111,12 +1112,14 @@ def test_main_reprocesses_rendered_clip_with_force_and_captions(
         url: str,
         *,
         generate_captions: bool,
+        force: bool,
         config: ClipforgeConfig,
     ) -> Path:
         calls.append(
             {
                 "url": url,
                 "generate_captions": generate_captions,
+                "force": force,
                 "config": config,
             }
         )
@@ -1141,6 +1144,7 @@ def test_main_reprocesses_rendered_clip_with_force_and_captions(
         {
             "url": "https://clips.twitch.tv/clip-rendered",
             "generate_captions": True,
+            "force": True,
             "config": config,
         }
     ]
@@ -1169,6 +1173,7 @@ def test_main_routes_clips_process_force_caption_flag(
         *,
         generate_captions: bool,
         force_captions: bool,
+        force: bool,
         config: ClipforgeConfig,
     ) -> Path:
         calls.append(
@@ -1176,6 +1181,7 @@ def test_main_routes_clips_process_force_caption_flag(
                 "url": url,
                 "generate_captions": generate_captions,
                 "force_captions": force_captions,
+                "force": force,
                 "config": config,
             }
         )
@@ -1202,6 +1208,7 @@ def test_main_routes_clips_process_force_caption_flag(
             "url": "https://clips.twitch.tv/clip-rendered",
             "generate_captions": True,
             "force_captions": True,
+            "force": True,
             "config": config,
         }
     ]
@@ -1282,6 +1289,7 @@ def test_main_reprocesses_rendered_clip_reuses_existing_captions_by_default(
             "clip-rendered",
             "--force",
             "--generate-captions",
+            "--static-layouts",
         ]
     )
 
