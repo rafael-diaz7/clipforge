@@ -9,7 +9,7 @@ from pathlib import Path
 from typing import Any, Protocol, Sequence
 
 from clipforge.core.config import ClipforgeConfig
-from clipforge.utils import ensure_directory, safe_filename
+from clipforge.utils.paths import ensure_directory, safe_filename
 from clipforge.utils.json_validation import required_int
 from clipforge.utils.json_validation import required_list
 from clipforge.utils.json_validation import required_number

@@ -9,7 +9,7 @@ from pathlib import Path
 from typing import Callable
 
 from clipforge.core.config import DATA_DIR
-from clipforge.utils import ensure_directory, safe_filename
+from clipforge.utils.paths import ensure_directory, safe_filename
 
 
 DEFAULT_FRAME_SAMPLE_COUNT = 12

@@ -10,7 +10,7 @@ from urllib.parse import urlparse
 import requests
 
 from clipforge.core.config import ClipforgeConfig
-from clipforge.utils import (
+from clipforge.utils.paths import (
     is_http_url,
     response_text_excerpt,
     twitch_clip_slug_from_url,

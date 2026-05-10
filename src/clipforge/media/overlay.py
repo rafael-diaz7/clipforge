@@ -11,7 +11,7 @@ from typing import Protocol
 
 from clipforge.core.config import DATA_DIR
 from clipforge.media.analyze import AnalysisError
-from clipforge.utils import ensure_directory, safe_filename
+from clipforge.utils.paths import ensure_directory, safe_filename
 
 
 ANALYSIS_DIR = DATA_DIR / "analysis"

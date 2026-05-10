@@ -9,7 +9,7 @@ from pathlib import Path
 from typing import Any, Sequence
 
 from clipforge.core.config import ClipforgeConfig
-from clipforge.utils import ensure_directory, safe_filename, utc_timestamp
+from clipforge.utils.paths import ensure_directory, safe_filename, utc_timestamp
 from clipforge.integrations.twitch import TwitchClip, twitch_channel_login_from_input
 from clipforge.media.download import DownloadResult
 from clipforge.media.layouts import Layout

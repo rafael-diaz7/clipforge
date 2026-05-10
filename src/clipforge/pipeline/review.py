@@ -23,7 +23,7 @@ from clipforge.storage.state import (
     mark_clip_exported,
     mark_clip_failed,
 )
-from clipforge.utils import ensure_directory, safe_filename
+from clipforge.utils.paths import ensure_directory, safe_filename
 
 
 InputFn = Callable[[str], str]

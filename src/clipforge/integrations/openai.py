@@ -18,7 +18,7 @@ from clipforge.media.captions import (
     CaptionTranscriptionError,
     CaptionWord,
 )
-from clipforge.utils import response_text_excerpt
+from clipforge.utils.paths import response_text_excerpt
 from clipforge.utils.json_validation import required_list, required_number
 
 

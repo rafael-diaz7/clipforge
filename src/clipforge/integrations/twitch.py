@@ -10,7 +10,7 @@ from urllib.parse import urlparse
 import requests
 
 from clipforge.core.config import ClipforgeConfig
-from clipforge.utils import normalized_host, response_text_excerpt
+from clipforge.utils.paths import normalized_host, response_text_excerpt
 from clipforge.utils.json_validation import required_int
 from clipforge.utils.json_validation import required_number
 from clipforge.utils.json_validation import required_string

@@ -1,6 +1,6 @@
 from pathlib import Path
 
-from clipforge.utils import (
+from clipforge.utils.paths import (
     clip_slug_from_url,
     ensure_directory,
     ensure_project_subdir,

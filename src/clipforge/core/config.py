@@ -8,7 +8,7 @@ from pathlib import Path
 
 from dotenv import load_dotenv
 
-from clipforge.utils import require_config_value, require_config_values
+from clipforge.utils.config_validation import require_config_value, require_config_values
 
 
 PROJECT_ROOT = Path(__file__).resolve().parents[3]
