@@ -932,8 +932,10 @@ def test_process_clip_generates_analysis_artifacts_and_renders_outputs(
         *,
         clip_id: str,
         analysis_dir: Path,
+        duration_seconds: float | None,
     ) -> Path:
         assert source == source_path
+        assert duration_seconds is None
         events.append("frames")
         return _write_frame_analysis(analysis_dir, clip_id=clip_id)
 
@@ -1102,7 +1104,14 @@ def test_process_clip_force_regenerates_analysis_and_render_artifacts(
     )
     events: list[str] = []
 
-    def fake_sample_frames(source: Path, *, clip_id: str, analysis_dir: Path) -> Path:
+    def fake_sample_frames(
+        source: Path,
+        *,
+        clip_id: str,
+        analysis_dir: Path,
+        duration_seconds: float | None,
+    ) -> Path:
+        assert duration_seconds is None
         events.append("frames")
         return _write_frame_analysis(analysis_dir, clip_id=clip_id)
 
@@ -1201,7 +1210,14 @@ def test_process_clip_rerender_reuses_source_and_captions_without_transcription(
     def fail_generate_caption_metadata(*args, **kwargs) -> Path:
         raise AssertionError("Rerender should not call transcription.")
 
-    def fake_sample_frames(source: Path, *, clip_id: str, analysis_dir: Path) -> Path:
+    def fake_sample_frames(
+        source: Path,
+        *,
+        clip_id: str,
+        analysis_dir: Path,
+        duration_seconds: float | None,
+    ) -> Path:
+        assert duration_seconds is None
         assert source == source_path
         events.append("frames")
         return _write_frame_analysis(analysis_dir, clip_id=clip_id)
@@ -1427,20 +1443,21 @@ def _write_frame_analysis(analysis_dir: Path, *, clip_id: str) -> Path:
     clip_dir = analysis_dir / clip_id
     frames_dir = clip_dir / "frames"
     frames_dir.mkdir(parents=True, exist_ok=True)
-    frame_path = frames_dir / "frame_0001.jpg"
-    frame_path.write_bytes(b"jpeg")
+    frame_paths = tuple(frames_dir / f"frame_{index:04d}.jpg" for index in range(1, 13))
+    for frame_path in frame_paths:
+        frame_path.write_bytes(b"jpeg")
     metadata_path = clip_dir / "frames.json"
     metadata_path.write_text(
         json.dumps(
             {
                 "clip_id": clip_id,
                 "source_path": "source.mp4",
-                "sampled_timestamps": [0],
-                "frame_paths": [str(frame_path)],
+                "sampled_timestamps": list(range(0, 24, 2)),
+                "frame_paths": [str(frame_path) for frame_path in frame_paths],
                 "sampling_mode": {
                     "type": "test",
-                    "count": 1,
-                    "interval_seconds": 1,
+                    "count": 12,
+                    "interval_seconds": 2,
                 },
             }
         ),

@@ -43,6 +43,14 @@ def test_sample_timestamps_uses_custom_count_and_interval() -> None:
     assert sample_timestamps(count=4, interval_seconds=1.5) == (0, 1.5, 3, 4.5)
 
 
+def test_sample_timestamps_keeps_requested_count_inside_short_duration() -> None:
+    timestamps = sample_timestamps(count=12, duration_seconds=16)
+
+    assert len(timestamps) == 12
+    assert timestamps[0] == 0
+    assert timestamps[-1] < 16
+
+
 def test_build_frame_sample_commands_returns_safe_ffmpeg_argv_lists(
     tmp_path: Path,
 ) -> None:
@@ -122,6 +130,7 @@ def test_sample_frames_writes_frames_metadata(
         clip_id="clip-123",
         count=3,
         interval_seconds=1.25,
+        duration_seconds=5,
         analysis_dir=tmp_path / "analysis",
         runner=fake_runner,
     )
@@ -165,6 +174,7 @@ def test_sample_frames_records_default_sampling_mode(tmp_path: Path) -> None:
         source_path,
         clip_id="clip-123",
         count=1,
+        duration_seconds=5,
         analysis_dir=tmp_path / "analysis",
         runner=fake_runner,
     )
@@ -195,6 +205,7 @@ def test_sample_frames_uses_safe_clip_directory(tmp_path: Path) -> None:
         source_path,
         clip_id=" My Clip!? ",
         count=1,
+        duration_seconds=5,
         analysis_dir=tmp_path / "analysis",
         runner=fake_runner,
     )
@@ -231,6 +242,7 @@ def test_sample_frames_rejects_invalid_inputs(
         sample_frames(
             source_path,
             analysis_dir=tmp_path / "analysis",
+            duration_seconds=5,
             **kwargs,
         )
 
@@ -247,6 +259,7 @@ def test_sample_frames_wraps_missing_ffmpeg_binary(tmp_path: Path) -> None:
             source_path,
             clip_id="clip-123",
             count=1,
+            duration_seconds=5,
             analysis_dir=tmp_path / "analysis",
             runner=fake_runner,
         )
@@ -272,6 +285,7 @@ def test_sample_frames_reports_ffmpeg_failure_and_skips_metadata(
             source_path,
             clip_id="clip-123",
             count=1,
+            duration_seconds=5,
             analysis_dir=tmp_path / "analysis",
             runner=fake_runner,
         )
@@ -297,6 +311,7 @@ def test_sample_frames_reports_missing_frame_outputs(tmp_path: Path) -> None:
             source_path,
             clip_id="clip-123",
             count=1,
+            duration_seconds=5,
             analysis_dir=tmp_path / "analysis",
             runner=fake_runner,
         )

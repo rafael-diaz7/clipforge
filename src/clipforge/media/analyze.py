@@ -15,6 +15,8 @@ from clipforge.utils.paths import clip_analysis_dir, ensure_directory, safe_file
 
 DEFAULT_FRAME_SAMPLE_COUNT = 12
 DEFAULT_FRAME_SAMPLE_INTERVAL_SECONDS = 2.0
+FRAME_SAMPLE_EXTENSION = ".jpg"
+FRAME_SAMPLE_EOF_MARGIN_SECONDS = 0.05
 
 
 class AnalysisError(RuntimeError):
@@ -42,12 +44,14 @@ class FrameSampleMetadata:
 
 
 Runner = Callable[..., subprocess.CompletedProcess[str]]
+DurationProbe = Callable[[Path], float]
 
 
 def sample_timestamps(
     *,
     count: int | None = None,
     interval_seconds: float | None = None,
+    duration_seconds: float | None = None,
 ) -> tuple[float, ...]:
     """Return deterministic frame timestamps in seconds."""
 
@@ -55,6 +59,13 @@ def sample_timestamps(
         count = _default_frame_sample_count()
     _validate_positive_int(count, "count")
     interval = _sample_interval(interval_seconds)
+    if duration_seconds is not None:
+        _validate_positive_float(duration_seconds, "duration_seconds")
+        max_timestamp = max(duration_seconds - FRAME_SAMPLE_EOF_MARGIN_SECONDS, 0.0)
+        default_last_timestamp = (count - 1) * interval
+        if count > 1 and max_timestamp < default_last_timestamp:
+            step = max_timestamp / (count - 1)
+            return tuple(round(index * step, 3) for index in range(count))
     return tuple(round(index * interval, 3) for index in range(count))
 
 
@@ -96,7 +107,11 @@ def sample_frames(
     interval_seconds: float | None = None,
     analysis_dir: Path = ANALYSIS_DIR,
     ffmpeg_binary: str = "ffmpeg",
+    ffprobe_binary: str = "ffprobe",
+    duration_seconds: float | None = None,
+    duration_probe: DurationProbe | None = None,
     runner: Runner = subprocess.run,
+    probe_runner: Runner = subprocess.run,
 ) -> Path:
     """Save representative frames and return the metadata JSON path."""
 
@@ -104,9 +119,20 @@ def sample_frames(
         raise AnalysisError(f"Source video not found: {source_path}")
 
     safe_clip_id = _safe_clip_id(clip_id)
+    source_duration_seconds = duration_seconds
+    if source_duration_seconds is None:
+        probe = duration_probe or (
+            lambda path: _probe_media_duration_seconds(
+                path,
+                ffprobe_binary=ffprobe_binary,
+                runner=probe_runner,
+            )
+        )
+        source_duration_seconds = probe(source_path)
     sampled_timestamps = sample_timestamps(
         count=count,
         interval_seconds=interval_seconds,
+        duration_seconds=source_duration_seconds,
     )
     analysis_clip_dir = clip_analysis_dir(analysis_dir, safe_clip_id)
     frames_dir = ensure_directory(analysis_clip_dir / "frames")
@@ -178,7 +204,45 @@ def _sample_interval(interval_seconds: float | None) -> float:
 
 
 def _frame_paths(frames_dir: Path, count: int) -> tuple[Path, ...]:
-    return tuple(frames_dir / f"frame_{index:04d}.jpg" for index in range(1, count + 1))
+    return tuple(
+        frames_dir / f"frame_{index:04d}{FRAME_SAMPLE_EXTENSION}"
+        for index in range(1, count + 1)
+    )
+
+
+def _probe_media_duration_seconds(
+    source_path: Path,
+    *,
+    ffprobe_binary: str,
+    runner: Runner,
+) -> float:
+    command = [
+        ffprobe_binary,
+        "-v",
+        "error",
+        "-show_entries",
+        "format=duration",
+        "-of",
+        "default=noprint_wrappers=1:nokey=1",
+        str(source_path),
+    ]
+    try:
+        completed = runner(command, check=True, capture_output=True, text=True)
+    except (OSError, subprocess.CalledProcessError) as exc:
+        raise AnalysisError(
+            f"Could not determine source clip duration with ffprobe for {source_path}: "
+            f"{_process_error_excerpt(exc)}"
+        ) from exc
+
+    try:
+        duration = float(completed.stdout.strip())
+    except ValueError as exc:
+        raise AnalysisError(
+            f"ffprobe returned an invalid duration for {source_path}: "
+            f"{completed.stdout.strip()!r}."
+        ) from exc
+    _validate_positive_float(duration, "ffprobe duration")
+    return duration
 
 
 def _run_ffmpeg_command(command: list[str], *, runner: Runner) -> None:
@@ -219,5 +283,26 @@ def _validate_positive_int(value: int, name: str) -> None:
         raise AnalysisError(f"{name} must be greater than 0.")
 
 
+def _validate_positive_float(value: float, name: str) -> None:
+    if value <= 0:
+        raise AnalysisError(f"{name} must be greater than 0.")
+
+
 def _format_timestamp(value: float) -> str:
     return f"{value:.3f}".rstrip("0").rstrip(".") or "0"
+
+
+def _process_error_excerpt(
+    exc: OSError | subprocess.CalledProcessError,
+    *,
+    limit: int = 320,
+) -> str:
+    if isinstance(exc, subprocess.CalledProcessError):
+        output = (exc.stderr or exc.stdout or "").strip().replace("\n", " ")
+        if not output:
+            output = f"exit code {exc.returncode}"
+    else:
+        output = str(exc)
+    if len(output) > limit:
+        return f"{output[:limit]}..."
+    return output

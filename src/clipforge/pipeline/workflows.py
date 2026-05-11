@@ -26,7 +26,7 @@ from clipforge.media.captions import (
     generate_caption_metadata,
     load_caption_metadata,
 )
-from clipforge.media.analyze import sample_frames
+from clipforge.media.analyze import FRAME_SAMPLE_EXTENSION, sample_frames, sample_timestamps
 from clipforge.media.layouts import (
     DEFAULT_LAYOUT_NAMES,
     GENERATED_LAYOUT_NAMES,
@@ -201,6 +201,7 @@ def process_clip(
             lambda: _ensure_sampled_frames(
                 source_path,
                 clip_id=clip_id,
+                duration_seconds=getattr(clip_state, "duration_seconds", None),
                 force=force_visuals,
                 config=config,
             ),
@@ -475,17 +476,27 @@ def _ensure_sampled_frames(
     source_path: Path,
     *,
     clip_id: str,
+    duration_seconds: float | None,
     force: bool,
     config: ClipforgeConfig,
 ) -> tuple[Path, bool]:
     metadata_path = _frames_metadata_path(clip_id, config=config)
-    if not force and _frames_artifacts_ready(metadata_path):
+    if not force and _frames_artifacts_ready(
+        metadata_path,
+        expected_count=len(sample_timestamps()),
+        expected_suffix=FRAME_SAMPLE_EXTENSION,
+    ):
         LOGGER.info("Reusing sampled frames for clip %s from %s.", clip_id, metadata_path)
         return metadata_path, True
 
     LOGGER.info("Sampling analysis frames for clip %s from %s.", clip_id, source_path)
     return (
-        sample_frames(source_path, clip_id=clip_id, analysis_dir=config.analysis_dir),
+        sample_frames(
+            source_path,
+            clip_id=clip_id,
+            analysis_dir=config.analysis_dir,
+            duration_seconds=duration_seconds,
+        ),
         False,
     )
 
@@ -581,14 +592,29 @@ def _clip_analysis_dir(clip_id: str, *, config: ClipforgeConfig) -> Path:
     return clip_analysis_dir(config.analysis_dir, clip_id)
 
 
-def _frames_artifacts_ready(metadata_path: Path) -> bool:
+def _frames_artifacts_ready(
+    metadata_path: Path,
+    *,
+    expected_count: int,
+    expected_suffix: str,
+) -> bool:
     payload = _read_json_object_if_available(metadata_path)
     if payload is None:
         return False
     frame_paths = payload.get("frame_paths")
     if not isinstance(frame_paths, list) or not frame_paths:
         return False
-    return all(isinstance(value, str) and Path(value).is_file() for value in frame_paths)
+    if len(frame_paths) != expected_count:
+        return False
+    sampled_timestamps = payload.get("sampled_timestamps")
+    if not isinstance(sampled_timestamps, list) or len(sampled_timestamps) != expected_count:
+        return False
+    return all(
+        isinstance(value, str)
+        and Path(value).suffix.lower() == expected_suffix
+        and Path(value).is_file()
+        for value in frame_paths
+    )
 
 
 def _json_object_file_ready(path: Path) -> bool:
