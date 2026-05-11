@@ -14,7 +14,12 @@ from clipforge.utils.paths import (
     twitch_clip_slug_from_url,
 )
 from clipforge.integrations.clipr import CliprClient
-from clipforge.media.download import download_clip, download_twitch_clip
+from clipforge.media.download import (
+    DownloadResult,
+    backend_download_dir,
+    download_clip,
+    download_twitch_clip,
+)
 from clipforge.media.captions import (
     CaptionMetadata,
     caption_metadata_path as deterministic_caption_metadata_path,
@@ -140,6 +145,7 @@ def process_clip(
     generate_captions: bool | None = None,
     force_captions: bool = False,
     force: bool = False,
+    rerender: bool = False,
     use_generated_layouts: bool = True,
     config: ClipforgeConfig | None = None,
 ) -> Path:
@@ -149,20 +155,28 @@ def process_clip(
     clip_id = twitch_clip_slug_from_url(twitch_clip_url)
     clip_state = get_clip(clip_id, db_path=config.state_db_path)
     channel = clip_state.streamer_login if clip_state is not None else None
+    force_visuals = force or rerender
     LOGGER.info("Starting clip pipeline for clip %s.", clip_id)
-    download_result = _run_stage(
+    caption_metadata_path = None
+    reused_caption_metadata = False
+    if rerender:
+        caption_metadata_path, reused_caption_metadata = _run_stage(
+            "captions",
+            lambda: _require_existing_caption_metadata(clip_id, config=config),
+        )
+
+    download_result, reused_source = _run_stage(
         "download",
-        lambda: download_twitch_clip(
+        lambda: _ensure_source_video(
             twitch_clip_url,
             clip_id=clip_id,
+            clip_state=clip_state,
+            prefer_existing=rerender,
             config=config,
-            on_media_url_resolved=lambda media_url: print(f"download_url: {media_url}"),
         ),
     )
     source_path = download_result.source_path
-    caption_metadata_path = None
-    reused_caption_metadata = False
-    if _should_generate_captions(generate_captions, config=config):
+    if not rerender and _should_generate_captions(generate_captions, config=config):
         caption_metadata_path, reused_caption_metadata = _run_stage(
             "captions",
             lambda: _ensure_caption_metadata(
@@ -187,7 +201,7 @@ def process_clip(
             lambda: _ensure_sampled_frames(
                 source_path,
                 clip_id=clip_id,
-                force=force,
+                force=force_visuals,
                 config=config,
             ),
         )
@@ -195,7 +209,7 @@ def process_clip(
             "overlay",
             lambda: _ensure_overlay_analysis(
                 clip_id=clip_id,
-                force=force,
+                force=force_visuals,
                 config=config,
             ),
         )
@@ -203,7 +217,7 @@ def process_clip(
             "layouts",
             lambda: _ensure_layout_analysis(
                 clip_id=clip_id,
-                force=force,
+                force=force_visuals,
                 config=config,
             ),
         )
@@ -229,7 +243,7 @@ def process_clip(
                 channel=channel,
                 caption_metadata=caption_metadata,
                 caption_style=caption_style,
-                force=force,
+                force=force_visuals,
                 config=config,
             ),
         )
@@ -259,7 +273,10 @@ def process_clip(
         ),
     )
 
-    print(f"source: {source_path}")
+    if rerender:
+        print("rerender: regenerating visual artifacts; preserving source and captions")
+    source_prefix = "source: reusing existing" if reused_source else "source:"
+    print(f"{source_prefix} {source_path}")
     if caption_metadata_path is not None:
         if reused_caption_metadata:
             print(f"captions: reusing existing {caption_metadata_path}")
@@ -289,6 +306,122 @@ def _run_stage(stage_name: str, callback):
         raise ClipProcessingError(f"{stage_name} stage failed: {exc}") from exc
 
 
+def _ensure_source_video(
+    twitch_clip_url: str,
+    *,
+    clip_id: str,
+    clip_state,
+    prefer_existing: bool,
+    config: ClipforgeConfig,
+) -> tuple[DownloadResult, bool]:
+    if prefer_existing:
+        existing = _existing_download_result(
+            clip_id=clip_id,
+            clip_state=clip_state,
+            config=config,
+        )
+        if existing is not None:
+            LOGGER.info(
+                "Reusing existing source video for clip %s from %s.",
+                clip_id,
+                existing.source_path,
+            )
+            return existing, True
+
+    result = download_twitch_clip(
+        twitch_clip_url,
+        clip_id=clip_id,
+        config=config,
+        on_media_url_resolved=lambda media_url: print(f"download_url: {media_url}"),
+    )
+    return result, False
+
+
+def _existing_download_result(
+    *,
+    clip_id: str,
+    clip_state,
+    config: ClipforgeConfig,
+) -> DownloadResult | None:
+    state_download_path = getattr(clip_state, "download_path", None)
+    if state_download_path:
+        source_path = Path(state_download_path)
+        if source_path.is_file():
+            return DownloadResult(
+                source_path=source_path,
+                backend=_backend_from_source_path(source_path, clip_id=clip_id, config=config),
+            )
+
+    state_metadata_path = getattr(clip_state, "metadata_path", None)
+    if state_metadata_path:
+        metadata_result = _download_result_from_metadata(Path(state_metadata_path))
+        if metadata_result is not None:
+            return metadata_result
+
+    configured_backend = config.require_downloader_backend()
+    configured_dir = backend_download_dir(
+        config.downloads_dir,
+        clip_id=clip_id,
+        backend=configured_backend,
+    )
+    source_path = _first_video_file(configured_dir)
+    if source_path is not None:
+        return DownloadResult(source_path=source_path, backend=configured_backend)
+
+    clip_download_dir = config.downloads_dir / safe_filename(clip_id)
+    if not clip_download_dir.is_dir():
+        return None
+    for backend_dir in sorted(path for path in clip_download_dir.iterdir() if path.is_dir()):
+        source_path = _first_video_file(backend_dir)
+        if source_path is not None:
+            return DownloadResult(source_path=source_path, backend=backend_dir.name)
+    return None
+
+
+def _download_result_from_metadata(metadata_path: Path) -> DownloadResult | None:
+    payload = _read_json_object_if_available(metadata_path)
+    if payload is None:
+        return None
+    source_value = payload.get("source_path")
+    if not isinstance(source_value, str):
+        return None
+    source_path = Path(source_value)
+    if not source_path.is_file():
+        return None
+    backend = payload.get("downloader_backend")
+    return DownloadResult(
+        source_path=source_path,
+        backend=backend if isinstance(backend, str) and backend else source_path.parent.name,
+        media_url=payload.get("download_media_url")
+        if isinstance(payload.get("download_media_url"), str)
+        else None,
+    )
+
+
+def _first_video_file(directory: Path) -> Path | None:
+    if not directory.is_dir():
+        return None
+    for path in sorted(directory.iterdir()):
+        if path.is_file() and path.suffix.lower() in {".mp4", ".mov", ".mkv", ".webm"}:
+            return path
+    return None
+
+
+def _backend_from_source_path(
+    source_path: Path,
+    *,
+    clip_id: str,
+    config: ClipforgeConfig,
+) -> str:
+    safe_clip_id = safe_filename(clip_id)
+    try:
+        if source_path.parent.parent.name == safe_clip_id:
+            return source_path.parent.name
+    except IndexError:
+        pass
+    return config.require_downloader_backend()
+
+
 def _ensure_caption_metadata(
     source_path: Path,
     *,
@@ -313,6 +446,29 @@ def _ensure_caption_metadata(
     else:
         LOGGER.info("Generating captions for clip %s from %s.", clip_id, source_path)
     return generate_caption_metadata(source_path, clip_id=clip_id, config=config), False
+
+
+def _require_existing_caption_metadata(
+    clip_id: str,
+    *,
+    config: ClipforgeConfig,
+) -> tuple[Path, bool]:
+    existing_caption_metadata_path = deterministic_caption_metadata_path(
+        clip_id,
+        config=config,
+    )
+    if existing_caption_metadata_path.exists():
+        LOGGER.info(
+            "Reusing existing caption metadata for rerender of clip %s from %s.",
+            clip_id,
+            existing_caption_metadata_path,
+        )
+        return existing_caption_metadata_path, True
+
+    raise ClipProcessingError(
+        "Captions are missing and rerender mode does not regenerate transcriptions. "
+        "Run with --generate-captions first."
+    )
 
 
 def _ensure_sampled_frames(

@@ -45,6 +45,7 @@ def review_streamer_clips(
     streamer: str,
     count: int = 3,
     force: bool = False,
+    rerender: bool = False,
     generate_captions: bool | None = None,
     force_captions: bool = False,
     clip_ids: Sequence[str] = (),
@@ -87,6 +88,8 @@ def review_streamer_clips(
     for clip in selected_clips:
         output_fn(_format_clip_header(clip))
         process_kwargs = {"config": config, "use_generated_layouts": use_generated_layouts}
+        if rerender:
+            process_kwargs["rerender"] = True
         if generate_captions is not None:
             process_kwargs["generate_captions"] = generate_captions
         if force_captions:

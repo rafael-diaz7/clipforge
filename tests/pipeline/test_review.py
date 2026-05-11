@@ -316,3 +316,35 @@ def test_review_clip_id_override_processes_named_clip(
     )
 
     assert calls == ["clip-low"]
+
+
+def test_review_rerender_passes_visual_only_flag(
+    monkeypatch,
+    tmp_path: Path,
+) -> None:
+    config = _config(tmp_path)
+    calls: list[dict[str, object]] = []
+
+    monkeypatch.setattr(
+        "clipforge.pipeline.review.list_channel_clips",
+        lambda *args, **kwargs: (_clip("clip-1", views=100),),
+    )
+
+    def fake_process(url: str, **kwargs) -> Path:
+        calls.append({"url": url, **kwargs})
+        return _write_metadata(config, "clip-1")
+
+    monkeypatch.setattr("clipforge.pipeline.review.process_clip", fake_process)
+
+    review_streamer_clips(
+        streamer="example",
+        count=1,
+        rerender=True,
+        config=config,
+        input_fn=lambda prompt: "1",
+        output_fn=lambda line: None,
+    )
+
+    assert calls[0]["url"] == "https://clips.twitch.tv/clip-1"
+    assert calls[0]["rerender"] is True
+    assert calls[0]["config"] == config

@@ -1095,6 +1095,103 @@ def test_main_reprocesses_rendered_clip_by_id_with_force(
     ]
 
 
+def test_main_rerenders_rendered_clip_by_id_without_force(
+    monkeypatch,
+    capsys,
+    tmp_path: Path,
+) -> None:
+    config = ClipforgeConfig(state_db_path=tmp_path / "state" / "clipforge.sqlite")
+    upsert_discovered_clip(
+        clip_id="clip-rendered",
+        url="https://clips.twitch.tv/clip-rendered",
+        rank_score=1.0,
+        db_path=config.state_db_path,
+    )
+    mark_clip_rendered(
+        "clip-rendered",
+        render_dir=tmp_path / "renders" / "old",
+        metadata_path=tmp_path / "metadata" / "old.json",
+        db_path=config.state_db_path,
+    )
+    calls: list[dict[str, object]] = []
+
+    def fake_process(
+        url: str,
+        *,
+        rerender: bool,
+        config: ClipforgeConfig,
+    ) -> Path:
+        calls.append({"url": url, "rerender": rerender, "config": config})
+        return tmp_path / "metadata" / "new.json"
+
+    monkeypatch.setattr("clipforge.pipeline.cli.load_config", lambda: config)
+    monkeypatch.setattr("clipforge.pipeline.cli.process_clip", fake_process)
+
+    exit_code = main(["clips", "process", "--clip-id", "clip-rendered", "--rerender"])
+
+    assert exit_code == 0
+    assert calls == [
+        {
+            "url": "https://clips.twitch.tv/clip-rendered",
+            "rerender": True,
+            "config": config,
+        }
+    ]
+    assert capsys.readouterr().out.splitlines() == [
+        f"processed: clip-rendered: {tmp_path / 'metadata' / 'new.json'}"
+    ]
+
+
+def test_main_routes_clips_rerender_command(
+    monkeypatch,
+    capsys,
+    tmp_path: Path,
+) -> None:
+    config = ClipforgeConfig(state_db_path=tmp_path / "state" / "clipforge.sqlite")
+    upsert_discovered_clip(
+        clip_id="clip-1",
+        url="https://clips.twitch.tv/clip-1",
+        db_path=config.state_db_path,
+    )
+    metadata_path = tmp_path / "metadata" / "clip-1.json"
+    calls: list[dict[str, object]] = []
+
+    def fake_process(
+        url: str,
+        *,
+        rerender: bool,
+        use_generated_layouts: bool,
+        config: ClipforgeConfig,
+    ) -> Path:
+        calls.append(
+            {
+                "url": url,
+                "rerender": rerender,
+                "use_generated_layouts": use_generated_layouts,
+                "config": config,
+            }
+        )
+        return metadata_path
+
+    monkeypatch.setattr("clipforge.pipeline.cli.load_config", lambda: config)
+    monkeypatch.setattr("clipforge.pipeline.cli.process_clip", fake_process)
+
+    exit_code = main(["clips", "rerender", "--clip-id", "clip-1"])
+
+    assert exit_code == 0
+    assert calls == [
+        {
+            "url": "https://clips.twitch.tv/clip-1",
+            "rerender": True,
+            "use_generated_layouts": True,
+            "config": config,
+        }
+    ]
+    assert capsys.readouterr().out.splitlines() == [
+        f"rerendered: clip-1: {metadata_path}"
+    ]
+
+
 def test_main_reprocesses_rendered_clip_with_force_and_captions(
     monkeypatch,
     tmp_path: Path,
@@ -1521,6 +1618,7 @@ def test_main_routes_clips_review_command(monkeypatch, capsys, tmp_path: Path) -
     assert call["streamer"] == "jynxzi"
     assert call["count"] == 3
     assert call["force"] is True
+    assert call["rerender"] is False
     assert call["generate_captions"] is True
     assert call["force_captions"] is False
     assert call["clip_ids"] == ["clip-1"]
@@ -1533,6 +1631,74 @@ def test_main_routes_clips_review_command(monkeypatch, capsys, tmp_path: Path) -
         "ready exports:",
         str(export_path),
     ]
+
+
+def test_main_routes_clips_review_rerender_flag(
+    monkeypatch,
+    tmp_path: Path,
+) -> None:
+    config = ClipforgeConfig(state_db_path=tmp_path / "state" / "clipforge.sqlite")
+    calls: list[dict[str, object]] = []
+
+    def fake_review_streamer_clips(**kwargs) -> tuple[Path, ...]:
+        calls.append(kwargs)
+        return ()
+
+    monkeypatch.setattr("clipforge.pipeline.cli.load_config", lambda: config)
+    monkeypatch.setattr(
+        "clipforge.pipeline.cli.review_streamer_clips",
+        fake_review_streamer_clips,
+    )
+
+    exit_code = main(
+        [
+            "clips",
+            "review",
+            "--streamer",
+            "doublelift",
+            "--clip-id",
+            "clip-1",
+            "--rerender",
+        ]
+    )
+
+    assert exit_code == 0
+    assert calls[0]["rerender"] is True
+    assert calls[0]["clip_ids"] == ["clip-1"]
+
+
+def test_main_rejects_rerender_with_caption_generation(
+    monkeypatch,
+    capsys,
+    tmp_path: Path,
+) -> None:
+    config = ClipforgeConfig(state_db_path=tmp_path / "state" / "clipforge.sqlite")
+    upsert_discovered_clip(
+        clip_id="clip-1",
+        url="https://clips.twitch.tv/clip-1",
+        db_path=config.state_db_path,
+    )
+
+    def fail_process(*args, **kwargs) -> Path:
+        raise AssertionError("Conflicting rerender caption flags should fail in CLI.")
+
+    monkeypatch.setattr("clipforge.pipeline.cli.load_config", lambda: config)
+    monkeypatch.setattr("clipforge.pipeline.cli.process_clip", fail_process)
+
+    exit_code = main(
+        [
+            "clips",
+            "process",
+            "--clip-id",
+            "clip-1",
+            "--rerender",
+            "--generate-captions",
+        ]
+    )
+
+    captured = capsys.readouterr()
+    assert exit_code == 1
+    assert "--rerender reuses existing captions" in captured.err
 
 
 def test_main_rejects_clips_output_without_json_format(monkeypatch, capsys) -> None:

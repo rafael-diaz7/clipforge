@@ -246,6 +246,14 @@ def build_parser() -> argparse.ArgumentParser:
         help="Allow reprocessing a rendered clip when used with --clip-id.",
     )
     clips_process_parser.add_argument(
+        "--rerender",
+        action="store_true",
+        help=(
+            "Rebuild visual/render artifacts for --clip-id while reusing existing "
+            "source video and captions."
+        ),
+    )
+    clips_process_parser.add_argument(
         "--generate-captions",
         action="store_true",
         default=None,
@@ -265,6 +273,20 @@ def build_parser() -> argparse.ArgumentParser:
         "--continue-on-error",
         action="store_true",
         help="Continue processing remaining clips after a clip fails.",
+    )
+    clips_rerender_parser = clips_subparsers.add_parser(
+        "rerender",
+        help="Rebuild visual/render artifacts for one saved clip without transcription.",
+    )
+    clips_rerender_parser.add_argument(
+        "--clip-id",
+        required=True,
+        help="Saved clip ID to rerender.",
+    )
+    clips_rerender_parser.add_argument(
+        "--static-layouts",
+        action="store_true",
+        help="Ignore generated analysis layouts and render static layouts.",
     )
     clips_rerank_parser = clips_subparsers.add_parser(
         "rerank",
@@ -308,6 +330,14 @@ def build_parser() -> argparse.ArgumentParser:
         "--force",
         action="store_true",
         help="Overwrite existing ready-to-post exports.",
+    )
+    clips_review_parser.add_argument(
+        "--rerender",
+        action="store_true",
+        help=(
+            "Regenerate visual/render artifacts while preserving source video and "
+            "reusing existing captions."
+        ),
     )
     clips_review_parser.add_argument(
         "--generate-captions",
@@ -508,6 +538,9 @@ def _handle_clips_command(args: argparse.Namespace) -> int:
     if args.clips_command == "process":
         return _handle_clips_process_command(args)
 
+    if args.clips_command == "rerender":
+        return _handle_clips_rerender_command(args)
+
     if args.clips_command == "rerank":
         return _handle_clips_rerank_command(args)
 
@@ -582,9 +615,12 @@ def _handle_clips_pending_command(args: argparse.Namespace) -> int:
 
 def _handle_clips_process_command(args: argparse.Namespace) -> int:
     config = load_config()
+    _reject_rerender_caption_generation_conflict(args)
     if args.top is not None:
         if args.force:
             raise CLIError("--force can only be used with --clip-id.")
+        if args.rerender:
+            raise CLIError("--rerender can only be used with --clip-id.")
         clips = get_unprocessed_clips(db_path=config.state_db_path, limit=args.top)
         if not clips:
             raise CLIError("No unprocessed clips found.")
@@ -592,13 +628,14 @@ def _handle_clips_process_command(args: argparse.Namespace) -> int:
         clip = get_clip(args.clip_id, db_path=config.state_db_path)
         if clip is None:
             raise CLIError(f"Clip not found: {args.clip_id}.")
-        if clip.status == "rendered" and not args.force:
+        if clip.status == "rendered" and not (args.force or args.rerender):
             raise CLIError(
                 f"Clip is already rendered: {args.clip_id}. "
-                "Re-run with --force to reprocess it."
+                "Re-run with --force to reprocess it or --rerender to rebuild "
+                "visual artifacts while reusing captions."
             )
         if clip.status not in UNPROCESSED_STATUSES and not (
-            clip.status == "rendered" and args.force
+            clip.status == "rendered" and (args.force or args.rerender)
         ):
             raise CLIError(f"Clip is not unprocessed: {args.clip_id}.")
         clips = (clip,)
@@ -610,6 +647,7 @@ def _handle_clips_process_command(args: argparse.Namespace) -> int:
                 args,
                 config=config,
                 include_force=True,
+                include_rerender=True,
             )
             metadata_path = process_clip(clip.url, **process_kwargs)
         except Exception as exc:
@@ -627,6 +665,22 @@ def _handle_clips_process_command(args: argparse.Namespace) -> int:
             print(f"processed: {clip.clip_id}: {metadata_path}")
 
     return 1 if failures else 0
+
+
+def _handle_clips_rerender_command(args: argparse.Namespace) -> int:
+    config = load_config()
+    clip = get_clip(args.clip_id, db_path=config.state_db_path)
+    if clip is None:
+        raise CLIError(f"Clip not found: {args.clip_id}.")
+
+    process_kwargs = {
+        "config": config,
+        "rerender": True,
+        "use_generated_layouts": not args.static_layouts,
+    }
+    metadata_path = process_clip(clip.url, **process_kwargs)
+    print(f"rerendered: {clip.clip_id}: {metadata_path}")
+    return 0
 
 
 def _handle_clips_rerank_command(args: argparse.Namespace) -> int:
@@ -652,6 +706,7 @@ def _handle_clips_reset_command(args: argparse.Namespace) -> int:
 
 
 def _handle_clips_review_command(args: argparse.Namespace) -> int:
+    _reject_rerender_caption_generation_conflict(args)
     started_at, ended_at = _clip_date_filters(
         started_at=args.started_at,
         ended_at=args.ended_at,
@@ -661,6 +716,7 @@ def _handle_clips_review_command(args: argparse.Namespace) -> int:
         streamer=args.streamer,
         count=args.count,
         force=args.force,
+        rerender=args.rerender,
         generate_captions=args.generate_captions,
         force_captions=args.force_captions,
         clip_ids=args.clip_id or (),
@@ -714,6 +770,7 @@ def _process_clip_kwargs(
     *,
     config: object | None = None,
     include_force: bool = False,
+    include_rerender: bool = False,
 ) -> dict[str, object]:
     kwargs: dict[str, object] = {}
     if config is not None:
@@ -724,9 +781,25 @@ def _process_clip_kwargs(
         kwargs["force_captions"] = True
     if include_force and args.force:
         kwargs["force"] = True
+    if include_rerender and getattr(args, "rerender", False):
+        kwargs["rerender"] = True
     if args.static_layouts:
         kwargs["use_generated_layouts"] = False
     return kwargs
+
+
+def _reject_rerender_caption_generation_conflict(args: argparse.Namespace) -> None:
+    if not getattr(args, "rerender", False):
+        return
+    if getattr(args, "generate_captions", None) is True or getattr(
+        args,
+        "force_captions",
+        False,
+    ):
+        raise CLIError(
+            "--rerender reuses existing captions and does not regenerate "
+            "transcriptions. Run once with --generate-captions first."
+        )
 
 
 def _format_table_row(values, widths: list[int]) -> str:

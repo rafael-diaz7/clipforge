@@ -154,6 +154,12 @@ Reprocess a rendered clip after changing layout or caption settings:
 clipforge clips process --clip-id "<clip_id>" --force
 ```
 
+Rebuild visual/render artifacts without regenerating captions:
+
+```powershell
+clipforge clips rerender --clip-id "<clip_id>"
+```
+
 Reset one clip back to the pending/discovered queue:
 
 ```powershell
@@ -259,6 +265,19 @@ clipforge clips process --clip-id "<clip_id>" --force --generate-captions
 ```
 
 `--force` is only supported with `--clip-id`.
+
+To debug facecam, overlay, layout, or render changes without spending
+transcription API calls, use rerender mode:
+
+```powershell
+clipforge clips rerender --clip-id "<clip_id>"
+clipforge clips review --streamer "<channel_login>" --clip-id "<clip_id>" --rerender
+```
+
+Rerender mode reuses the existing source video and caption metadata, then
+regenerates frames, overlay analysis, generated layouts, render candidates, and
+review/export candidates. If captions are missing, it fails before rendering;
+run once with `--generate-captions` first.
 
 ### Reset State
 

@@ -1100,6 +1100,145 @@ def test_process_clip_force_regenerates_analysis_and_render_artifacts(
     ]
 
 
+def test_process_clip_rerender_reuses_source_and_captions_without_transcription(
+    tmp_path: Path,
+    monkeypatch,
+    capsys,
+) -> None:
+    config = _config(tmp_path)
+    source_path = tmp_path / "downloads" / TWITCH_CLIP_SLUG / "ytdlp" / f"{TWITCH_CLIP_SLUG}.mp4"
+    source_path.parent.mkdir(parents=True, exist_ok=True)
+    source_path.write_bytes(b"video")
+    caption_path = save_captions(
+        clip_id=TWITCH_CLIP_SLUG,
+        segments=(CaptionSegment(start_time=0, end_time=1, text="existing"),),
+        config=config,
+    )
+    _write_frame_analysis(config.analysis_dir, clip_id=TWITCH_CLIP_SLUG)
+    _write_overlay_analysis(config.analysis_dir, clip_id=TWITCH_CLIP_SLUG)
+    _write_detected_layout(
+        config.analysis_dir,
+        clip_id=TWITCH_CLIP_SLUG,
+        source_template="facecam_focus",
+        layout_name="detected_streamer_focus",
+    )
+    _write_detected_layout(
+        config.analysis_dir,
+        clip_id=TWITCH_CLIP_SLUG,
+        source_template="hybrid",
+        layout_name="detected_hybrid",
+    )
+    events: list[str] = []
+
+    def fail_download(*args, **kwargs) -> DownloadResult:
+        raise AssertionError("Rerender should reuse the existing source video.")
+
+    def fail_generate_caption_metadata(*args, **kwargs) -> Path:
+        raise AssertionError("Rerender should not call transcription.")
+
+    def fake_sample_frames(source: Path, *, clip_id: str, analysis_dir: Path) -> Path:
+        assert source == source_path
+        events.append("frames")
+        return _write_frame_analysis(analysis_dir, clip_id=clip_id)
+
+    def fake_analyze_overlay(*, clip_id: str, analysis_dir: Path) -> Path:
+        events.append("overlay")
+        return _write_overlay_analysis(analysis_dir, clip_id=clip_id)
+
+    def fake_generate_layouts(
+        *,
+        clip_id: str,
+        analysis_dir: Path,
+        example_layouts_dir: Path,
+    ) -> tuple[Path, ...]:
+        del example_layouts_dir
+        events.append("layouts")
+        return (
+            _write_detected_layout(
+                analysis_dir,
+                clip_id=clip_id,
+                source_template="facecam_focus",
+                layout_name="detected_streamer_focus",
+            ),
+            _write_detected_layout(
+                analysis_dir,
+                clip_id=clip_id,
+                source_template="hybrid",
+                layout_name="detected_hybrid",
+            ),
+        )
+
+    def fake_render(
+        source: Path,
+        output: Path,
+        layout,
+        *,
+        caption_metadata: CaptionMetadata,
+        caption_renderer_backend: str,
+        ass_temp_dir: Path,
+    ) -> Path:
+        assert caption_metadata.clip_id == TWITCH_CLIP_SLUG
+        events.append(f"render:{layout.name}")
+        output.parent.mkdir(parents=True, exist_ok=True)
+        output.write_text("fresh", encoding="utf-8")
+        return output
+
+    monkeypatch.setattr("clipforge.pipeline.workflows.download_twitch_clip", fail_download)
+    monkeypatch.setattr(
+        "clipforge.pipeline.workflows.generate_caption_metadata",
+        fail_generate_caption_metadata,
+    )
+    monkeypatch.setattr("clipforge.pipeline.workflows.sample_frames", fake_sample_frames)
+    monkeypatch.setattr("clipforge.pipeline.workflows.analyze_overlay", fake_analyze_overlay)
+    monkeypatch.setattr(
+        "clipforge.pipeline.workflows.generate_detected_layout_candidates",
+        fake_generate_layouts,
+    )
+    monkeypatch.setattr("clipforge.pipeline.workflows.render_layout", fake_render)
+
+    metadata_path = process_clip(TWITCH_CLIP_URL, rerender=True, config=config)
+
+    metadata = json.loads(metadata_path.read_text(encoding="utf-8"))
+    output = capsys.readouterr().out
+    assert metadata["caption_metadata_path"] == str(caption_path)
+    assert "rerender: regenerating visual artifacts" in output
+    assert f"source: reusing existing {source_path}" in output
+    assert f"captions: reusing existing {caption_path}" in output
+    assert events == [
+        "frames",
+        "overlay",
+        "layouts",
+        "render:center_gameplay",
+        "render:detected_streamer_focus",
+        "render:detected_hybrid",
+    ]
+
+
+def test_process_clip_rerender_fails_when_captions_are_missing(
+    tmp_path: Path,
+    monkeypatch,
+) -> None:
+    config = _config(tmp_path)
+
+    def fail_generate_caption_metadata(*args, **kwargs) -> Path:
+        raise AssertionError("Rerender should not generate missing captions.")
+
+    def fail_download(*args, **kwargs) -> DownloadResult:
+        raise AssertionError("Rerender should fail on missing captions before download.")
+
+    monkeypatch.setattr("clipforge.pipeline.workflows.download_twitch_clip", fail_download)
+    monkeypatch.setattr(
+        "clipforge.pipeline.workflows.generate_caption_metadata",
+        fail_generate_caption_metadata,
+    )
+
+    with pytest.raises(
+        ClipProcessingError,
+        match="Captions are missing and rerender mode does not regenerate transcriptions",
+    ):
+        process_clip(TWITCH_CLIP_URL, rerender=True, config=config)
+
+
 def test_process_clip_surfaces_failing_stage(
     tmp_path: Path,
     monkeypatch,
