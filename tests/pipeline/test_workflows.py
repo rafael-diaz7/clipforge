@@ -19,6 +19,21 @@ from clipforge.pipeline.workflows import (
 from clipforge.storage.state import get_clip, upsert_discovered_clip
 from tests.constants import TWITCH_CLIP_SLUG, TWITCH_CLIP_URL
 
+STATIC_LAYOUT_NAMES = [
+    "center_gameplay",
+    "fullscreen_downscaled_blur_bg",
+    "facecam_focus",
+    "hybrid",
+    "hybrid_full_game_bottom",
+]
+GENERATED_LAYOUT_CANDIDATE_NAMES = [
+    "center_gameplay",
+    "fullscreen_downscaled_blur_bg",
+    "detected_streamer_focus",
+    "detected_hybrid",
+    "hybrid_full_game_bottom",
+]
+
 
 def _config(tmp_path: Path) -> ClipforgeConfig:
     return ClipforgeConfig(
@@ -145,11 +160,13 @@ def test_render_all_candidates_renders_default_layouts(
         config=config,
     )
 
-    assert rendered_layouts == ["center_gameplay", "facecam_focus", "hybrid"]
+    assert rendered_layouts == STATIC_LAYOUT_NAMES
     assert output_paths == (
         tmp_path / "renders" / "clip-123_center_gameplay.mp4",
+        tmp_path / "renders" / "clip-123_fullscreen_downscaled_blur_bg.mp4",
         tmp_path / "renders" / "clip-123_facecam_focus.mp4",
         tmp_path / "renders" / "clip-123_hybrid.mp4",
+        tmp_path / "renders" / "clip-123_hybrid_full_game_bottom.mp4",
     )
 
 
@@ -184,15 +201,13 @@ def test_render_all_candidates_prefers_generated_analysis_layouts(
         config=config,
     )
 
-    assert rendered_layouts == [
-        "center_gameplay",
-        "detected_streamer_focus",
-        "detected_hybrid",
-    ]
+    assert rendered_layouts == GENERATED_LAYOUT_CANDIDATE_NAMES
     assert output_paths == (
         tmp_path / "renders" / "clip-123_center_gameplay.mp4",
+        tmp_path / "renders" / "clip-123_fullscreen_downscaled_blur_bg.mp4",
         tmp_path / "renders" / "clip-123_detected_streamer_focus.mp4",
         tmp_path / "renders" / "clip-123_detected_hybrid.mp4",
+        tmp_path / "renders" / "clip-123_hybrid_full_game_bottom.mp4",
     )
 
 
@@ -221,11 +236,19 @@ def test_render_all_candidates_falls_back_when_generated_layout_is_missing(
         config=config,
     )
 
-    assert rendered_layouts == ["center_gameplay", "detected_streamer_focus", "hybrid"]
+    assert rendered_layouts == [
+        "center_gameplay",
+        "fullscreen_downscaled_blur_bg",
+        "detected_streamer_focus",
+        "hybrid",
+        "hybrid_full_game_bottom",
+    ]
     assert output_paths == (
         tmp_path / "renders" / "clip-123_center_gameplay.mp4",
+        tmp_path / "renders" / "clip-123_fullscreen_downscaled_blur_bg.mp4",
         tmp_path / "renders" / "clip-123_detected_streamer_focus.mp4",
         tmp_path / "renders" / "clip-123_hybrid.mp4",
+        tmp_path / "renders" / "clip-123_hybrid_full_game_bottom.mp4",
     )
 
 
@@ -261,11 +284,13 @@ def test_render_all_candidates_static_layouts_opt_out(
         config=config,
     )
 
-    assert rendered_layouts == ["center_gameplay", "facecam_focus", "hybrid"]
+    assert rendered_layouts == STATIC_LAYOUT_NAMES
     assert output_paths == (
         tmp_path / "renders" / "clip-123_center_gameplay.mp4",
+        tmp_path / "renders" / "clip-123_fullscreen_downscaled_blur_bg.mp4",
         tmp_path / "renders" / "clip-123_facecam_focus.mp4",
         tmp_path / "renders" / "clip-123_hybrid.mp4",
+        tmp_path / "renders" / "clip-123_hybrid_full_game_bottom.mp4",
     )
 
 
@@ -321,11 +346,7 @@ def test_process_clip_writes_metadata(
     assert metadata["download_media_url"] == "https://cdn.example.test/source.mp4"
     assert "clipr_download_url" not in metadata
     assert metadata["source_path"] == str(source_path)
-    assert [output["layout"] for output in metadata["outputs"]] == [
-        "center_gameplay",
-        "facecam_focus",
-        "hybrid",
-    ]
+    assert [output["layout"] for output in metadata["outputs"]] == STATIC_LAYOUT_NAMES
     assert [output["path"] for output in metadata["outputs"]] == [
         str(
             tmp_path
@@ -339,15 +360,25 @@ def test_process_clip_writes_metadata(
             / "renders"
             / TWITCH_CLIP_SLUG
             / "clipr"
+            / "fullscreen_downscaled_blur_bg.mp4"
+        ),
+        str(
+            tmp_path
+            / "renders"
+            / TWITCH_CLIP_SLUG
+            / "clipr"
             / "facecam_focus.mp4"
         ),
         str(tmp_path / "renders" / TWITCH_CLIP_SLUG / "clipr" / "hybrid.mp4"),
+        str(
+            tmp_path
+            / "renders"
+            / TWITCH_CLIP_SLUG
+            / "clipr"
+            / "hybrid_full_game_bottom.mp4"
+        ),
     ]
-    assert [layout["name"] for layout in metadata["layouts"]] == [
-        "center_gameplay",
-        "facecam_focus",
-        "hybrid",
-    ]
+    assert [layout["name"] for layout in metadata["layouts"]] == STATIC_LAYOUT_NAMES
     assert "caption_metadata_path" not in metadata
     assert metadata["target_resolution"] == {"width": 1080, "height": 1920}
     assert metadata["created_at"].endswith("+00:00")
@@ -415,11 +446,9 @@ def test_process_clip_uses_generated_layouts_when_present(
     metadata_path = process_clip(TWITCH_CLIP_URL, config=config)
 
     metadata = json.loads(metadata_path.read_text(encoding="utf-8"))
-    assert [output["layout"] for output in metadata["outputs"]] == [
-        "center_gameplay",
-        "detected_streamer_focus",
-        "detected_hybrid",
-    ]
+    assert [output["layout"] for output in metadata["outputs"]] == (
+        GENERATED_LAYOUT_CANDIDATE_NAMES
+    )
     assert [output["path"] for output in metadata["outputs"]] == [
         str(
             tmp_path
@@ -427,6 +456,13 @@ def test_process_clip_uses_generated_layouts_when_present(
             / TWITCH_CLIP_SLUG
             / "clipr"
             / "center_gameplay.mp4"
+        ),
+        str(
+            tmp_path
+            / "renders"
+            / TWITCH_CLIP_SLUG
+            / "clipr"
+            / "fullscreen_downscaled_blur_bg.mp4"
         ),
         str(
             tmp_path
@@ -442,12 +478,17 @@ def test_process_clip_uses_generated_layouts_when_present(
             / "clipr"
             / "detected_hybrid.mp4"
         ),
+        str(
+            tmp_path
+            / "renders"
+            / TWITCH_CLIP_SLUG
+            / "clipr"
+            / "hybrid_full_game_bottom.mp4"
+        ),
     ]
-    assert [layout["name"] for layout in metadata["layouts"]] == [
-        "center_gameplay",
-        "detected_streamer_focus",
-        "detected_hybrid",
-    ]
+    assert [layout["name"] for layout in metadata["layouts"]] == (
+        GENERATED_LAYOUT_CANDIDATE_NAMES
+    )
 
 
 def test_process_clip_can_generate_captions_before_rendering(
@@ -528,8 +569,10 @@ def test_process_clip_can_generate_captions_before_rendering(
     assert events[:2] == ["download", "captions"]
     assert events[2:] == [
         "render:center_gameplay",
+        "render:fullscreen_downscaled_blur_bg",
         "render:facecam_focus",
         "render:hybrid",
+        "render:hybrid_full_game_bottom",
     ]
 
 
@@ -604,8 +647,10 @@ def test_process_clip_reuses_existing_caption_metadata(
     assert events == [
         "download",
         "render:center_gameplay",
+        "render:fullscreen_downscaled_blur_bg",
         "render:facecam_focus",
         "render:hybrid",
+        "render:hybrid_full_game_bottom",
     ]
     assert f"captions: reusing existing {caption_path}" in capsys.readouterr().out
 
@@ -750,6 +795,14 @@ def test_process_clip_marks_existing_state_as_rendered(
             / "example"
             / TWITCH_CLIP_SLUG
             / "clipr"
+            / "fullscreen_downscaled_blur_bg.mp4"
+        ),
+        str(
+            tmp_path
+            / "renders"
+            / "example"
+            / TWITCH_CLIP_SLUG
+            / "clipr"
             / "facecam_focus.mp4"
         ),
         str(
@@ -759,6 +812,14 @@ def test_process_clip_marks_existing_state_as_rendered(
             / TWITCH_CLIP_SLUG
             / "clipr"
             / "hybrid.mp4"
+        ),
+        str(
+            tmp_path
+            / "renders"
+            / "example"
+            / TWITCH_CLIP_SLUG
+            / "clipr"
+            / "hybrid_full_game_bottom.mp4"
         ),
     ]
 
@@ -807,7 +868,7 @@ def test_process_clip_applies_streamer_watermark_from_env(
 
     process_clip(TWITCH_CLIP_URL, use_generated_layouts=False, config=config)
 
-    assert len(watermarks) == 3
+    assert len(watermarks) == len(STATIC_LAYOUT_NAMES)
     assert all(watermark.path == watermark_path for watermark in watermarks)
     assert all(watermark.native_width == 300 for watermark in watermarks)
     assert all(watermark.native_height == 80 for watermark in watermarks)
@@ -843,7 +904,7 @@ def test_process_clip_keeps_render_calls_unchanged_without_watermark_env(
 
     process_clip(TWITCH_CLIP_URL, use_generated_layouts=False, config=config)
 
-    assert events == ["center_gameplay", "facecam_focus", "hybrid"]
+    assert events == STATIC_LAYOUT_NAMES
 
 
 def test_process_clip_generates_analysis_artifacts_and_renders_outputs(
@@ -930,8 +991,10 @@ def test_process_clip_generates_analysis_artifacts_and_renders_outputs(
         "overlay",
         "layouts",
         "render:center_gameplay",
+        "render:fullscreen_downscaled_blur_bg",
         "render:detected_streamer_focus",
         "render:detected_hybrid",
+        "render:hybrid_full_game_bottom",
     ]
     assert (config.analysis_dir / TWITCH_CLIP_SLUG / "frames.json").is_file()
     assert (config.analysis_dir / TWITCH_CLIP_SLUG / "overlay.json").is_file()
@@ -941,11 +1004,9 @@ def test_process_clip_generates_analysis_artifacts_and_renders_outputs(
         / "layouts"
         / "detected_streamer_focus.json"
     ).is_file()
-    assert [output["layout"] for output in metadata["outputs"]] == [
-        "center_gameplay",
-        "detected_streamer_focus",
-        "detected_hybrid",
-    ]
+    assert [output["layout"] for output in metadata["outputs"]] == (
+        GENERATED_LAYOUT_CANDIDATE_NAMES
+    )
     assert all(Path(output["path"]).is_file() for output in metadata["outputs"])
 
 
@@ -971,7 +1032,7 @@ def test_process_clip_reuses_existing_analysis_and_render_artifacts_without_forc
         source_template="hybrid",
         layout_name="detected_hybrid",
     )
-    for name in ("center_gameplay", "detected_streamer_focus", "detected_hybrid"):
+    for name in GENERATED_LAYOUT_CANDIDATE_NAMES:
         render_path = config.renders_dir / TWITCH_CLIP_SLUG / "ytdlp" / f"{name}.mp4"
         render_path.parent.mkdir(parents=True, exist_ok=True)
         render_path.write_text("existing", encoding="utf-8")
@@ -1009,6 +1070,8 @@ def test_process_clip_reuses_existing_analysis_and_render_artifacts_without_forc
 
     metadata = json.loads(metadata_path.read_text(encoding="utf-8"))
     assert [Path(output["path"]).read_text(encoding="utf-8") for output in metadata["outputs"]] == [
+        "existing",
+        "existing",
         "existing",
         "existing",
         "existing",
@@ -1095,8 +1158,10 @@ def test_process_clip_force_regenerates_analysis_and_render_artifacts(
         "overlay",
         "layouts",
         "render:center_gameplay",
+        "render:fullscreen_downscaled_blur_bg",
         "render:detected_streamer_focus",
         "render:detected_hybrid",
+        "render:hybrid_full_game_bottom",
     ]
 
 
@@ -1209,8 +1274,10 @@ def test_process_clip_rerender_reuses_source_and_captions_without_transcription(
         "overlay",
         "layouts",
         "render:center_gameplay",
+        "render:fullscreen_downscaled_blur_bg",
         "render:detected_streamer_focus",
         "render:detected_hybrid",
+        "render:hybrid_full_game_bottom",
     ]
 
 

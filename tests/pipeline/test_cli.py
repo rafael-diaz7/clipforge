@@ -1452,8 +1452,10 @@ def test_main_reprocesses_rendered_clip_reuses_existing_captions_by_default(
     assert events == [
         "download",
         "render:center_gameplay",
+        "render:fullscreen_downscaled_blur_bg",
         "render:facecam_focus",
         "render:hybrid",
+        "render:hybrid_full_game_bottom",
     ]
 
 

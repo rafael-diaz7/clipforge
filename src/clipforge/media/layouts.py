@@ -21,7 +21,13 @@ class LayoutError(RuntimeError):
     """Raised when a layout file is missing, malformed, or invalid."""
 
 
-DEFAULT_LAYOUT_NAMES = ("center_gameplay", "facecam_focus", "hybrid")
+DEFAULT_LAYOUT_NAMES = (
+    "center_gameplay",
+    "fullscreen_downscaled_blur_bg",
+    "facecam_focus",
+    "hybrid",
+    "hybrid_full_game_bottom",
+)
 GENERATED_LAYOUT_NAMES = ("detected_streamer_focus", "detected_hybrid")
 DYNAMIC_LAYOUT_CONFIDENCE_THRESHOLD = 0.58
 SUPPORTED_REGION_EFFECTS = frozenset({"blur"})

@@ -116,7 +116,7 @@ def build_parser() -> argparse.ArgumentParser:
 
     render_all_parser = subparsers.add_parser(
         "render-all",
-        help="Render the three MVP layout candidates from a local source clip.",
+        help="Render the default layout candidates from a local source clip.",
     )
     render_all_parser.add_argument(
         "--source",

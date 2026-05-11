@@ -1,0 +1,47 @@
+{
+  "name": "fullscreen_downscaled_blur_bg",
+  "description": "Full source frame downscaled over a blurred background fill.",
+  "output": {
+    "width": 1080,
+    "height": 1920
+  },
+  "caption_region": {
+    "x": 0.0,
+    "y": 0.7,
+    "width": 1.0,
+    "height": 0.14
+  },
+  "regions": [
+    {
+      "name": "background",
+      "source_region": {
+        "x": 0.0,
+        "y": 0.0,
+        "width": 1.0,
+        "height": 1.0
+      },
+      "output_region": {
+        "x": 0.0,
+        "y": 0.0,
+        "width": 1.0,
+        "height": 1.0
+      },
+      "effect": "blur"
+    },
+    {
+      "name": "gameplay",
+      "source_region": {
+        "x": 0.0,
+        "y": 0.0,
+        "width": 1.0,
+        "height": 1.0
+      },
+      "output_region": {
+        "x": 0.0,
+        "y": 0.341796875,
+        "width": 1.0,
+        "height": 0.31640625
+      }
+    }
+  ]
+}

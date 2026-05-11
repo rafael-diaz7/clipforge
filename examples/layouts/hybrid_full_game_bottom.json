@@ -1,0 +1,46 @@
+{
+  "name": "hybrid_full_game_bottom",
+  "description": "Hybrid layout with a streamer-focused top section and full-frame gameplay on the bottom.",
+  "output": {
+    "width": 1080,
+    "height": 1920
+  },
+  "caption_region": {
+    "x": 0.0,
+    "y": 0.58,
+    "width": 1.0,
+    "height": 0.103594
+  },
+  "regions": [
+    {
+      "name": "gameplay",
+      "source_region": {
+        "x": 0.0,
+        "y": 0.0,
+        "width": 1.0,
+        "height": 1.0
+      },
+      "output_region": {
+        "x": 0.0,
+        "y": 0.68359375,
+        "width": 1.0,
+        "height": 0.31640625
+      }
+    },
+    {
+      "name": "facecam",
+      "source_region": {
+        "x": 0.0,
+        "y": 0.0,
+        "width": 0.375,
+        "height": 0.375
+      },
+      "output_region": {
+        "x": 0.0,
+        "y": 0.0,
+        "width": 1.0,
+        "height": 0.68359375
+      }
+    }
+  ]
+}

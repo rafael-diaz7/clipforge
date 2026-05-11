@@ -7,6 +7,7 @@ import pytest
 
 from clipforge.media.layouts import (
     DEFAULT_LAYOUT_NAMES,
+    Layout,
     LayoutError,
     NormalizedRect,
     generate_detected_layout_candidates,
@@ -15,7 +16,7 @@ from clipforge.media.layouts import (
     load_layout,
     parse_layout,
 )
-from clipforge.media.render import build_filter_complex
+from clipforge.media.render import build_filter_complex, rect_to_pixels
 
 
 def test_load_layout_returns_validated_layout(tmp_path: Path) -> None:
@@ -62,21 +63,113 @@ def test_load_layout_returns_validated_layout(tmp_path: Path) -> None:
     )
 
 
-def test_load_example_layouts_loads_three_mvp_templates() -> None:
+def test_load_example_layouts_loads_default_templates() -> None:
     layouts = load_example_layouts()
 
     assert [layout.name for layout in layouts] == list(DEFAULT_LAYOUT_NAMES)
     assert all(layout.output.width == 1080 for layout in layouts)
     assert all(layout.output.height == 1920 for layout in layouts)
-    assert len(layouts[2].regions) == 2
+    assert len(layouts[3].regions) == 2
     assert layouts[0].caption_region is None
-    assert layouts[1].caption_region is None
-    assert layouts[2].caption_region == NormalizedRect(
+    assert layouts[1].caption_region == NormalizedRect(
+        x=0.0,
+        y=0.7,
+        width=1.0,
+        height=0.14,
+    )
+    assert layouts[2].caption_region is None
+    assert layouts[3].caption_region == NormalizedRect(
         x=0.0,
         y=0.34,
         width=1.0,
         height=0.1,
     )
+    assert layouts[4].caption_region == NormalizedRect(
+        x=0.0,
+        y=0.58,
+        width=1.0,
+        height=0.103594,
+    )
+
+
+def test_fullscreen_downscaled_blur_bg_preserves_full_frame_over_blur() -> None:
+    layout = load_example_layout("fullscreen_downscaled_blur_bg")
+    background = layout.regions[0]
+    foreground = layout.regions[1]
+
+    assert background.name == "background"
+    assert background.source_region == NormalizedRect(
+        x=0.0,
+        y=0.0,
+        width=1.0,
+        height=1.0,
+    )
+    assert background.output_region == NormalizedRect(
+        x=0.0,
+        y=0.0,
+        width=1.0,
+        height=1.0,
+    )
+    assert background.effect == "blur"
+    assert foreground.name == "gameplay"
+    assert foreground.source_region == background.source_region
+    assert foreground.effect is None
+    assert foreground.output_region.x == 0.0
+    assert foreground.output_region.width == 1.0
+    assert _output_aspect(layout, foreground.output_region) == pytest.approx(16 / 9)
+    assert foreground.output_region.y == pytest.approx(
+        (1.0 - foreground.output_region.height) / 2
+    )
+    assert layout.caption_region is not None
+    assert (
+        layout.caption_region.y
+        > foreground.output_region.y + foreground.output_region.height
+    )
+
+    filter_complex = build_filter_complex(layout)
+    assert "[0:v]split=2[src0][src1]" in filter_complex
+    assert "boxblur=20:1[region0]" in filter_complex
+    assert "overlay=0:656:format=auto:shortest=1[out]" in filter_complex
+
+
+def test_hybrid_full_game_bottom_places_full_frame_gameplay_on_bottom() -> None:
+    layout = load_example_layout("hybrid_full_game_bottom")
+    gameplay = layout.regions[0]
+    facecam = layout.regions[1]
+
+    assert gameplay.name == "gameplay"
+    assert gameplay.source_region == NormalizedRect(
+        x=0.0,
+        y=0.0,
+        width=1.0,
+        height=1.0,
+    )
+    assert gameplay.output_region.x == 0.0
+    assert gameplay.output_region.width == 1.0
+    assert gameplay.output_region.y + gameplay.output_region.height == pytest.approx(
+        1.0
+    )
+    assert _output_aspect(layout, gameplay.output_region) == pytest.approx(16 / 9)
+    assert facecam.name == "facecam"
+    assert facecam.output_region.y == 0.0
+    assert facecam.output_region.height == pytest.approx(gameplay.output_region.y)
+    assert layout.caption_region == NormalizedRect(
+        x=0.0,
+        y=0.58,
+        width=1.0,
+        height=0.103594,
+    )
+
+    gameplay_rect = rect_to_pixels(gameplay.output_region, layout.output)
+    filter_complex = build_filter_complex(layout)
+    assert (
+        f"overlay=0:{gameplay_rect.y}:format=auto:shortest=1[composed0]"
+        in filter_complex
+    )
+
+
+def _output_aspect(layout: Layout, rect: NormalizedRect) -> float:
+    return (rect.width * layout.output.width) / (rect.height * layout.output.height)
 
 
 def test_load_layout_reports_missing_file(tmp_path: Path) -> None:

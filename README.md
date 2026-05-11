@@ -315,7 +315,8 @@ manual or advanced use:
 | `clipforge captions --source "<path>" --clip-id "<clip_id>"` | Generate caption metadata for a local source clip. Add `--output "<path>"` to choose the JSON path. |
 
 Default candidate layouts live in `examples/layouts/` and currently include
-`center_gameplay`, `facecam_focus`, and `hybrid`.
+`center_gameplay`, `fullscreen_downscaled_blur_bg`, `facecam_focus`, `hybrid`,
+and `hybrid_full_game_bottom`.
 
 ## Caption Workflow
 

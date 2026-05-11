@@ -116,7 +116,7 @@ def render_all_candidates(
     use_generated_layouts: bool = True,
     config: ClipforgeConfig | None = None,
 ) -> tuple[Path, ...]:
-    """Render the default MVP candidate layouts for one source clip."""
+    """Render the default candidate layouts for one source clip."""
 
     config = config or load_config()
     layouts = _candidate_layouts(
