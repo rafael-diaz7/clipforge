@@ -10,13 +10,14 @@ from clipforge.core.config import ClipforgeConfig, EXAMPLE_LAYOUTS_DIR
 from clipforge.media.download import DownloadResult
 from clipforge.media.captions import CaptionMetadata, CaptionSegment, save_captions
 from clipforge.media.layouts import load_example_layout
-from clipforge.media.render import Watermark
+from clipforge.media.render import CaptionStyle, Watermark
 from clipforge.media.render_settings import FFmpegRenderSettings
 from clipforge.pipeline.workflows import (
     ClipProcessingError,
     process_clip,
     render_all_candidates,
     render_candidate,
+    render_selected_layout_from_metadata,
 )
 from clipforge.storage.state import get_clip, upsert_discovered_clip
 from tests.constants import TWITCH_CLIP_SLUG, TWITCH_CLIP_URL
@@ -171,6 +172,173 @@ def test_render_candidate_passes_review_ffmpeg_settings_when_configured(
         preset="veryfast",
         crf=23,
     )
+
+
+def test_render_candidate_uses_review_output_width_for_preview_layout(
+    tmp_path: Path,
+    monkeypatch,
+) -> None:
+    calls: list[dict[str, object]] = []
+    config = replace(_config(tmp_path), review_output_width=720)
+
+    def fake_render(source_path: Path, output_path: Path, layout, **kwargs) -> Path:
+        calls.append(
+            {
+                "output_path": output_path,
+                "width": layout.output.width,
+                "height": layout.output.height,
+            }
+        )
+        return output_path
+
+    monkeypatch.setattr("clipforge.pipeline.workflows.render_layout", fake_render)
+
+    output_path = render_candidate(
+        tmp_path / "source.mp4",
+        layout_ref="center_gameplay",
+        clip_id="clip-123",
+        config=config,
+    )
+
+    assert output_path == tmp_path / "renders" / "clip-123_center_gameplay_720x1280.mp4"
+    assert calls == [
+        {
+            "output_path": output_path,
+            "width": 720,
+            "height": 1280,
+        }
+    ]
+
+
+def test_render_candidate_scales_caption_style_for_review_preview(
+    tmp_path: Path,
+    monkeypatch,
+) -> None:
+    calls: list[CaptionStyle] = []
+    config = replace(_config(tmp_path), review_output_width=720)
+    caption_path = save_captions(
+        clip_id="clip-123",
+        segments=(CaptionSegment(start_time=0, end_time=1, text="hello"),),
+        config=config,
+    )
+
+    def fake_render(
+        source_path: Path,
+        output_path: Path,
+        layout,
+        *,
+        caption_metadata: CaptionMetadata,
+        caption_style: CaptionStyle,
+        caption_renderer_backend: str,
+        ass_temp_dir: Path,
+    ) -> Path:
+        del source_path, layout, caption_metadata, caption_renderer_backend, ass_temp_dir
+        calls.append(caption_style)
+        return output_path
+
+    monkeypatch.setattr("clipforge.pipeline.workflows.render_layout", fake_render)
+
+    render_candidate(
+        tmp_path / "source.mp4",
+        layout_ref="center_gameplay",
+        clip_id="clip-123",
+        caption_metadata_path=caption_path,
+        config=config,
+    )
+
+    assert calls[0].font_size == 37
+    assert calls[0].safe_margin_x == 64
+    assert calls[0].safe_margin_bottom == 147
+    assert calls[0].box_border_width == 13
+
+
+def test_render_selected_layout_from_metadata_uses_final_settings_and_size(
+    tmp_path: Path,
+    monkeypatch,
+) -> None:
+    calls: list[dict[str, object]] = []
+    config = replace(
+        _config(tmp_path),
+        review_output_width=720,
+        review_fast_render=True,
+        review_ffmpeg_render_settings=FFmpegRenderSettings(preset="veryfast", crf=28),
+        ffmpeg_render_settings=FFmpegRenderSettings(preset="slow", crf=18),
+    )
+    source_path = tmp_path / "downloads" / "clip-123.mp4"
+    source_path.parent.mkdir(parents=True, exist_ok=True)
+    source_path.write_bytes(b"source")
+    layout = load_example_layout("center_gameplay")
+    metadata_path = tmp_path / "metadata" / "clip-123.json"
+    metadata_path.parent.mkdir(parents=True, exist_ok=True)
+    metadata_path.write_text(
+        json.dumps(
+            {
+                "source_path": str(source_path),
+                "layouts": [
+                    {
+                        "name": layout.name,
+                        "description": layout.description,
+                        "output": {
+                            "width": layout.output.width,
+                            "height": layout.output.height,
+                        },
+                        "regions": [
+                            {
+                                "name": region.name,
+                                "source_region": {
+                                    "x": region.source_region.x,
+                                    "y": region.source_region.y,
+                                    "width": region.source_region.width,
+                                    "height": region.source_region.height,
+                                },
+                                "output_region": {
+                                    "x": region.output_region.x,
+                                    "y": region.output_region.y,
+                                    "width": region.output_region.width,
+                                    "height": region.output_region.height,
+                                },
+                            }
+                            for region in layout.regions
+                        ],
+                    }
+                ],
+            }
+        ),
+        encoding="utf-8",
+    )
+
+    def fake_render(source_path: Path, output_path: Path, layout, **kwargs) -> Path:
+        calls.append(
+            {
+                "source_path": source_path,
+                "output_path": output_path,
+                "width": layout.output.width,
+                "height": layout.output.height,
+                "render_settings": kwargs["render_settings"],
+            }
+        )
+        return output_path
+
+    monkeypatch.setattr("clipforge.pipeline.workflows.render_layout", fake_render)
+
+    output_path = tmp_path / "exports" / "ready" / "clip-123.mp4"
+    render_selected_layout_from_metadata(
+        metadata_path,
+        selected_layout="center_gameplay",
+        output_path=output_path,
+        channel=None,
+        config=config,
+    )
+
+    assert calls == [
+        {
+            "source_path": source_path,
+            "output_path": output_path,
+            "width": 1080,
+            "height": 1920,
+            "render_settings": FFmpegRenderSettings(preset="slow", crf=18),
+        }
+    ]
 
 
 def test_render_all_candidates_renders_default_layouts(
@@ -436,6 +604,52 @@ def test_process_clip_writes_metadata(
     output = capsys.readouterr().out
     assert "download_url: https://cdn.example.test/source.mp4" in output
     assert "metadata:" in output
+
+
+def test_process_clip_records_lower_resolution_review_preview_metadata(
+    tmp_path: Path,
+    monkeypatch,
+) -> None:
+    config = replace(_config(tmp_path), review_output_width=720)
+    source_path = (
+        tmp_path
+        / "downloads"
+        / TWITCH_CLIP_SLUG
+        / "clipr"
+        / f"{TWITCH_CLIP_SLUG}.mp4"
+    )
+    calls: list[tuple[str, int, int]] = []
+
+    monkeypatch.setattr(
+        "clipforge.pipeline.workflows.download_twitch_clip",
+        lambda *args, **kwargs: DownloadResult(source_path=source_path, backend="clipr"),
+    )
+
+    def fake_render(source: Path, output: Path, layout) -> Path:
+        del source
+        calls.append((layout.name, layout.output.width, layout.output.height))
+        output.parent.mkdir(parents=True, exist_ok=True)
+        output.write_text(layout.name, encoding="utf-8")
+        return output
+
+    monkeypatch.setattr("clipforge.pipeline.workflows.render_layout", fake_render)
+
+    metadata_path = process_clip(
+        TWITCH_CLIP_URL,
+        use_generated_layouts=False,
+        config=config,
+    )
+
+    metadata = json.loads(metadata_path.read_text(encoding="utf-8"))
+    assert calls[0] == ("center_gameplay", 720, 1280)
+    assert metadata["outputs"][0]["resolution"] == {"width": 720, "height": 1280}
+    assert metadata["outputs"][0]["render_profile"] == "review"
+    assert Path(metadata["outputs"][0]["path"]).parts[-3:] == (
+        "clipr",
+        "preview_720x1280",
+        "center_gameplay.mp4",
+    )
+    assert metadata["layouts"][0]["output"] == {"width": 1080, "height": 1920}
 
 
 def test_process_clip_uses_generated_layouts_when_present(

@@ -291,6 +291,28 @@ def test_config_defaults_to_vertical_short_resolution() -> None:
     assert config.target_height == 1920
     assert config.target_resolution == (1080, 1920)
     assert config.output_format == "mp4"
+    assert config.review_output_width is None
+    assert config.review_resolution_for(width=1080, height=1920) == (1080, 1920)
+
+
+def test_load_config_uses_env_for_review_output_width(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    monkeypatch.setenv("CLIPFORGE_REVIEW_OUTPUT_WIDTH", "720")
+
+    config = load_config(load_dotenv_file=False)
+
+    assert config.review_output_width == 720
+    assert config.review_resolution_for(width=1080, height=1920) == (720, 1280)
+
+
+def test_load_config_rejects_invalid_review_output_width(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    monkeypatch.setenv("CLIPFORGE_REVIEW_OUTPUT_WIDTH", "0")
+
+    with pytest.raises(ConfigError, match="CLIPFORGE_REVIEW_OUTPUT_WIDTH"):
+        load_config(load_dotenv_file=False)
 
 
 def test_config_clipr_api_key_is_optional() -> None:

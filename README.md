@@ -102,6 +102,7 @@ Clipforge loads `.env` from the project root.
 | `CLIPFORGE_REVIEW_FFMPEG_PRESET` | No | none | Optional review-only encoder preset, for example `p4` for NVENC. |
 | `CLIPFORGE_REVIEW_FFMPEG_CRF` | No | none | Optional review-only x264 CRF, or NVENC `-cq` fallback when no review quality is set. |
 | `CLIPFORGE_REVIEW_FFMPEG_QUALITY` | No | none | Optional review-only NVENC `-cq` quality value. |
+| `CLIPFORGE_REVIEW_OUTPUT_WIDTH` | No | none | Optional review/candidate preview width. Blank keeps normal output dimensions; `720` produces `720x1280` previews for the default `1080x1920` vertical output. |
 | `CLIPFORGE_SUBJECT_DETECTOR` | No | `yolo` | Primary subject detector. Supported values: `yolo`, `haar`, `none`. |
 | `CLIPFORGE_YOLO_MODEL` | No | `yolo11n.pt` | Ultralytics YOLO model for person detection, for example `yolo11n.pt` or `yolo11s.pt`. |
 | `CLIPFORGE_YOLO_DEVICE` | No | `auto` | YOLO inference device. Use `cuda` for NVIDIA GPU, `cpu`, or `auto`. |
@@ -238,10 +239,28 @@ clipforge clips review --streamer "<channel_login>" --count 3
 
 This discovers recent clips, updates SQLite state, selects the top-ranked
 eligible clips from the DB, processes them through the normal pipeline, prompts
-for one render per clip, and copies only selected renders to:
+for one render per clip, and saves only selected renders to:
 
 ```text
 data/exports/ready/<streamer>/<clip_id>/<layout_name>.mp4
+```
+
+Review candidates can be rendered at a lower resolution to make choosing clips
+faster. Set `CLIPFORGE_REVIEW_OUTPUT_WIDTH` to a width such as `720`; Clipforge
+preserves the normal aspect ratio, so the default `1080x1920` output previews at
+`720x1280`. When a candidate is selected, Clipforge reuses it only if the
+preview resolution and FFmpeg settings already match the final profile;
+otherwise it renders that selected layout once more at full resolution with the
+normal final settings before writing `exports/ready`.
+
+Example fast review settings:
+
+```env
+CLIPFORGE_REVIEW_FAST_RENDER=true
+CLIPFORGE_REVIEW_FFMPEG_ENCODER=h264_nvenc
+CLIPFORGE_REVIEW_FFMPEG_PRESET=p1
+CLIPFORGE_REVIEW_FFMPEG_QUALITY=26
+CLIPFORGE_REVIEW_OUTPUT_WIDTH=720
 ```
 
 Already exported or posted clips are not selected again. Existing ready exports

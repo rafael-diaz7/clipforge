@@ -7,7 +7,7 @@ import shutil
 from dataclasses import dataclass
 from enum import Enum
 from pathlib import Path
-from typing import Callable, Sequence
+from typing import Any, Callable, Sequence
 
 from clipforge.core.config import ClipforgeConfig, load_config
 from clipforge.integrations.twitch import (
@@ -15,7 +15,8 @@ from clipforge.integrations.twitch import (
     twitch_channel_login_from_input,
 )
 from clipforge.pipeline.state_sync import record_discovered_clips
-from clipforge.pipeline.workflows import process_clip
+from clipforge.media.render_settings import FFmpegRenderSettings
+from clipforge.pipeline.workflows import process_clip, render_selected_layout_from_metadata
 from clipforge.storage.state import (
     REVIEW_EXCLUDED_STATUSES,
     ClipState,
@@ -41,6 +42,16 @@ class ClipReviewError(RuntimeError):
 class RenderOption:
     layout: str
     path: Path
+    resolution: tuple[int, int] | None = None
+    render_settings: FFmpegRenderSettings | None = None
+
+
+@dataclass(frozen=True)
+class SelectedExport:
+    export_path: Path
+    final_render_path: Path
+    final_resolution: tuple[int, int] | None
+    reused_preview: bool
 
 
 class ReviewAction(Enum):
@@ -143,9 +154,10 @@ def review_streamer_clips(
             )
             continue
 
-        export_path = _copy_selected_render(
+        selected_export = _export_selected_render(
             clip=clip,
             streamer_login=streamer_login,
+            metadata_path=metadata_path,
             selected=choice,
             force=force,
             config=config,
@@ -154,11 +166,16 @@ def review_streamer_clips(
             clip.clip_id,
             selected_render_layout=choice.layout,
             selected_render_path=choice.path,
-            export_path=export_path,
+            export_path=selected_export.export_path,
             db_path=config.state_db_path,
         )
-        exported_paths.append(export_path)
-        output_fn(f"exported: {export_path}")
+        _write_selected_export_metadata(
+            metadata_path,
+            selected=choice,
+            selected_export=selected_export,
+        )
+        exported_paths.append(selected_export.export_path)
+        output_fn(f"exported: {selected_export.export_path}")
 
     return tuple(exported_paths)
 
@@ -245,7 +262,14 @@ def _render_options_from_metadata(metadata_path: Path) -> tuple[RenderOption, ..
         layout = output.get("layout")
         path = output.get("path")
         if isinstance(layout, str) and isinstance(path, str):
-            options.append(RenderOption(layout=layout, path=Path(path)))
+            options.append(
+                RenderOption(
+                    layout=layout,
+                    path=Path(path),
+                    resolution=_output_resolution(output.get("resolution")),
+                    render_settings=_output_render_settings(output),
+                )
+            )
 
     if not options:
         raise ClipReviewError(
@@ -287,14 +311,15 @@ def _prompt_for_render_selection(
         output_fn(f"Invalid selection. Enter 1-{len(options)}, s to skip, or r to rerender.")
 
 
-def _copy_selected_render(
+def _export_selected_render(
     *,
     clip: ClipState,
     streamer_login: str,
+    metadata_path: Path,
     selected: RenderOption,
     force: bool,
     config: ClipforgeConfig,
-) -> Path:
+) -> SelectedExport:
     source_path = selected.path
     export_path = (
         config.exports_dir
@@ -307,13 +332,148 @@ def _copy_selected_render(
         raise ClipReviewError(f"Export already exists: {export_path}. Re-run with --force.")
 
     ensure_directory(export_path.parent)
+    final_resolution = _final_resolution_from_metadata(
+        metadata_path,
+        selected_layout=selected.layout,
+    )
+    if _selected_preview_matches_final(
+        selected,
+        final_resolution=final_resolution,
+        config=config,
+    ):
+        _copy_selected_render(source_path=source_path, export_path=export_path)
+        return SelectedExport(
+            export_path=export_path,
+            final_render_path=source_path,
+            final_resolution=final_resolution or selected.resolution,
+            reused_preview=True,
+        )
+
+    try:
+        render_selected_layout_from_metadata(
+            metadata_path,
+            selected_layout=selected.layout,
+            output_path=export_path,
+            channel=streamer_login,
+            config=config,
+        )
+    except Exception as exc:
+        raise ClipReviewError(
+            f"Could not render selected layout {selected.layout!r} to {export_path}: {exc}"
+        ) from exc
+    return SelectedExport(
+        export_path=export_path,
+        final_render_path=export_path,
+        final_resolution=final_resolution,
+        reused_preview=False,
+    )
+
+
+def _copy_selected_render(*, source_path: Path, export_path: Path) -> None:
     try:
         shutil.copy2(source_path, export_path)
     except OSError as exc:
         raise ClipReviewError(
             f"Could not export selected render to {export_path}: {exc}"
         ) from exc
-    return export_path
+
+
+def _selected_preview_matches_final(
+    selected: RenderOption,
+    *,
+    final_resolution: tuple[int, int] | None,
+    config: ClipforgeConfig,
+) -> bool:
+    if selected.resolution is None and selected.render_settings is None:
+        return True
+    if final_resolution is not None and selected.resolution != final_resolution:
+        return False
+    if selected.render_settings is None:
+        return True
+    return selected.render_settings == config.render_settings_for(review=False)
+
+
+def _final_resolution_from_metadata(
+    metadata_path: Path,
+    *,
+    selected_layout: str,
+) -> tuple[int, int] | None:
+    payload = _read_metadata_payload(metadata_path)
+    layouts = payload.get("layouts")
+    if isinstance(layouts, list):
+        for layout in layouts:
+            if not isinstance(layout, dict) or layout.get("name") != selected_layout:
+                continue
+            resolution = _output_resolution(layout.get("output"))
+            if resolution is not None:
+                return resolution
+    return _output_resolution(payload.get("target_resolution"))
+
+
+def _write_selected_export_metadata(
+    metadata_path: Path,
+    *,
+    selected: RenderOption,
+    selected_export: SelectedExport,
+) -> None:
+    payload = _read_metadata_payload(metadata_path)
+    payload["selected_export"] = {
+        "layout": selected.layout,
+        "preview_candidate": {
+            "path": str(selected.path),
+            "resolution": _resolution_payload(selected.resolution),
+        },
+        "final_render": {
+            "path": str(selected_export.final_render_path),
+            "resolution": _resolution_payload(selected_export.final_resolution),
+        },
+        "export": {
+            "path": str(selected_export.export_path),
+            "resolution": _resolution_payload(selected_export.final_resolution),
+        },
+        "reused_preview": selected_export.reused_preview,
+    }
+    metadata_path.write_text(json.dumps(payload, indent=2), encoding="utf-8")
+
+
+def _read_metadata_payload(metadata_path: Path) -> dict[str, Any]:
+    try:
+        payload = json.loads(metadata_path.read_text(encoding="utf-8"))
+    except OSError as exc:
+        raise ClipReviewError(
+            f"Could not read pipeline metadata {metadata_path}: {exc}"
+        ) from exc
+    except json.JSONDecodeError as exc:
+        raise ClipReviewError(f"Pipeline metadata is not valid JSON: {metadata_path}") from exc
+    if not isinstance(payload, dict):
+        raise ClipReviewError(f"Pipeline metadata must be a JSON object: {metadata_path}")
+    return payload
+
+
+def _output_resolution(value: object) -> tuple[int, int] | None:
+    if not isinstance(value, dict):
+        return None
+    width = value.get("width")
+    height = value.get("height")
+    if not isinstance(width, int) or not isinstance(height, int):
+        return None
+    return (width, height)
+
+
+def _resolution_payload(value: tuple[int, int] | None) -> dict[str, int] | None:
+    if value is None:
+        return None
+    return {"width": value[0], "height": value[1]}
+
+
+def _output_render_settings(value: dict[str, object]) -> FFmpegRenderSettings | None:
+    settings = value.get("render_settings")
+    if not isinstance(settings, dict):
+        return None
+    supported_keys = FFmpegRenderSettings().__dict__.keys()
+    return FFmpegRenderSettings(
+        **{key: settings[key] for key in supported_keys if key in settings}
+    ).normalized()
 
 
 def _format_clip_header(clip: ClipState) -> str:

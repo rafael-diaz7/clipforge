@@ -58,6 +58,75 @@ def _write_metadata(config: ClipforgeConfig, clip_id: str, *, content: bytes = b
     return metadata_path
 
 
+def _write_review_metadata(
+    config: ClipforgeConfig,
+    clip_id: str,
+    *,
+    preview_resolution: dict[str, int],
+    render_settings: dict[str, object] | None = None,
+) -> Path:
+    source_path = config.downloads_dir / clip_id / "ytdlp" / f"{clip_id}.mp4"
+    source_path.parent.mkdir(parents=True, exist_ok=True)
+    source_path.write_bytes(b"source")
+    render_dir = config.renders_dir / "example" / clip_id / "ytdlp"
+    render_dir.mkdir(parents=True, exist_ok=True)
+    preview_path = render_dir / "hybrid.mp4"
+    preview_path.write_bytes(b"preview")
+    metadata_path = config.metadata_dir / f"{clip_id}.json"
+    metadata_path.parent.mkdir(parents=True, exist_ok=True)
+    metadata_path.write_text(
+        json.dumps(
+            {
+                "source_path": str(source_path),
+                "target_resolution": {"width": 1080, "height": 1920},
+                "outputs": [
+                    {
+                        "layout": "hybrid",
+                        "path": str(preview_path),
+                        "resolution": preview_resolution,
+                        "render_profile": "review",
+                        "render_settings": render_settings
+                        or {
+                            "encoder": "libx264",
+                            "preset": "medium",
+                            "crf": 23,
+                            "quality": None,
+                            "threads": 0,
+                            "fallback_to_software": True,
+                        },
+                    }
+                ],
+                "layouts": [
+                    {
+                        "name": "hybrid",
+                        "description": "Hybrid test layout.",
+                        "output": {"width": 1080, "height": 1920},
+                        "regions": [
+                            {
+                                "name": "gameplay",
+                                "source_region": {
+                                    "x": 0.0,
+                                    "y": 0.0,
+                                    "width": 1.0,
+                                    "height": 1.0,
+                                },
+                                "output_region": {
+                                    "x": 0.0,
+                                    "y": 0.0,
+                                    "width": 1.0,
+                                    "height": 1.0,
+                                },
+                            }
+                        ],
+                    }
+                ],
+            }
+        ),
+        encoding="utf-8",
+    )
+    return metadata_path
+
+
 def test_review_discovers_upserts_selects_top_ranked_and_exports(
     monkeypatch,
     tmp_path: Path,
@@ -102,6 +171,180 @@ def test_review_discovers_upserts_selects_top_ranked_and_exports(
     assert exported_state.selected_render_layout == "hybrid"
     assert exported_state.selected_render_path.endswith("hybrid.mp4")
     assert exported_state.export_path == str(exported[0])
+
+
+def test_review_reuses_candidate_when_preview_matches_final_profile(
+    monkeypatch,
+    tmp_path: Path,
+) -> None:
+    config = _config(tmp_path)
+
+    monkeypatch.setattr(
+        "clipforge.pipeline.review.list_channel_clips",
+        lambda *args, **kwargs: (_clip("clip-1", views=100),),
+    )
+    monkeypatch.setattr(
+        "clipforge.pipeline.review.process_clip",
+        lambda url, **kwargs: _write_review_metadata(
+            config,
+            "clip-1",
+            preview_resolution={"width": 1080, "height": 1920},
+        ),
+    )
+    monkeypatch.setattr(
+        "clipforge.pipeline.review.render_selected_layout_from_metadata",
+        lambda *args, **kwargs: (_ for _ in ()).throw(
+            AssertionError("matching preview should be copied")
+        ),
+    )
+
+    exported = review_streamer_clips(
+        streamer="example",
+        count=1,
+        config=config,
+        input_fn=lambda prompt: "1",
+        output_fn=lambda line: None,
+    )
+
+    assert exported[0].read_bytes() == b"preview"
+    metadata = json.loads((config.metadata_dir / "clip-1.json").read_text(encoding="utf-8"))
+    assert metadata["selected_export"]["layout"] == "hybrid"
+    assert metadata["selected_export"]["preview_candidate"]["resolution"] == {
+        "width": 1080,
+        "height": 1920,
+    }
+    assert metadata["selected_export"]["export"]["resolution"] == {
+        "width": 1080,
+        "height": 1920,
+    }
+    assert metadata["selected_export"]["reused_preview"] is True
+
+
+def test_review_rerenders_selected_layout_when_preview_differs_from_final(
+    monkeypatch,
+    tmp_path: Path,
+) -> None:
+    config = _config(tmp_path)
+    calls: list[dict[str, object]] = []
+
+    monkeypatch.setattr(
+        "clipforge.pipeline.review.list_channel_clips",
+        lambda *args, **kwargs: (_clip("clip-1", views=100),),
+    )
+    monkeypatch.setattr(
+        "clipforge.pipeline.review.process_clip",
+        lambda url, **kwargs: _write_review_metadata(
+            config,
+            "clip-1",
+            preview_resolution={"width": 720, "height": 1280},
+        ),
+    )
+
+    def fake_render_selected(
+        metadata_path: Path,
+        *,
+        selected_layout: str,
+        output_path: Path,
+        channel: str | None,
+        config: ClipforgeConfig,
+    ) -> Path:
+        calls.append(
+            {
+                "metadata_path": metadata_path,
+                "selected_layout": selected_layout,
+                "output_path": output_path,
+                "channel": channel,
+                "config": config,
+            }
+        )
+        output_path.write_bytes(b"final")
+        return output_path
+
+    monkeypatch.setattr(
+        "clipforge.pipeline.review.render_selected_layout_from_metadata",
+        fake_render_selected,
+    )
+
+    exported = review_streamer_clips(
+        streamer="example",
+        count=1,
+        config=config,
+        input_fn=lambda prompt: "1",
+        output_fn=lambda line: None,
+    )
+
+    assert len(calls) == 1
+    assert calls[0]["selected_layout"] == "hybrid"
+    assert calls[0]["channel"] == "example"
+    assert exported[0].read_bytes() == b"final"
+    metadata = json.loads((config.metadata_dir / "clip-1.json").read_text(encoding="utf-8"))
+    assert metadata["selected_export"]["preview_candidate"]["resolution"] == {
+        "width": 720,
+        "height": 1280,
+    }
+    assert metadata["selected_export"]["export"]["resolution"] == {
+        "width": 1080,
+        "height": 1920,
+    }
+    assert metadata["selected_export"]["reused_preview"] is False
+
+
+def test_review_rerenders_selected_layout_when_review_settings_differ(
+    monkeypatch,
+    tmp_path: Path,
+) -> None:
+    config = _config(tmp_path)
+    calls: list[Path] = []
+
+    monkeypatch.setattr(
+        "clipforge.pipeline.review.list_channel_clips",
+        lambda *args, **kwargs: (_clip("clip-1", views=100),),
+    )
+    monkeypatch.setattr(
+        "clipforge.pipeline.review.process_clip",
+        lambda url, **kwargs: _write_review_metadata(
+            config,
+            "clip-1",
+            preview_resolution={"width": 1080, "height": 1920},
+            render_settings={
+                "encoder": "libx264",
+                "preset": "veryfast",
+                "crf": 28,
+                "quality": None,
+                "threads": 0,
+                "fallback_to_software": True,
+            },
+        ),
+    )
+
+    def fake_render_selected(
+        metadata_path: Path,
+        *,
+        selected_layout: str,
+        output_path: Path,
+        channel: str | None,
+        config: ClipforgeConfig,
+    ) -> Path:
+        del metadata_path, selected_layout, channel, config
+        calls.append(output_path)
+        output_path.write_bytes(b"final-settings")
+        return output_path
+
+    monkeypatch.setattr(
+        "clipforge.pipeline.review.render_selected_layout_from_metadata",
+        fake_render_selected,
+    )
+
+    exported = review_streamer_clips(
+        streamer="example",
+        count=1,
+        config=config,
+        input_fn=lambda prompt: "1",
+        output_fn=lambda line: None,
+    )
+
+    assert calls == [exported[0]]
+    assert exported[0].read_bytes() == b"final-settings"
 
 
 def test_review_excludes_exported_and_posted_clips(

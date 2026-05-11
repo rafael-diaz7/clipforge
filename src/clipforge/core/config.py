@@ -81,6 +81,7 @@ class ClipforgeConfig:
     )
     review_fast_render: bool = False
     review_ffmpeg_render_settings: FFmpegRenderSettings | None = None
+    review_output_width: int | None = None
 
     @property
     def target_resolution(self) -> tuple[int, int]:
@@ -110,6 +111,14 @@ class ClipforgeConfig:
         if review and self.review_ffmpeg_render_settings is not None:
             return self.review_ffmpeg_render_settings.normalized()
         return self.ffmpeg_render_settings.normalized()
+
+    def review_resolution_for(self, *, width: int, height: int) -> tuple[int, int]:
+        if self.review_output_width is None:
+            return (width, height)
+        if width <= 0 or height <= 0:
+            raise ConfigError("Normal output dimensions must be positive.")
+        review_height = round(height * self.review_output_width / width)
+        return (self.review_output_width, max(1, review_height))
 
     def require_twitch_credentials(self) -> tuple[str, str]:
         client_id, client_secret = require_config_values(
@@ -176,6 +185,7 @@ def load_config(*, load_dotenv_file: bool = True) -> ClipforgeConfig:
             ffmpeg_render_settings,
             fast_render=review_fast_render,
         ),
+        review_output_width=_env_int("CLIPFORGE_REVIEW_OUTPUT_WIDTH"),
     )
 
     config.require_downloader_backend()
@@ -183,6 +193,8 @@ def load_config(*, load_dotenv_file: bool = True) -> ClipforgeConfig:
     _require_ffmpeg_settings(config.ffmpeg_render_settings)
     if config.review_ffmpeg_render_settings is not None:
         _require_ffmpeg_settings(config.review_ffmpeg_render_settings)
+    if config.review_output_width is not None and config.review_output_width <= 0:
+        raise ConfigError("CLIPFORGE_REVIEW_OUTPUT_WIDTH must be a positive integer.")
 
     return config
 

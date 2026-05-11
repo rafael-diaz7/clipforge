@@ -759,13 +759,15 @@ def _log_render_settings(
 ) -> None:
     LOGGER.info(
         "Rendering layout %s with FFmpeg encoder=%s preset=%s crf=%s quality=%s "
-        "threads=%s. output=%s",
+        "threads=%s size=%sx%s. output=%s",
         layout.name,
         render_settings.encoder,
         render_settings.preset,
         render_settings.crf,
         render_settings.quality,
         render_settings.threads,
+        layout.output.width,
+        layout.output.height,
         output_path,
     )
 

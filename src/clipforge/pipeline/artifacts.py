@@ -57,7 +57,7 @@ def write_metadata(
     download_result: DownloadResult,
     source_path: Path,
     layouts: Sequence[Layout],
-    outputs: Sequence[dict[str, str]],
+    outputs: Sequence[dict[str, Any]],
     config: ClipforgeConfig,
     caption_metadata_path: Path | None = None,
 ) -> Path:

@@ -4,7 +4,9 @@ from __future__ import annotations
 
 import json
 import logging
+from dataclasses import asdict, replace
 from pathlib import Path
+from typing import Any
 
 from clipforge.core.config import ClipforgeConfig, load_config
 from clipforge.utils.paths import (
@@ -31,15 +33,25 @@ from clipforge.media.layouts import (
     DEFAULT_LAYOUT_NAMES,
     GENERATED_LAYOUT_NAMES,
     Layout,
+    OutputSize,
     generate_detected_layout_candidates,
     load_example_layouts,
     load_example_layout,
     load_layout,
+    parse_layout,
 )
 from clipforge.media.overlay import analyze_overlay
-from clipforge.media.render import load_streamer_watermark, render_layout
-from clipforge.media.render import CaptionStyle
-from clipforge.media.render_settings import DEFAULT_FFMPEG_RENDER_SETTINGS
+from clipforge.media.render import (
+    CaptionStyle,
+    CaptionVerticalSafeArea,
+    Watermark,
+    load_streamer_watermark,
+    render_layout,
+)
+from clipforge.media.render_settings import (
+    DEFAULT_FFMPEG_RENDER_SETTINGS,
+    FFmpegRenderSettings,
+)
 from clipforge.pipeline.artifacts import write_metadata
 from clipforge.pipeline.state_sync import record_rendered_clip
 from clipforge.storage.state import get_clip
@@ -95,17 +107,33 @@ def render_candidate(
 
     config = config or load_config()
     layout = _load_layout_ref(layout_ref, config=config)
-    output_path = _render_output_path(source_path, layout, clip_id=clip_id, config=config)
+    preview_output_size = _review_output_size_for_layout(layout, config=config)
+    preview_layout = _layout_with_output_size(layout, preview_output_size)
+    output_path = _render_output_path(
+        source_path,
+        layout,
+        clip_id=clip_id,
+        output_size=preview_output_size,
+        config=config,
+    )
     caption_metadata = _load_optional_caption_metadata(caption_metadata_path)
     caption_style = _caption_style_from_config(config)
-    LOGGER.info("Rendering layout %s to %s.", layout.name, output_path)
+    LOGGER.info(
+        "Rendering layout %s preview at %sx%s to %s.",
+        layout.name,
+        preview_output_size.width,
+        preview_output_size.height,
+        output_path,
+    )
     return _render_layout_with_optional_captions(
         source_path,
         output_path,
-        layout,
+        preview_layout,
         caption_metadata=caption_metadata,
         caption_style=caption_style,
         channel=None,
+        review=True,
+        style_scale=_output_scale(layout.output, preview_output_size),
         config=config,
     )
 
@@ -250,7 +278,18 @@ def process_clip(
                 config=config,
             ),
         )
-        outputs.append({"layout": layout.name, "path": str(output_path)})
+        preview_output_size = _review_output_size_for_layout(layout, config=config)
+        outputs.append(
+            {
+                "layout": layout.name,
+                "path": str(output_path),
+                "resolution": _output_size_payload(preview_output_size),
+                "render_profile": "review",
+                "render_settings": _render_settings_payload(
+                    config.render_settings_for(review=True)
+                ),
+            }
+        )
 
     metadata_path = _run_stage(
         "metadata",
@@ -550,27 +589,38 @@ def _ensure_rendered_candidate_layout(
     force: bool,
     config: ClipforgeConfig,
 ) -> tuple[Path, bool]:
+    preview_output_size = _review_output_size_for_layout(layout, config=config)
+    preview_layout = _layout_with_output_size(layout, preview_output_size)
     output_path = _render_output_path(
         source_path,
         layout,
         clip_id=clip_id,
         backend=backend,
         channel=channel,
+        output_size=preview_output_size,
         config=config,
     )
     if output_path.is_file() and not force:
         LOGGER.info("Reusing rendered layout %s from %s.", layout.name, output_path)
         return output_path, True
 
-    LOGGER.info("Rendering layout %s to %s.", layout.name, output_path)
+    LOGGER.info(
+        "Rendering layout %s preview at %sx%s to %s.",
+        layout.name,
+        preview_output_size.width,
+        preview_output_size.height,
+        output_path,
+    )
     return (
         _render_layout_with_optional_captions(
             source_path,
             output_path,
-            layout,
+            preview_layout,
             caption_metadata=caption_metadata,
             caption_style=caption_style,
             channel=channel,
+            review=True,
+            style_scale=_output_scale(layout.output, preview_output_size),
             config=config,
         ),
         False,
@@ -711,6 +761,7 @@ def _render_output_path(
     clip_id: str | None,
     backend: str | None = None,
     channel: str | None = None,
+    output_size: OutputSize | None = None,
     config: ClipforgeConfig,
 ) -> Path:
     stem = clip_id or source_path.stem
@@ -721,9 +772,19 @@ def _render_output_path(
         output_dir = ensure_directory(
             output_dir / safe_filename(stem) / safe_filename(backend)
         )
+        if output_size is not None and output_size != layout.output:
+            output_dir = ensure_directory(
+                output_dir / f"preview_{output_size.width}x{output_size.height}"
+            )
         return output_dir / f"{layout.name}.{config.output_format}"
 
     output_dir = ensure_directory(config.renders_dir)
+    if output_size is not None and output_size != layout.output:
+        return (
+            output_dir
+            / f"{stem}_{layout.name}_{output_size.width}x{output_size.height}."
+            f"{config.output_format}"
+        )
     return output_dir / f"{stem}_{layout.name}.{config.output_format}"
 
 
@@ -738,22 +799,33 @@ def _render_candidate_layout(
     caption_style: CaptionStyle = CaptionStyle(),
     config: ClipforgeConfig,
 ) -> Path:
+    preview_output_size = _review_output_size_for_layout(layout, config=config)
+    preview_layout = _layout_with_output_size(layout, preview_output_size)
     output_path = _render_output_path(
         source_path,
         layout,
         clip_id=clip_id,
         backend=backend,
         channel=channel,
+        output_size=preview_output_size,
         config=config,
     )
-    LOGGER.info("Rendering layout %s to %s.", layout.name, output_path)
+    LOGGER.info(
+        "Rendering layout %s preview at %sx%s to %s.",
+        layout.name,
+        preview_output_size.width,
+        preview_output_size.height,
+        output_path,
+    )
     return _render_layout_with_optional_captions(
         source_path,
         output_path,
-        layout,
+        preview_layout,
         caption_metadata=caption_metadata,
         caption_style=caption_style,
         channel=channel,
+        review=True,
+        style_scale=_output_scale(layout.output, preview_output_size),
         config=config,
     )
 
@@ -772,13 +844,19 @@ def _render_layout_with_optional_captions(
     caption_metadata: CaptionMetadata | None,
     caption_style: CaptionStyle,
     channel: str | None,
+    review: bool,
+    style_scale: float = 1.0,
     config: ClipforgeConfig,
 ) -> Path:
-    watermark = load_streamer_watermark(channel, base_dir=config.project_root)
+    watermark = _scale_watermark(
+        load_streamer_watermark(channel, base_dir=config.project_root),
+        style_scale,
+    )
+    caption_style = _scale_caption_style(caption_style, style_scale)
     render_kwargs = {}
     if watermark is not None:
         render_kwargs["watermark"] = watermark
-    render_settings = config.render_settings_for(review=True)
+    render_settings = config.render_settings_for(review=review)
     if render_settings != DEFAULT_FFMPEG_RENDER_SETTINGS:
         render_kwargs["render_settings"] = render_settings
 
@@ -806,6 +884,44 @@ def _render_layout_with_optional_captions(
     )
 
 
+def render_selected_layout_from_metadata(
+    metadata_path: Path,
+    *,
+    selected_layout: str,
+    output_path: Path,
+    channel: str | None,
+    config: ClipforgeConfig | None = None,
+) -> Path:
+    """Render one selected layout from pipeline metadata with final settings."""
+
+    config = config or load_config()
+    payload = _read_pipeline_metadata(metadata_path)
+    source_path = _metadata_source_path(payload, metadata_path=metadata_path)
+    layout = _metadata_layout(payload, selected_layout=selected_layout)
+    caption_metadata = _load_optional_caption_metadata(
+        _metadata_optional_path(payload, "caption_metadata_path")
+    )
+    caption_style = _caption_style_from_config(config)
+    ensure_directory(output_path.parent)
+    LOGGER.info(
+        "Rendering selected layout %s at final size %sx%s to %s.",
+        layout.name,
+        layout.output.width,
+        layout.output.height,
+        output_path,
+    )
+    return _render_layout_with_optional_captions(
+        source_path,
+        output_path,
+        layout,
+        caption_metadata=caption_metadata,
+        caption_style=caption_style,
+        channel=channel,
+        review=False,
+        config=config,
+    )
+
+
 def _caption_style_from_config(config: ClipforgeConfig) -> CaptionStyle:
     if (
         config.caption_font_file is None
@@ -816,3 +932,127 @@ def _caption_style_from_config(config: ClipforgeConfig) -> CaptionStyle:
         font_file=config.caption_font_file,
         font_fallbacks=config.caption_font_fallbacks,
     )
+
+
+def _review_output_size_for_layout(
+    layout: Layout,
+    *,
+    config: ClipforgeConfig,
+) -> OutputSize:
+    width, height = config.review_resolution_for(
+        width=layout.output.width,
+        height=layout.output.height,
+    )
+    return OutputSize(width=width, height=height)
+
+
+def _layout_with_output_size(layout: Layout, output_size: OutputSize) -> Layout:
+    if layout.output == output_size:
+        return layout
+    return replace(layout, output=output_size)
+
+
+def _output_scale(normal_output_size: OutputSize, output_size: OutputSize) -> float:
+    if normal_output_size.width <= 0:
+        return 1.0
+    return output_size.width / normal_output_size.width
+
+
+def _scale_caption_style(caption_style: CaptionStyle, scale: float) -> CaptionStyle:
+    if scale == 1.0:
+        return caption_style
+    vertical_safe_area = caption_style.vertical_safe_area
+    if vertical_safe_area is not None:
+        vertical_safe_area = CaptionVerticalSafeArea(
+            top=_scale_int(vertical_safe_area.top, scale),
+            bottom=_scale_int(vertical_safe_area.bottom, scale),
+            center=vertical_safe_area.center,
+        )
+    return replace(
+        caption_style,
+        font_size=_scale_int(caption_style.font_size, scale),
+        box_border_width=_scale_int(caption_style.box_border_width, scale),
+        line_spacing=_scale_int(caption_style.line_spacing, scale),
+        outline_width=_scale_int(caption_style.outline_width, scale),
+        outline_thickness=_scale_optional_int(caption_style.outline_thickness, scale),
+        shadow_offset=_scale_int(caption_style.shadow_offset, scale),
+        shadow_strength=_scale_optional_int(caption_style.shadow_strength, scale),
+        safe_margin_x=_scale_int(caption_style.safe_margin_x, scale),
+        safe_margin_bottom=_scale_int(caption_style.safe_margin_bottom, scale),
+        vertical_safe_area=vertical_safe_area,
+    )
+
+
+def _scale_watermark(watermark: Watermark | None, scale: float) -> Watermark | None:
+    if watermark is None or scale == 1.0:
+        return watermark
+    return replace(
+        watermark,
+        native_width=_scale_int(watermark.native_width, scale),
+        native_height=_scale_int(watermark.native_height, scale),
+        margin=_scale_int(watermark.margin, scale),
+    )
+
+
+def _scale_optional_int(value: int | None, scale: float) -> int | None:
+    if value is None:
+        return None
+    return _scale_int(value, scale)
+
+
+def _scale_int(value: int, scale: float) -> int:
+    if value == 0:
+        return 0
+    return max(1, round(value * scale))
+
+
+def _output_size_payload(output_size: OutputSize) -> dict[str, int]:
+    return {"width": output_size.width, "height": output_size.height}
+
+
+def _render_settings_payload(
+    render_settings: FFmpegRenderSettings,
+) -> dict[str, object]:
+    return asdict(render_settings.normalized())
+
+
+def _read_pipeline_metadata(metadata_path: Path) -> dict[str, Any]:
+    try:
+        payload = json.loads(metadata_path.read_text(encoding="utf-8"))
+    except OSError as exc:
+        raise ClipProcessingError(
+            f"Could not read pipeline metadata {metadata_path}: {exc}"
+        ) from exc
+    except json.JSONDecodeError as exc:
+        raise ClipProcessingError(f"Pipeline metadata is not valid JSON: {metadata_path}") from exc
+    if not isinstance(payload, dict):
+        raise ClipProcessingError(f"Pipeline metadata must be a JSON object: {metadata_path}")
+    return payload
+
+
+def _metadata_source_path(payload: dict[str, Any], *, metadata_path: Path) -> Path:
+    value = payload.get("source_path")
+    if not isinstance(value, str) or not value:
+        raise ClipProcessingError(f"Pipeline metadata is missing source_path: {metadata_path}")
+    return Path(value)
+
+
+def _metadata_layout(payload: dict[str, Any], *, selected_layout: str) -> Layout:
+    layouts = payload.get("layouts")
+    if not isinstance(layouts, list):
+        raise ClipProcessingError("Pipeline metadata is missing layouts.")
+    for layout_payload in layouts:
+        if not isinstance(layout_payload, dict):
+            continue
+        if layout_payload.get("name") == selected_layout:
+            return parse_layout(layout_payload)
+    raise ClipProcessingError(
+        f"Pipeline metadata does not contain selected layout: {selected_layout}."
+    )
+
+
+def _metadata_optional_path(payload: dict[str, Any], key: str) -> Path | None:
+    value = payload.get(key)
+    if not isinstance(value, str) or not value:
+        return None
+    return Path(value)
