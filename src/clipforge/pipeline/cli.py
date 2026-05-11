@@ -370,6 +370,11 @@ def build_parser() -> argparse.ArgumentParser:
         required=True,
         help="Clip ID used for analysis artifact paths.",
     )
+    analyze_overlay_parser.add_argument(
+        "--debug-raw-faces",
+        action="store_true",
+        help="Write raw face detection JSON and annotated raw-face debug frames.",
+    )
     analyze_overlay_debug_parser = analyze_subparsers.add_parser(
         "overlay-debug",
         help="Draw overlay inference candidates onto sampled frames.",
@@ -473,7 +478,13 @@ def _handle_analyze_command(args: argparse.Namespace) -> int:
         return 0
 
     if args.analyze_command == "overlay":
-        overlay_path = analyze_overlay(clip_id=args.clip_id)
+        if args.debug_raw_faces:
+            overlay_path = analyze_overlay(
+                clip_id=args.clip_id,
+                debug_raw_faces=True,
+            )
+        else:
+            overlay_path = analyze_overlay(clip_id=args.clip_id)
         print(overlay_path)
         return 0
 

@@ -8,9 +8,12 @@ import pytest
 from clipforge.media.analyze import AnalysisError
 from clipforge.media.overlay import (
     FaceDetection,
+    HAAR_DETECTION_PASSES,
     NormalizedRect,
     OverlayDebugAnnotation,
     OverlayDetectorUnavailable,
+    _HaarDetection,
+    _deduplicate_haar_detections,
     analyze_overlay,
     write_overlay_debug_images,
 )
@@ -138,6 +141,288 @@ def test_no_detections_writes_fallback_overlay_json(tmp_path: Path) -> None:
         "reason": "fallback: no face detections found in sampled frames",
         "candidate_clusters": [],
     }
+
+
+def test_multi_pass_haar_settings_match_debug_strategy() -> None:
+    assert tuple(
+        (
+            pass_settings["scaleFactor"],
+            pass_settings["minNeighbors"],
+            pass_settings["minSize"],
+        )
+        for pass_settings in HAAR_DETECTION_PASSES
+    ) == (
+        (1.05, 3, (20, 20)),
+        (1.05, 5, (20, 20)),
+        (1.1, 3, (20, 20)),
+        (1.1, 5, (20, 20)),
+        (1.2, 3, (20, 20)),
+    )
+
+
+def test_overlapping_haar_pass_detections_are_deduped_with_pass_metadata() -> None:
+    detections = [
+        _haar_detection(10, 20, 40, 40, score=0.60, pass_index=1),
+        _haar_detection(12, 21, 40, 40, score=0.72, pass_index=3),
+        _haar_detection(110, 20, 35, 35, score=0.64, pass_index=5),
+    ]
+
+    merged = _deduplicate_haar_detections(detections)
+
+    assert len(merged) == 2
+    assert merged[0].score == pytest.approx(0.72)
+    assert merged[0].merged_from_count == 2
+    assert merged[0].pass_metadata["pass_index"] == 3
+    assert [item["pass_index"] for item in merged[0].merged_passes] == [1, 3]
+    assert merged[1].merged_from_count == 1
+
+
+def test_recurring_face_detections_form_one_temporal_cluster(tmp_path: Path) -> None:
+    analysis_dir, frame_names = _write_frames_metadata(tmp_path, clip_id="clip-123", count=6)
+    detections = {
+        frame_names[0]: (_detection(0.04, 0.62, 0.18, 0.18, score=0.78),),
+        frame_names[1]: (_detection(0.045, 0.615, 0.18, 0.18, score=0.74),),
+        frame_names[3]: (_detection(0.035, 0.625, 0.19, 0.19, score=0.80),),
+        frame_names[5]: (_detection(0.042, 0.618, 0.18, 0.18, score=0.76),),
+    }
+
+    overlay_path = analyze_overlay(
+        clip_id="clip-123",
+        analysis_dir=analysis_dir,
+        detector=SyntheticDetector(detections),
+        confidence_threshold=0.0,
+    )
+
+    payload = _read_json(overlay_path)
+    clusters = payload["candidate_clusters"]
+    assert len(clusters) == 1
+    cluster = clusters[0]
+    assert cluster["detection_count"] == 4
+    assert cluster["sampled_frame_count"] == 6
+    assert cluster["prevalence"] == pytest.approx(4 / 6)
+    assert cluster["average_face_confidence"] == pytest.approx(0.77)
+    assert cluster["max_face_confidence"] == pytest.approx(0.80)
+    assert cluster["frame_indexes"] == [0, 1, 3, 5]
+    assert cluster["timestamps"] == [0, 1, 3, 5]
+    assert cluster["average_face_box"] == cluster["face_rect"]
+    _assert_rect_contains(cluster["overlay_rect"], cluster["representative_face_box"])
+
+
+def test_recurring_moderate_face_cluster_outranks_one_off_false_positive(
+    tmp_path: Path,
+) -> None:
+    analysis_dir, frame_names = _write_frames_metadata(tmp_path, clip_id="clip-123", count=8)
+    detections = {}
+    for index, name in enumerate(frame_names):
+        recurring_face = ()
+        if index < 5:
+            recurring_face = (_detection(0.04 + index * 0.004, 0.62, 0.18, 0.18, score=0.62),)
+        one_off_false_positive = (
+            (_detection(0.38, 0.24, 0.20, 0.20, score=0.99),) if index == 2 else ()
+        )
+        detections[name] = (*recurring_face, *one_off_false_positive)
+
+    overlay_path = analyze_overlay(
+        clip_id="clip-123",
+        analysis_dir=analysis_dir,
+        detector=SyntheticDetector(detections),
+        confidence_threshold=0.0,
+    )
+
+    payload = _read_json(overlay_path)
+    selected = payload["candidate_clusters"][0]
+    rejected = payload["candidate_clusters"][1]
+    assert selected["detection_count"] == 5
+    assert selected["average_face_confidence"] == pytest.approx(0.62)
+    assert rejected["detection_count"] == 1
+    assert rejected["max_face_confidence"] == pytest.approx(0.99)
+    assert selected["final_score"] > rejected["final_score"]
+    assert selected["face_rect"]["x"] < 0.10
+
+
+def test_one_off_central_gameplay_false_positive_is_penalized(
+    tmp_path: Path,
+) -> None:
+    analysis_dir, frame_names = _write_frames_metadata(tmp_path, clip_id="clip-123", count=8)
+    detector = SyntheticDetector(
+        {frame_names[3]: (_detection(0.38, 0.28, 0.22, 0.22, score=1.0),)}
+    )
+
+    overlay_path = analyze_overlay(
+        clip_id="clip-123",
+        analysis_dir=analysis_dir,
+        detector=detector,
+    )
+
+    payload = _read_json(overlay_path)
+    cluster = payload["candidate_clusters"][0]
+    assert payload["fallback"] is True
+    assert cluster["detection_count"] == 1
+    assert cluster["component_scores"]["one_frame_penalty"] > 0
+    assert cluster["component_scores"]["central_penalty"] > 0
+    assert cluster["final_score"] < 0.58
+    assert payload["confidence"] < 0.58
+
+
+def test_bottom_left_recurring_face_expands_to_clamped_webcam_rect(
+    tmp_path: Path,
+) -> None:
+    analysis_dir, frame_names = _write_frames_metadata(tmp_path, clip_id="clip-123", count=8)
+    detector = SyntheticDetector(
+        {name: (_detection(0.03, 0.82, 0.14, 0.14, score=0.86),) for name in frame_names}
+    )
+
+    overlay_path = analyze_overlay(
+        clip_id="clip-123",
+        analysis_dir=analysis_dir,
+        detector=detector,
+    )
+
+    payload = _read_json(overlay_path)
+    face_rect = payload["selected_face_rect"]
+    crop_rect = payload["selected_overlay_rect"]
+    assert payload["fallback"] is False
+    assert crop_rect["x"] == 0.0
+    assert crop_rect["y"] + crop_rect["height"] == pytest.approx(1.0)
+    assert crop_rect["width"] > face_rect["width"]
+    assert crop_rect["height"] > face_rect["height"]
+    _assert_rect_contains(crop_rect, face_rect)
+    _assert_target_streamer_crop_aspect(crop_rect)
+
+
+def test_overlay_fallback_still_works_when_no_face_clusters_exist(tmp_path: Path) -> None:
+    analysis_dir, _frame_names = _write_frames_metadata(tmp_path, clip_id="clip-123", count=8)
+
+    overlay_path = analyze_overlay(
+        clip_id="clip-123",
+        analysis_dir=analysis_dir,
+        detector=SyntheticDetector({}),
+    )
+
+    payload = _read_json(overlay_path)
+    assert payload["fallback"] is True
+    assert payload["selected_rect"] is None
+    assert payload["candidate_clusters"] == []
+
+
+def test_raw_detections_are_written_before_filtering_when_debug_enabled(
+    tmp_path: Path,
+) -> None:
+    analysis_dir, frame_names = _write_valid_image_frames_metadata(
+        tmp_path,
+        clip_id="clip-123",
+        count=2,
+    )
+    detector = SyntheticDetector(
+        {
+            frame_names[0]: (
+                _detection(0.02, 0.82, 0.14, 0.14, score=0.80),
+                _detection(-0.01, 0.40, 0.12, 0.12, score=0.95),
+            )
+        }
+    )
+
+    analyze_overlay(
+        clip_id="clip-123",
+        analysis_dir=analysis_dir,
+        detector=detector,
+        debug_raw_faces=True,
+        confidence_threshold=0.0,
+    )
+
+    debug_dir = analysis_dir / "clip-123" / "debug" / "raw_faces"
+    payload = _read_json(debug_dir / "raw_faces.json")
+    assert (debug_dir / "frame_0001.png").is_file()
+    assert payload["sampled_frame_count"] == 2
+    assert payload["raw_face_detection_count"] == 2
+    assert payload["filtered_detection_count"] == 1
+    first_frame_detections = payload["frames"][0]["raw_detections"]
+    assert [detection["filtered_out"] for detection in first_frame_detections] == [
+        False,
+        True,
+    ]
+    assert first_frame_detections[1]["filter_reason"] == "x_before_frame"
+
+
+def test_bottom_left_edge_detection_is_not_discarded_by_raw_filter(
+    tmp_path: Path,
+) -> None:
+    analysis_dir, frame_names = _write_valid_image_frames_metadata(
+        tmp_path,
+        clip_id="clip-123",
+        count=1,
+    )
+    detector = SyntheticDetector(
+        {frame_names[0]: (_detection(0.0, 0.84, 0.14, 0.14, score=0.77),)}
+    )
+
+    analyze_overlay(
+        clip_id="clip-123",
+        analysis_dir=analysis_dir,
+        detector=detector,
+        debug_raw_faces=True,
+        confidence_threshold=0.0,
+    )
+
+    payload = _read_json(analysis_dir / "clip-123" / "debug" / "raw_faces" / "raw_faces.json")
+    detection = payload["frames"][0]["raw_detections"][0]
+    assert detection["filtered_out"] is False
+    assert detection["filter_reason"] is None
+    assert detection["cluster_id"] == 1
+
+
+def test_face_evidence_cluster_is_reported_even_when_not_selected(
+    tmp_path: Path,
+) -> None:
+    analysis_dir, frame_names = _write_frames_metadata(tmp_path, clip_id="clip-123", count=8)
+    detections = {}
+    for frame_name in frame_names:
+        detections[frame_name] = (
+            _detection(0.02, 0.82, 0.10, 0.10, score=0.65),
+            _detection(0.72, 0.58, 0.22, 0.22, score=0.95),
+            _detection(0.60, 0.58, 0.20, 0.20, score=0.90),
+            _detection(0.48, 0.58, 0.20, 0.20, score=0.88),
+            _detection(0.36, 0.58, 0.20, 0.20, score=0.86),
+            _detection(0.24, 0.58, 0.20, 0.20, score=0.84),
+            _detection(0.12, 0.20, 0.16, 0.16, score=0.82),
+            _detection(0.36, 0.20, 0.16, 0.16, score=0.81),
+            _detection(0.60, 0.20, 0.16, 0.16, score=0.80),
+        )
+
+    overlay_path = analyze_overlay(
+        clip_id="clip-123",
+        analysis_dir=analysis_dir,
+        detector=SyntheticDetector(detections),
+        confidence_threshold=0.0,
+    )
+
+    payload = _read_json(overlay_path)
+    assert payload["candidate_clusters"][0]["face_rect"]["x"] > 0.60
+    assert any(
+        cluster["face_rect"]["x"] < 0.05 and cluster["face_score"] > 0.0
+        for cluster in payload["candidate_clusters"]
+    )
+
+
+def test_valid_face_cluster_heuristic_multiplier_has_nonzero_floor(
+    tmp_path: Path,
+) -> None:
+    analysis_dir, frame_names = _write_frames_metadata(tmp_path, clip_id="clip-123", count=8)
+    detector = SyntheticDetector(
+        {name: (_detection(0.18, 0.10, 0.62, 0.62, score=0.72),) for name in frame_names}
+    )
+
+    overlay_path = analyze_overlay(
+        clip_id="clip-123",
+        analysis_dir=analysis_dir,
+        detector=detector,
+    )
+
+    payload = _read_json(overlay_path)
+    cluster = payload["candidate_clusters"][0]
+    assert cluster["face_score"] > 0.0
+    assert cluster["heuristic_multiplier"] >= 0.08
+    assert cluster["final_score"] > 0.0
 
 
 def test_competing_stable_candidates_reduce_confidence(tmp_path: Path) -> None:
@@ -593,6 +878,44 @@ def test_write_overlay_debug_images_labels_fallback_candidates(tmp_path: Path) -
     ]
 
 
+def test_write_overlay_debug_images_labels_temporal_cluster_scores(tmp_path: Path) -> None:
+    analysis_dir, _frame_names = _write_frames_metadata(tmp_path, clip_id="clip-123", count=1)
+    _write_overlay_metadata(
+        analysis_dir,
+        clip_id="clip-123",
+        fallback=False,
+        selected_rect={"x": 0.0, "y": 0.62, "width": 0.24, "height": 0.30},
+        confidence=0.71,
+        candidate_clusters=[
+            {
+                "cluster_id": 7,
+                "rect": {"x": 0.0, "y": 0.62, "width": 0.24, "height": 0.30},
+                "confidence": 0.71,
+                "detection_count": 5,
+                "prevalence": 0.625,
+                "average_face_confidence": 0.74,
+                "heuristic_multiplier": 0.82,
+                "final_score": 0.71,
+            }
+        ],
+    )
+    writer = RecordingDebugWriter()
+
+    write_overlay_debug_images(
+        clip_id="clip-123",
+        analysis_dir=analysis_dir,
+        image_writer=writer,
+    )
+
+    annotations = writer.calls[0]["annotations"]
+    assert [annotation.label for annotation in annotations] == [
+        (
+            "cluster 7 | detections 5 | prevalence 0.625 | "
+            "avg_face 0.740 | heuristic 0.820 | score 0.710 | selected"
+        )
+    ]
+
+
 def test_write_overlay_debug_images_requires_overlay_metadata(tmp_path: Path) -> None:
     analysis_dir, _frame_names = _write_frames_metadata(tmp_path, clip_id="clip-123", count=1)
 
@@ -636,6 +959,28 @@ def _write_frames_metadata(
     return analysis_dir, tuple(path.name for path in frame_paths)
 
 
+def _write_valid_image_frames_metadata(
+    tmp_path: Path,
+    *,
+    clip_id: str,
+    count: int,
+) -> tuple[Path, tuple[str, ...]]:
+    import cv2
+    import numpy as np
+
+    analysis_dir, frame_names = _write_frames_metadata(
+        tmp_path,
+        clip_id=clip_id,
+        count=count,
+    )
+    frames_dir = analysis_dir / clip_id / "frames"
+    image = np.zeros((120, 160, 3), dtype=np.uint8)
+    for frame_name in frame_names:
+        frame_path = frames_dir / frame_name
+        assert cv2.imwrite(str(frame_path), image)
+    return analysis_dir, frame_names
+
+
 def _write_overlay_metadata(
     analysis_dir: Path,
     *,
@@ -669,6 +1014,27 @@ def _detection(
     score: float = 1.0,
 ) -> FaceDetection:
     return FaceDetection(rect=NormalizedRect(x=x, y=y, width=width, height=height), score=score)
+
+
+def _haar_detection(
+    x: int,
+    y: int,
+    width: int,
+    height: int,
+    *,
+    score: float,
+    pass_index: int,
+) -> _HaarDetection:
+    return _HaarDetection(
+        box=(x, y, width, height),
+        score=score,
+        pass_metadata={
+            "pass_index": pass_index,
+            "scaleFactor": 1.05,
+            "minNeighbors": 3,
+            "minSize": [20, 20],
+        },
+    )
 
 
 def _assert_rect_contains(

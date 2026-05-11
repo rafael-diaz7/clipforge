@@ -3,8 +3,10 @@
 from __future__ import annotations
 
 import json
+import logging
 import math
 import statistics
+from collections import Counter
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Protocol
@@ -14,9 +16,18 @@ from clipforge.media.analyze import AnalysisError
 from clipforge.utils.paths import clip_analysis_dir, ensure_directory, safe_filename
 
 
+LOGGER = logging.getLogger(__name__)
 DEFAULT_OVERLAY_CONFIDENCE_THRESHOLD = 0.58
 CLUSTER_CENTER_THRESHOLD = 0.12
 CLUSTER_SIZE_THRESHOLD = 0.09
+HAAR_DETECTION_PASSES = (
+    {"scaleFactor": 1.05, "minNeighbors": 3, "minSize": (20, 20)},
+    {"scaleFactor": 1.05, "minNeighbors": 5, "minSize": (20, 20)},
+    {"scaleFactor": 1.1, "minNeighbors": 3, "minSize": (20, 20)},
+    {"scaleFactor": 1.1, "minNeighbors": 5, "minSize": (20, 20)},
+    {"scaleFactor": 1.2, "minNeighbors": 3, "minSize": (20, 20)},
+)
+HAAR_DEDUP_IOU_THRESHOLD = 0.35
 STREAMER_CROP_HORIZONTAL_PADDING_RATIO = 0.28
 STREAMER_CROP_TOP_PADDING_RATIO = 0.32
 STREAMER_CROP_BOTTOM_PADDING_RATIO = 0.75
@@ -27,6 +38,8 @@ STREAMER_CROP_FACE_CENTER_Y_RATIO = 0.42
 SOURCE_ASPECT_RATIO = 16 / 9
 TARGET_ASPECT_RATIO = 9 / 16
 HYBRID_STREAMER_OUTPUT_HEIGHT_RATIO = 0.40
+MAX_REPORTED_FACE_CLUSTERS = 8
+MIN_VALID_FACE_HEURISTIC_MULTIPLIER = 0.08
 # Convert the hybrid top region's display aspect into normalized source coordinates.
 STREAMER_CROP_TARGET_NORMALIZED_ASPECT_RATIO = (
     TARGET_ASPECT_RATIO / HYBRID_STREAMER_OUTPUT_HEIGHT_RATIO
@@ -75,6 +88,14 @@ class FaceDetection:
     score: float = 1.0
 
 
+@dataclass(frozen=True)
+class FaceDetectorDebugInfo:
+    """Inspectable settings for a detector run."""
+
+    name: str
+    settings: dict[str, object]
+
+
 class FaceDetector(Protocol):
     """Small detector abstraction so OpenCV can be swapped for MediaPipe later."""
 
@@ -90,10 +111,26 @@ class OverlayDebugAnnotation:
     rect: NormalizedRect
     confidence: float
     state: str
+    detection_count: int | None = None
+    prevalence: float | None = None
+    average_face_confidence: float | None = None
+    heuristic_multiplier: float | None = None
+    final_score: float | None = None
 
     @property
     def label(self) -> str:
-        return f"cluster {self.cluster_id} | confidence {self.confidence:.3f} | {self.state}"
+        if self.detection_count is None or self.prevalence is None:
+            return (
+                f"cluster {self.cluster_id} | confidence {self.confidence:.3f} | "
+                f"{self.state}"
+            )
+        return (
+            f"cluster {self.cluster_id} | detections {self.detection_count} | "
+            f"prevalence {self.prevalence:.3f} | "
+            f"avg_face {self.average_face_confidence or 0.0:.3f} | "
+            f"heuristic {self.heuristic_multiplier or 0.0:.3f} | "
+            f"score {self.final_score or self.confidence:.3f} | {self.state}"
+        )
 
 
 class OverlayDebugImageWriter(Protocol):
@@ -113,8 +150,48 @@ class OverlayDebugImageWriter(Protocol):
 @dataclass(frozen=True)
 class _FrameDetection:
     frame_index: int
+    timestamp: float | None
     rect: NormalizedRect
     score: float
+
+
+@dataclass(frozen=True)
+class _RawFrameDetection:
+    frame_index: int
+    timestamp: float | None
+    frame_path: Path
+    rect: NormalizedRect
+    score: float
+    detector_name: str
+    pass_metadata: dict[str, object] | None
+    merged_from_count: int
+    merged_passes: tuple[dict[str, object], ...]
+    filtered_out: bool
+    filter_reason: str | None
+
+
+@dataclass(frozen=True)
+class _HaarDetection:
+    box: tuple[int, int, int, int]
+    score: float
+    pass_metadata: dict[str, object]
+
+
+@dataclass(frozen=True)
+class _MergedHaarDetection:
+    box: tuple[int, int, int, int]
+    score: float
+    pass_metadata: dict[str, object]
+    merged_from_count: int
+    merged_passes: tuple[dict[str, object], ...]
+
+
+@dataclass(frozen=True)
+class _FaceDetectionReport:
+    detections: tuple[_FrameDetection, ...]
+    raw_detections: tuple[_RawFrameDetection, ...]
+    detector_info: FaceDetectorDebugInfo
+    sampled_timestamps: tuple[float | None, ...]
 
 
 @dataclass
@@ -130,7 +207,16 @@ class _ScoredCluster:
     cluster_id: int
     face_rect: NormalizedRect
     overlay_rect: NormalizedRect
+    representative_face_rect: NormalizedRect
+    average_face_rect: NormalizedRect
+    detection_count: int
+    sampled_frame_count: int
     frame_count: int
+    prevalence: float
+    average_face_confidence: float
+    max_face_confidence: float
+    frame_indexes: tuple[int, ...]
+    timestamps: tuple[float, ...]
     component_scores: dict[str, float]
     face_score: float
     heuristic_multiplier: float
@@ -149,7 +235,16 @@ class _ScoredCluster:
             "rect": self.overlay_rect.to_dict(),
             "face_rect": self.face_rect.to_dict(),
             "overlay_rect": self.overlay_rect.to_dict(),
+            "representative_face_box": self.representative_face_rect.to_dict(),
+            "average_face_box": self.average_face_rect.to_dict(),
+            "detection_count": self.detection_count,
+            "sampled_frame_count": self.sampled_frame_count,
             "frame_count": self.frame_count,
+            "prevalence": _round(self.prevalence),
+            "average_face_confidence": _round(self.average_face_confidence),
+            "max_face_confidence": _round(self.max_face_confidence),
+            "frame_indexes": list(self.frame_indexes),
+            "timestamps": [_round(timestamp) for timestamp in self.timestamps],
             "component_scores": {
                 name: _round(value) for name, value in self.component_scores.items()
             },
@@ -184,11 +279,20 @@ class OpenCVFaceDetector:
                     "OpenCV Haar cascade data path is unavailable."
                 ) from exc
 
+        self._cascade_path = cascade_path
+        self._last_detection_methods: tuple[str, ...] = ()
         self._cascade = cv2.CascadeClassifier(str(cascade_path))
         if self._cascade.empty():
             raise OverlayDetectorUnavailable(f"OpenCV face cascade could not load: {cascade_path}")
 
     def detect(self, frame_path: Path) -> tuple[FaceDetection, ...]:
+        return tuple(
+            FaceDetection(rect=raw.rect, score=raw.score)
+            for raw in self.detect_raw(frame_path)
+            if not raw.filtered_out
+        )
+
+    def detect_raw(self, frame_path: Path) -> tuple[_RawFrameDetection, ...]:
         image = self._cv2.imread(str(frame_path))
         if image is None:
             return ()
@@ -198,39 +302,201 @@ class OpenCVFaceDetector:
             return ()
 
         gray = self._cv2.cvtColor(image, self._cv2.COLOR_BGR2GRAY)
-        faces, face_scores = self._detect_faces_with_scores(gray)
-        detections: list[FaceDetection] = []
-        for (x, y, face_width, face_height), score in zip(faces, face_scores, strict=True):
+        faces = self._detect_faces_with_scores(gray)
+        detections: list[_RawFrameDetection] = []
+        for face in faces:
+            x, y, face_width, face_height = face.box
             rect = NormalizedRect(
                 x=float(x) / width,
                 y=float(y) / height,
                 width=float(face_width) / width,
                 height=float(face_height) / height,
             )
-            if _is_valid_rect(rect):
-                detections.append(FaceDetection(rect=rect, score=score))
+            filter_reason = _detection_filter_reason(rect)
+            detections.append(
+                _RawFrameDetection(
+                    frame_index=-1,
+                    timestamp=None,
+                    frame_path=frame_path,
+                    rect=rect,
+                    score=_clamp01(face.score),
+                    detector_name=self.debug_info.name,
+                    pass_metadata=face.pass_metadata,
+                    merged_from_count=face.merged_from_count,
+                    merged_passes=face.merged_passes,
+                    filtered_out=filter_reason is not None,
+                    filter_reason=filter_reason,
+                )
+            )
         return tuple(detections)
 
-    def _detect_faces_with_scores(self, gray: object) -> tuple[object, tuple[float, ...]]:
+    @property
+    def debug_info(self) -> FaceDetectorDebugInfo:
+        return FaceDetectorDebugInfo(
+            name="opencv_haar_frontalface_default",
+            settings={
+                "cascade_path": str(self._cascade_path),
+                "passes": [_haar_pass_to_dict(pass_settings) for pass_settings in HAAR_DETECTION_PASSES],
+                "dedup_iou_threshold": HAAR_DEDUP_IOU_THRESHOLD,
+                "preprocessing": "cv2.cvtColor(image, cv2.COLOR_BGR2GRAY)",
+                "equalize_hist": False,
+                "detect_methods": list(self._last_detection_methods),
+                "confidence_normalization": "(level_weight + 3.0) / 7.0 clamped to [0, 1]",
+            },
+        )
+
+    def _detect_faces_with_scores(self, gray: object) -> tuple[_MergedHaarDetection, ...]:
+        detections: list[_HaarDetection] = []
+        methods: list[str] = []
+        for pass_index, pass_settings in enumerate(HAAR_DETECTION_PASSES, start=1):
+            pass_detections, method = self._detect_faces_for_pass(
+                gray,
+                pass_index=pass_index,
+                pass_settings=pass_settings,
+            )
+            methods.append(method)
+            detections.extend(pass_detections)
+        self._last_detection_methods = tuple(methods)
+        return _deduplicate_haar_detections(detections)
+
+    def _detect_faces_for_pass(
+        self,
+        gray: object,
+        *,
+        pass_index: int,
+        pass_settings: dict[str, object],
+    ) -> tuple[tuple[_HaarDetection, ...], str]:
+        pass_metadata = {
+            "pass_index": pass_index,
+            **_haar_pass_to_dict(pass_settings),
+        }
         try:
+            method = "detectMultiScale3"
             faces, _reject_levels, level_weights = self._cascade.detectMultiScale3(
                 gray,
-                scaleFactor=1.1,
-                minNeighbors=5,
-                minSize=(24, 24),
+                scaleFactor=float(pass_settings["scaleFactor"]),
+                minNeighbors=int(pass_settings["minNeighbors"]),
+                minSize=tuple(pass_settings["minSize"]),
                 outputRejectLevels=True,
             )
         except (AttributeError, TypeError):
+            method = "detectMultiScale"
             faces = self._cascade.detectMultiScale(
                 gray,
-                scaleFactor=1.1,
-                minNeighbors=5,
-                minSize=(24, 24),
+                scaleFactor=float(pass_settings["scaleFactor"]),
+                minNeighbors=int(pass_settings["minNeighbors"]),
+                minSize=tuple(pass_settings["minSize"]),
             )
-            return faces, tuple(1.0 for _face in faces)
+            scores = tuple(1.0 for _face in faces)
+        else:
+            scores = tuple(_opencv_face_score(float(weight)) for weight in level_weights)
 
-        scores = tuple(_opencv_face_score(float(weight)) for weight in level_weights)
-        return faces, scores
+        return (
+            tuple(
+                _HaarDetection(
+                    box=(
+                        int(face[0]),
+                        int(face[1]),
+                        int(face[2]),
+                        int(face[3]),
+                    ),
+                    score=_clamp01(score),
+                    pass_metadata=pass_metadata,
+                )
+                for face, score in zip(faces, scores, strict=True)
+            ),
+            method,
+        )
+
+
+def _haar_pass_to_dict(pass_settings: dict[str, object]) -> dict[str, object]:
+    return {
+        "scaleFactor": float(pass_settings["scaleFactor"]),
+        "minNeighbors": int(pass_settings["minNeighbors"]),
+        "minSize": list(pass_settings["minSize"]),
+    }
+
+
+def _deduplicate_haar_detections(
+    detections: list[_HaarDetection],
+) -> tuple[_MergedHaarDetection, ...]:
+    groups: list[list[_HaarDetection]] = []
+    for detection in sorted(detections, key=lambda item: item.score, reverse=True):
+        matching_group: list[_HaarDetection] | None = None
+        matching_iou = 0.0
+        for group in groups:
+            iou = _box_iou(_representative_haar_box(group), detection.box)
+            if iou > matching_iou:
+                matching_group = group
+                matching_iou = iou
+
+        if matching_group is not None and matching_iou >= HAAR_DEDUP_IOU_THRESHOLD:
+            matching_group.append(detection)
+        else:
+            groups.append([detection])
+
+    return tuple(
+        _merged_haar_detection(group)
+        for group in sorted(
+            groups,
+            key=lambda item: max(detection.score for detection in item),
+            reverse=True,
+        )
+    )
+
+
+def _merged_haar_detection(group: list[_HaarDetection]) -> _MergedHaarDetection:
+    best = max(group, key=lambda detection: detection.score)
+    return _MergedHaarDetection(
+        box=_average_haar_box(group),
+        score=best.score,
+        pass_metadata=best.pass_metadata,
+        merged_from_count=len(group),
+        merged_passes=tuple(
+            detection.pass_metadata
+            for detection in sorted(
+                group,
+                key=lambda detection: int(detection.pass_metadata["pass_index"]),
+            )
+        ),
+    )
+
+
+def _representative_haar_box(group: list[_HaarDetection]) -> tuple[int, int, int, int]:
+    return max(group, key=lambda detection: detection.score).box
+
+
+def _average_haar_box(group: list[_HaarDetection]) -> tuple[int, int, int, int]:
+    return (
+        round(statistics.fmean(detection.box[0] for detection in group)),
+        round(statistics.fmean(detection.box[1] for detection in group)),
+        round(statistics.fmean(detection.box[2] for detection in group)),
+        round(statistics.fmean(detection.box[3] for detection in group)),
+    )
+
+
+def _box_iou(
+    first: tuple[int, int, int, int],
+    second: tuple[int, int, int, int],
+) -> float:
+    first_x, first_y, first_width, first_height = first
+    second_x, second_y, second_width, second_height = second
+    left = max(first_x, second_x)
+    top = max(first_y, second_y)
+    right = min(first_x + first_width, second_x + second_width)
+    bottom = min(first_y + first_height, second_y + second_height)
+    intersection_width = max(0, right - left)
+    intersection_height = max(0, bottom - top)
+    intersection = intersection_width * intersection_height
+    if intersection <= 0:
+        return 0.0
+
+    first_area = first_width * first_height
+    second_area = second_width * second_height
+    union = first_area + second_area - intersection
+    if union <= 0:
+        return 0.0
+    return intersection / union
 
 
 class OpenCVOverlayDebugImageWriter:
@@ -314,12 +580,51 @@ class OpenCVOverlayDebugImageWriter:
         )
 
 
+def _draw_debug_label(
+    cv2: object,
+    image: object,
+    text: str,
+    origin: tuple[int, int],
+    *,
+    color: tuple[int, int, int],
+    background: tuple[int, int, int],
+) -> None:
+    font = cv2.FONT_HERSHEY_SIMPLEX
+    scale = 0.52
+    thickness = 1
+    (text_width, text_height), baseline = cv2.getTextSize(
+        text,
+        font,
+        scale,
+        thickness,
+    )
+    x, y = origin
+    cv2.rectangle(
+        image,
+        (x - 4, y - text_height - baseline - 4),
+        (x + text_width + 4, y + baseline + 4),
+        background,
+        -1,
+    )
+    cv2.putText(
+        image,
+        text,
+        (x, y),
+        font,
+        scale,
+        color,
+        thickness,
+        cv2.LINE_AA,
+    )
+
+
 def analyze_overlay(
     *,
     clip_id: str,
     analysis_dir: Path = ANALYSIS_DIR,
     detector: FaceDetector | None = None,
     confidence_threshold: float = DEFAULT_OVERLAY_CONFIDENCE_THRESHOLD,
+    debug_raw_faces: bool = False,
 ) -> Path:
     """Analyze saved sampled frames and write overlay inference metadata."""
 
@@ -332,6 +637,10 @@ def analyze_overlay(
     frames_metadata = _read_frames_metadata(frames_metadata_path)
     metadata_clip_id = str(frames_metadata.get("clip_id") or clip_id)
     frame_paths = _frame_paths_from_metadata(frames_metadata, base_path=frames_metadata_path.parent)
+    sampled_timestamps = _sampled_timestamps_from_metadata(
+        frames_metadata,
+        expected_count=len(frame_paths),
+    )
     _require_existing_frames(frame_paths)
     output_path = analysis_clip_dir / "overlay.json"
 
@@ -351,7 +660,11 @@ def analyze_overlay(
         )
 
     try:
-        detections = _detect_faces(frame_paths, detector=detector_instance)
+        detection_report = _detect_faces(
+            frame_paths,
+            sampled_timestamps=sampled_timestamps,
+            detector=detector_instance,
+        )
     except OverlayDetectorUnavailable as exc:
         return _write_overlay_result(
             output_path,
@@ -364,9 +677,26 @@ def analyze_overlay(
             candidate_clusters=(),
         )
 
-    clusters = _cluster_detections(detections)
+    clusters = _cluster_detections(detection_report.detections)
     scored_clusters = _score_clusters(clusters, total_frames=len(frame_paths))
     if not scored_clusters:
+        _log_face_detection_diagnostics(
+            detection_report=detection_report,
+            sampled_frame_count=len(frame_paths),
+            clusters=clusters,
+            selected_mode="overlay_fallback",
+            fallback_reason="fallback: no face detections found in sampled frames",
+        )
+        if debug_raw_faces:
+            _write_raw_face_debug(
+                analysis_clip_dir=analysis_clip_dir,
+                frame_paths=frame_paths,
+                detection_report=detection_report,
+                clusters=clusters,
+                scored_clusters=scored_clusters,
+                selected_mode="overlay_fallback",
+                fallback_reason="fallback: no face detections found in sampled frames",
+            )
         return _write_overlay_result(
             output_path,
             clip_id=metadata_clip_id,
@@ -380,6 +710,27 @@ def analyze_overlay(
 
     selected = scored_clusters[0]
     if selected.confidence < confidence_threshold:
+        fallback_reason = (
+            "fallback: best candidate confidence "
+            f"{selected.confidence:.3f} is below threshold {confidence_threshold:.3f}"
+        )
+        _log_face_detection_diagnostics(
+            detection_report=detection_report,
+            sampled_frame_count=len(frame_paths),
+            clusters=clusters,
+            selected_mode="overlay_fallback",
+            fallback_reason=fallback_reason,
+        )
+        if debug_raw_faces:
+            _write_raw_face_debug(
+                analysis_clip_dir=analysis_clip_dir,
+                frame_paths=frame_paths,
+                detection_report=detection_report,
+                clusters=clusters,
+                scored_clusters=scored_clusters,
+                selected_mode="overlay_fallback",
+                fallback_reason=fallback_reason,
+            )
         return _write_overlay_result(
             output_path,
             clip_id=metadata_clip_id,
@@ -387,13 +738,27 @@ def analyze_overlay(
             selected_overlay_rect=None,
             confidence=selected.confidence,
             fallback=True,
-            reason=(
-                "fallback: best candidate confidence "
-                f"{selected.confidence:.3f} is below threshold {confidence_threshold:.3f}"
-            ),
+            reason=fallback_reason,
             candidate_clusters=scored_clusters,
         )
 
+    _log_face_detection_diagnostics(
+        detection_report=detection_report,
+        sampled_frame_count=len(frame_paths),
+        clusters=clusters,
+        selected_mode="face_cluster",
+        fallback_reason=None,
+    )
+    if debug_raw_faces:
+        _write_raw_face_debug(
+            analysis_clip_dir=analysis_clip_dir,
+            frame_paths=frame_paths,
+            detection_report=detection_report,
+            clusters=clusters,
+            scored_clusters=scored_clusters,
+            selected_mode="face_cluster",
+            fallback_reason=None,
+        )
     return _write_overlay_result(
         output_path,
         clip_id=metadata_clip_id,
@@ -447,25 +812,358 @@ def write_overlay_debug_images(
 def _detect_faces(
     frame_paths: tuple[Path, ...],
     *,
+    sampled_timestamps: tuple[float | None, ...],
     detector: FaceDetector,
-) -> tuple[_FrameDetection, ...]:
+) -> _FaceDetectionReport:
     detections: list[_FrameDetection] = []
-    for frame_index, frame_path in enumerate(frame_paths):
+    raw_detections: list[_RawFrameDetection] = []
+    for frame_index, (frame_path, timestamp) in enumerate(
+        zip(frame_paths, sampled_timestamps, strict=True)
+    ):
         try:
-            frame_detections = detector.detect(frame_path)
+            frame_raw_detections = _raw_detections_for_frame(
+                detector,
+                frame_path=frame_path,
+                frame_index=frame_index,
+                timestamp=timestamp,
+            )
         except Exception as exc:
             raise OverlayDetectorUnavailable(str(exc)) from exc
 
-        for detection in frame_detections:
-            if _is_valid_rect(detection.rect):
+        raw_detections.extend(frame_raw_detections)
+        for detection in frame_raw_detections:
+            if not detection.filtered_out:
                 detections.append(
                     _FrameDetection(
                         frame_index=frame_index,
+                        timestamp=timestamp,
                         rect=detection.rect,
                         score=_clamp01(detection.score),
                     )
                 )
-    return tuple(detections)
+    return _FaceDetectionReport(
+        detections=tuple(detections),
+        raw_detections=tuple(raw_detections),
+        detector_info=_detector_debug_info(detector),
+        sampled_timestamps=sampled_timestamps,
+    )
+
+
+def _raw_detections_for_frame(
+    detector: FaceDetector,
+    *,
+    frame_path: Path,
+    frame_index: int,
+    timestamp: float | None,
+) -> tuple[_RawFrameDetection, ...]:
+    detect_raw = getattr(detector, "detect_raw", None)
+    if callable(detect_raw):
+        raw_detections = detect_raw(frame_path)
+        return tuple(
+            _RawFrameDetection(
+                frame_index=frame_index,
+                timestamp=timestamp,
+                frame_path=frame_path,
+                rect=detection.rect,
+                score=_clamp01(detection.score),
+                detector_name=detection.detector_name,
+                pass_metadata=detection.pass_metadata,
+                merged_from_count=detection.merged_from_count,
+                merged_passes=detection.merged_passes,
+                filtered_out=detection.filtered_out,
+                filter_reason=detection.filter_reason,
+            )
+            for detection in raw_detections
+        )
+
+    detector_name = _detector_debug_info(detector).name
+    return tuple(
+        _raw_detection_from_public_detection(
+            detection,
+            detector_name=detector_name,
+            frame_path=frame_path,
+            frame_index=frame_index,
+            timestamp=timestamp,
+        )
+        for detection in detector.detect(frame_path)
+    )
+
+
+def _raw_detection_from_public_detection(
+    detection: FaceDetection,
+    *,
+    detector_name: str,
+    frame_path: Path,
+    frame_index: int,
+    timestamp: float | None,
+) -> _RawFrameDetection:
+    filter_reason = _detection_filter_reason(detection.rect)
+    return _RawFrameDetection(
+        frame_index=frame_index,
+        timestamp=timestamp,
+        frame_path=frame_path,
+        rect=detection.rect,
+        score=_clamp01(detection.score),
+        detector_name=detector_name,
+        pass_metadata=None,
+        merged_from_count=1,
+        merged_passes=(),
+        filtered_out=filter_reason is not None,
+        filter_reason=filter_reason,
+    )
+
+
+def _detector_debug_info(detector: FaceDetector) -> FaceDetectorDebugInfo:
+    info = getattr(detector, "debug_info", None)
+    if isinstance(info, FaceDetectorDebugInfo):
+        return info
+    return FaceDetectorDebugInfo(
+        name=detector.__class__.__name__,
+        settings={
+            "source": "FaceDetector.detect(frame_path)",
+            "raw_detection_method": "public_detect_adapter",
+        },
+    )
+
+
+def _log_face_detection_diagnostics(
+    *,
+    detection_report: _FaceDetectionReport,
+    sampled_frame_count: int,
+    clusters: tuple[_Cluster, ...],
+    selected_mode: str,
+    fallback_reason: str | None,
+) -> None:
+    filtered_count = sum(1 for detection in detection_report.raw_detections if detection.filtered_out)
+    filter_reasons = Counter(
+        detection.filter_reason or "kept"
+        for detection in detection_report.raw_detections
+        if detection.filtered_out
+    )
+    LOGGER.info(
+        "overlay face diagnostics: sampled_frames=%s raw_face_detections=%s "
+        "clusters_formed=%s detections_filtered=%s top_filter_reasons=%s "
+        "selected_mode=%s fallback_reason=%s",
+        sampled_frame_count,
+        len(detection_report.raw_detections),
+        len(clusters),
+        filtered_count,
+        dict(filter_reasons.most_common()),
+        selected_mode,
+        fallback_reason,
+    )
+
+
+def _write_raw_face_debug(
+    *,
+    analysis_clip_dir: Path,
+    frame_paths: tuple[Path, ...],
+    detection_report: _FaceDetectionReport,
+    clusters: tuple[_Cluster, ...],
+    scored_clusters: tuple[_ScoredCluster, ...],
+    selected_mode: str,
+    fallback_reason: str | None,
+) -> Path:
+    debug_dir = ensure_directory(analysis_clip_dir / "debug" / "raw_faces")
+    _write_raw_face_debug_images(
+        debug_dir=debug_dir,
+        frame_paths=frame_paths,
+        raw_detections=detection_report.raw_detections,
+    )
+    payload = _raw_face_debug_payload(
+        detection_report=detection_report,
+        frame_paths=frame_paths,
+        clusters=clusters,
+        scored_clusters=scored_clusters,
+        selected_mode=selected_mode,
+        fallback_reason=fallback_reason,
+    )
+    output_path = debug_dir / "raw_faces.json"
+    output_path.write_text(json.dumps(payload, indent=2), encoding="utf-8")
+    return output_path
+
+
+def _write_raw_face_debug_images(
+    *,
+    debug_dir: Path,
+    frame_paths: tuple[Path, ...],
+    raw_detections: tuple[_RawFrameDetection, ...],
+) -> None:
+    try:
+        import cv2
+    except ImportError as exc:
+        raise AnalysisError(
+            "OpenCV is not installed; install opencv-python to write raw face debug images."
+        ) from exc
+
+    detections_by_frame: dict[int, list[_RawFrameDetection]] = {
+        index: [] for index, _path in enumerate(frame_paths)
+    }
+    for detection in raw_detections:
+        detections_by_frame.setdefault(detection.frame_index, []).append(detection)
+
+    for frame_index, frame_path in enumerate(frame_paths):
+        image = cv2.imread(str(frame_path))
+        if image is None:
+            raise AnalysisError(f"Could not read sampled frame for raw face debug: {frame_path}")
+
+        height, width = image.shape[:2]
+        banner = f"raw face detections | frame {frame_index} | count {len(detections_by_frame[frame_index])}"
+        _draw_debug_label(
+            cv2,
+            image,
+            banner,
+            (8, 24),
+            color=(255, 255, 255),
+            background=(32, 32, 32),
+        )
+        for detection in detections_by_frame[frame_index]:
+            color = (0, 80, 255) if detection.filtered_out else (40, 220, 40)
+            left, top, right, bottom = _rect_pixels(detection.rect, width=width, height=height)
+            cv2.rectangle(image, (left, top), (right, bottom), color, 2)
+            label = (
+                f"f{detection.frame_index} {detection.detector_name} "
+                f"conf {detection.score:.3f} "
+                f"x{detection.rect.x:.3f} y{detection.rect.y:.3f} "
+                f"w{detection.rect.width:.3f} h{detection.rect.height:.3f}"
+            )
+            if detection.pass_metadata is not None:
+                label += (
+                    f" sf {detection.pass_metadata['scaleFactor']} "
+                    f"mn {detection.pass_metadata['minNeighbors']} "
+                    f"merged {detection.merged_from_count}"
+                )
+            if detection.filtered_out:
+                label += f" filtered {detection.filter_reason}"
+            _draw_debug_label(
+                cv2,
+                image,
+                label,
+                (left, max(18, top - 8)),
+                color=(255, 255, 255),
+                background=color,
+            )
+
+        output_path = debug_dir / f"{frame_path.stem}.png"
+        if not cv2.imwrite(str(output_path), image):
+            raise AnalysisError(f"Could not write raw face debug image: {output_path}")
+
+
+def _raw_face_debug_payload(
+    *,
+    detection_report: _FaceDetectionReport,
+    frame_paths: tuple[Path, ...],
+    clusters: tuple[_Cluster, ...],
+    scored_clusters: tuple[_ScoredCluster, ...],
+    selected_mode: str,
+    fallback_reason: str | None,
+) -> dict[str, object]:
+    cluster_lookup = _raw_detection_cluster_lookup(clusters, scored_clusters)
+    raw_detection_count = len(detection_report.raw_detections)
+    filtered_count = sum(1 for detection in detection_report.raw_detections if detection.filtered_out)
+    filter_reasons = Counter(
+        detection.filter_reason or "kept"
+        for detection in detection_report.raw_detections
+        if detection.filtered_out
+    )
+    frames = []
+    for frame_index, frame_path in enumerate(frame_paths):
+        frame_detections = [
+            detection
+            for detection in detection_report.raw_detections
+            if detection.frame_index == frame_index
+        ]
+        frames.append(
+            {
+                "frame_index": frame_index,
+                "frame_path": str(frame_path),
+                "frame_timestamp": detection_report.sampled_timestamps[frame_index],
+                "raw_detections": [
+                    _raw_detection_to_dict(
+                        detection,
+                        cluster_lookup=cluster_lookup,
+                    )
+                    for detection in frame_detections
+                ],
+            }
+        )
+
+    return {
+        "sampled_frame_count": len(frame_paths),
+        "raw_face_detection_count": raw_detection_count,
+        "filtered_detection_count": filtered_count,
+        "clusters_formed": len(clusters),
+        "reported_clusters": len(scored_clusters),
+        "top_filter_reasons": dict(filter_reasons.most_common()),
+        "selected_mode": selected_mode,
+        "fallback_reason": fallback_reason,
+        "detector": {
+            "name": detection_report.detector_info.name,
+            "settings": detection_report.detector_info.settings,
+        },
+        "frames": frames,
+        "clusters": [cluster.to_dict() for cluster in scored_clusters],
+    }
+
+
+def _raw_detection_cluster_lookup(
+    clusters: tuple[_Cluster, ...],
+    scored_clusters: tuple[_ScoredCluster, ...],
+) -> dict[tuple[int, float, float, float, float, float], dict[str, int | None]]:
+    rank_by_cluster_id = {
+        cluster.cluster_id: cluster.ranking_position for cluster in scored_clusters
+    }
+    lookup: dict[tuple[int, float, float, float, float, float], dict[str, int | None]] = {}
+    for cluster_id, cluster in enumerate(clusters, start=1):
+        for detection in cluster.detections:
+            lookup[_raw_detection_key(detection)] = {
+                "cluster_id": cluster_id,
+                "ranking_position": rank_by_cluster_id.get(cluster_id),
+            }
+    return lookup
+
+
+def _raw_detection_to_dict(
+    detection: _RawFrameDetection,
+    *,
+    cluster_lookup: dict[tuple[int, float, float, float, float, float], dict[str, int | None]],
+) -> dict[str, object]:
+    cluster_info = cluster_lookup.get(_raw_detection_key(detection))
+    return {
+        "x": _round(detection.rect.x),
+        "y": _round(detection.rect.y),
+        "w": _round(detection.rect.width),
+        "h": _round(detection.rect.height),
+        "confidence": _round(detection.score),
+        "detector_name": detection.detector_name,
+        "pass_metadata": detection.pass_metadata,
+        "scaleFactor": (
+            detection.pass_metadata["scaleFactor"] if detection.pass_metadata else None
+        ),
+        "minNeighbors": (
+            detection.pass_metadata["minNeighbors"] if detection.pass_metadata else None
+        ),
+        "minSize": detection.pass_metadata["minSize"] if detection.pass_metadata else None,
+        "merged_from_count": detection.merged_from_count,
+        "merged_passes": list(detection.merged_passes),
+        "filtered_out": detection.filtered_out,
+        "filter_reason": detection.filter_reason,
+        "cluster_id": cluster_info["cluster_id"] if cluster_info else None,
+        "ranking_position": cluster_info["ranking_position"] if cluster_info else None,
+    }
+
+
+def _raw_detection_key(
+    detection: _FrameDetection | _RawFrameDetection,
+) -> tuple[int, float, float, float, float, float]:
+    return (
+        detection.frame_index,
+        round(detection.rect.x, 8),
+        round(detection.rect.y, 8),
+        round(detection.rect.width, 8),
+        round(detection.rect.height, 8),
+        round(detection.score, 8),
+    )
 
 
 def _cluster_detections(detections: tuple[_FrameDetection, ...]) -> tuple[_Cluster, ...]:
@@ -511,7 +1209,16 @@ def _score_clusters(
                 cluster_id=cluster.cluster_id,
                 face_rect=cluster.face_rect,
                 overlay_rect=cluster.overlay_rect,
+                representative_face_rect=cluster.representative_face_rect,
+                average_face_rect=cluster.average_face_rect,
+                detection_count=cluster.detection_count,
+                sampled_frame_count=cluster.sampled_frame_count,
                 frame_count=cluster.frame_count,
+                prevalence=cluster.prevalence,
+                average_face_confidence=cluster.average_face_confidence,
+                max_face_confidence=cluster.max_face_confidence,
+                frame_indexes=cluster.frame_indexes,
+                timestamps=cluster.timestamps,
                 component_scores={
                     **cluster.component_scores,
                     "competition_penalty": penalty,
@@ -526,12 +1233,22 @@ def _score_clusters(
             )
         )
     adjusted.sort(key=lambda cluster: cluster.confidence, reverse=True)
+    reported = _reported_clusters(adjusted)
     return tuple(
         _ScoredCluster(
             cluster_id=cluster.cluster_id,
             face_rect=cluster.face_rect,
             overlay_rect=cluster.overlay_rect,
+            representative_face_rect=cluster.representative_face_rect,
+            average_face_rect=cluster.average_face_rect,
+            detection_count=cluster.detection_count,
+            sampled_frame_count=cluster.sampled_frame_count,
             frame_count=cluster.frame_count,
+            prevalence=cluster.prevalence,
+            average_face_confidence=cluster.average_face_confidence,
+            max_face_confidence=cluster.max_face_confidence,
+            frame_indexes=cluster.frame_indexes,
+            timestamps=cluster.timestamps,
             component_scores=cluster.component_scores,
             face_score=cluster.face_score,
             heuristic_multiplier=cluster.heuristic_multiplier,
@@ -540,8 +1257,46 @@ def _score_clusters(
             raw_score=cluster.raw_score,
             confidence=cluster.confidence,
         )
-        for index, cluster in enumerate(adjusted, start=1)
+        for index, cluster in enumerate(reported, start=1)
     )
+
+
+def _reported_clusters(scored_clusters: list[_ScoredCluster]) -> list[_ScoredCluster]:
+    reported: list[_ScoredCluster] = []
+
+    def add(cluster: _ScoredCluster) -> None:
+        if all(existing.cluster_id != cluster.cluster_id for existing in reported):
+            reported.append(cluster)
+
+    for cluster in scored_clusters[: min(3, MAX_REPORTED_FACE_CLUSTERS)]:
+        add(cluster)
+
+    if scored_clusters:
+        add(max(scored_clusters, key=lambda cluster: cluster.face_score))
+
+    for corner in ("top_left", "top_right", "bottom_left", "bottom_right"):
+        corner_clusters = [
+            cluster
+            for cluster in scored_clusters
+            if _corner_affinity(cluster.overlay_rect, corner) > 0.0
+        ]
+        if corner_clusters:
+            add(
+                max(
+                    corner_clusters,
+                    key=lambda cluster: (
+                        cluster.face_score * _corner_affinity(cluster.overlay_rect, corner),
+                        cluster.confidence,
+                    ),
+                )
+            )
+
+    for cluster in scored_clusters:
+        add(cluster)
+        if len(reported) >= MAX_REPORTED_FACE_CLUSTERS:
+            break
+
+    return sorted(reported[:MAX_REPORTED_FACE_CLUSTERS], key=lambda cluster: cluster.confidence, reverse=True)
 
 
 def _score_cluster(
@@ -550,10 +1305,23 @@ def _score_cluster(
     cluster_id: int,
     total_frames: int,
 ) -> _ScoredCluster:
-    face_rect = _cluster_rect(cluster)
+    average_face_rect = _cluster_rect(cluster)
+    representative_face_rect = _representative_rect(cluster, average_face_rect)
+    face_rect = average_face_rect
     overlay_rect = _expand_face_rect_to_streamer_crop_rect(face_rect)
-    frame_count = len({detection.frame_index for detection in cluster.detections})
+    detection_count = len(cluster.detections)
+    frame_indexes = tuple(sorted({detection.frame_index for detection in cluster.detections}))
+    timestamps = tuple(
+        detection.timestamp
+        for detection in sorted(cluster.detections, key=lambda item: item.frame_index)
+        if detection.timestamp is not None
+    )
+    frame_count = len(frame_indexes)
     prevalence = frame_count / total_frames if total_frames else 0.0
+    average_face_confidence = statistics.fmean(
+        detection.score for detection in cluster.detections
+    )
+    max_face_confidence = max(detection.score for detection in cluster.detections)
 
     position_stability = _position_stability(cluster)
     size_stability = _size_stability(cluster)
@@ -561,9 +1329,16 @@ def _score_cluster(
     center_avoidance = _center_avoidance(overlay_rect)
     size_score = _overlay_size_score(overlay_rect.area)
     aspect_ratio_score = _face_aspect_ratio_score(face_rect)
-    face_score = statistics.fmean(detection.score for detection in cluster.detections)
+    confidence_score = (
+        average_face_confidence * 0.72
+        + max_face_confidence * 0.18
+        + min(average_face_confidence, max_face_confidence) * 0.10
+    )
+    recurrence_multiplier = 0.20 + prevalence * 0.80
+    face_score = _clamp01(confidence_score * recurrence_multiplier)
 
-    brief_penalty = max(0.0, 0.45 - prevalence) * 0.75
+    one_frame_penalty = 0.32 if frame_count <= 1 and total_frames > 1 else 0.0
+    brief_penalty = max(0.0, 0.45 - prevalence) * 0.70
     central_penalty = (1.0 - center_avoidance) * 0.22
     huge_central_penalty = _huge_central_penalty(overlay_rect, center_avoidance)
     tiny_penalty = max(
@@ -582,6 +1357,7 @@ def _score_cluster(
     aspect_ratio_multiplier = 0.70 + aspect_ratio_score * 0.30
     penalty_multiplier = _clamp01(
         1.0
+        - one_frame_penalty
         - brief_penalty
         - central_penalty
         - huge_central_penalty
@@ -595,23 +1371,35 @@ def _score_cluster(
         * aspect_ratio_multiplier
         * penalty_multiplier
     )
+    heuristic_floor_applied = 0.0
+    if face_score > 0.0 and heuristic_multiplier < MIN_VALID_FACE_HEURISTIC_MULTIPLIER:
+        heuristic_floor_applied = MIN_VALID_FACE_HEURISTIC_MULTIPLIER
+        heuristic_multiplier = MIN_VALID_FACE_HEURISTIC_MULTIPLIER
     raw_score = _clamp01(face_score * heuristic_multiplier)
 
     component_scores = {
         "prevalence": prevalence,
+        "detection_count": float(detection_count),
+        "sampled_frame_count": float(total_frames),
         "position_stability": position_stability,
         "size_stability": size_stability,
         "edge_proximity": edge_proximity,
         "center_avoidance": center_avoidance,
         "overlay_size": size_score,
         "face_aspect_ratio": aspect_ratio_score,
-        "detector_confidence": face_score,
+        "average_face_confidence": average_face_confidence,
+        "max_face_confidence": max_face_confidence,
+        "confidence_score": confidence_score,
+        "recurrence_multiplier": recurrence_multiplier,
+        "detector_confidence": average_face_confidence,
         "prevalence_multiplier": prevalence_multiplier,
         "stability_multiplier": stability_multiplier,
         "placement_multiplier": placement_multiplier,
         "size_multiplier": size_multiplier,
         "aspect_ratio_multiplier": aspect_ratio_multiplier,
         "penalty_multiplier": penalty_multiplier,
+        "heuristic_floor_applied": heuristic_floor_applied,
+        "one_frame_penalty": one_frame_penalty,
         "brief_penalty": brief_penalty,
         "central_penalty": central_penalty,
         "huge_central_penalty": huge_central_penalty,
@@ -621,7 +1409,16 @@ def _score_cluster(
         cluster_id=cluster_id,
         face_rect=face_rect,
         overlay_rect=overlay_rect,
+        representative_face_rect=representative_face_rect,
+        average_face_rect=average_face_rect,
+        detection_count=detection_count,
+        sampled_frame_count=total_frames,
         frame_count=frame_count,
+        prevalence=prevalence,
+        average_face_confidence=average_face_confidence,
+        max_face_confidence=max_face_confidence,
+        frame_indexes=frame_indexes,
+        timestamps=timestamps,
         component_scores=component_scores,
         face_score=face_score,
         heuristic_multiplier=heuristic_multiplier,
@@ -650,6 +1447,13 @@ def _cluster_rect(cluster: _Cluster) -> NormalizedRect:
         y=statistics.fmean(detection.rect.y for detection in cluster.detections),
         width=statistics.fmean(detection.rect.width for detection in cluster.detections),
         height=statistics.fmean(detection.rect.height for detection in cluster.detections),
+    )
+
+
+def _representative_rect(cluster: _Cluster, average_rect: NormalizedRect) -> NormalizedRect:
+    return min(
+        (detection.rect for detection in cluster.detections),
+        key=lambda rect: _cluster_distance(average_rect, rect),
     )
 
 
@@ -722,12 +1526,56 @@ def _fit_streamer_crop_to_face(
     width: float,
     height: float,
 ) -> NormalizedRect:
+    edge_anchored = _edge_anchored_streamer_crop(face_rect, width=width, height=height)
+    if edge_anchored is not None:
+        return edge_anchored
+
     x = face_rect.center_x - width / 2
     y = face_rect.center_y - height * STREAMER_CROP_FACE_CENTER_Y_RATIO
 
     x = max(face_rect.x + face_rect.width - width, min(x, face_rect.x))
     y = max(face_rect.y + face_rect.height - height, min(y, face_rect.y))
     return _fit_rect_to_frame(x=x, y=y, width=width, height=height)
+
+
+def _edge_anchored_streamer_crop(
+    face_rect: NormalizedRect,
+    *,
+    width: float,
+    height: float,
+) -> NormalizedRect | None:
+    bottom_aligned_face = face_rect.y + face_rect.height >= 0.90
+    left_aligned_face = face_rect.x <= 0.05
+    right_aligned_face = face_rect.x + face_rect.width >= 0.95
+    if not bottom_aligned_face or not (left_aligned_face or right_aligned_face):
+        return None
+
+    if left_aligned_face:
+        minimum_width = face_rect.x + face_rect.width
+        x = 0.0
+    else:
+        minimum_width = 1.0 - face_rect.x
+        x = 1.0 - width
+
+    minimum_height = max(
+        height,
+        1.0 - face_rect.y,
+        minimum_width / STREAMER_CROP_TARGET_NORMALIZED_ASPECT_RATIO,
+    )
+    anchored_height = min(
+        minimum_height,
+        min(1.0, 1.0 / STREAMER_CROP_TARGET_NORMALIZED_ASPECT_RATIO),
+    )
+    anchored_width = anchored_height * STREAMER_CROP_TARGET_NORMALIZED_ASPECT_RATIO
+    if right_aligned_face:
+        x = 1.0 - anchored_width
+
+    return _fit_rect_to_frame(
+        x=x,
+        y=1.0 - anchored_height,
+        width=anchored_width,
+        height=anchored_height,
+    )
 
 
 def _centered_rect_extent(center: float) -> float:
@@ -788,6 +1636,24 @@ def _edge_proximity(rect: NormalizedRect) -> float:
     edge_score = _clamp01(1.0 - distances[0] / 0.22)
     corner_score = _clamp01(1.0 - distances[1] / 0.25)
     return _clamp01(edge_score * 0.75 + corner_score * 0.25)
+
+
+def _corner_affinity(rect: NormalizedRect, corner: str) -> float:
+    left = rect.x
+    top = rect.y
+    right = 1.0 - rect.x - rect.width
+    bottom = 1.0 - rect.y - rect.height
+    distances = {
+        "top_left": (left, top),
+        "top_right": (right, top),
+        "bottom_left": (left, bottom),
+        "bottom_right": (right, bottom),
+    }
+    horizontal_distance, vertical_distance = distances[corner]
+    return _clamp01(
+        (1.0 - horizontal_distance / 0.28)
+        * (1.0 - vertical_distance / 0.28)
+    )
 
 
 def _center_avoidance(rect: NormalizedRect) -> float:
@@ -936,6 +1802,27 @@ def _frame_paths_from_metadata(
     return tuple(paths)
 
 
+def _sampled_timestamps_from_metadata(
+    payload: dict[str, object],
+    *,
+    expected_count: int,
+) -> tuple[float | None, ...]:
+    sampled_timestamps = payload.get("sampled_timestamps")
+    if sampled_timestamps is None:
+        return tuple(None for _index in range(expected_count))
+    if not isinstance(sampled_timestamps, list) or len(sampled_timestamps) != expected_count:
+        raise AnalysisError(
+            "Frame metadata sampled_timestamps must match the frame_paths length."
+        )
+
+    timestamps: list[float | None] = []
+    for value in sampled_timestamps:
+        if not isinstance(value, (int, float)):
+            raise AnalysisError("Frame metadata contains an invalid sampled timestamp.")
+        timestamps.append(float(value))
+    return tuple(timestamps)
+
+
 def _debug_annotations(payload: dict[str, object]) -> tuple[OverlayDebugAnnotation, ...]:
     clusters = payload.get("candidate_clusters")
     if not isinstance(clusters, list):
@@ -944,7 +1831,7 @@ def _debug_annotations(payload: dict[str, object]) -> tuple[OverlayDebugAnnotati
     selected_rect = _optional_rect_from_payload(payload.get("selected_rect"))
     fallback = bool(payload.get("fallback"))
     annotations: list[OverlayDebugAnnotation] = []
-    for cluster in clusters:
+    for cluster in clusters[:MAX_REPORTED_FACE_CLUSTERS]:
         if not isinstance(cluster, dict):
             raise AnalysisError("Overlay metadata contains an invalid candidate cluster.")
         rect = _rect_from_payload(cluster.get("rect"), context="candidate cluster rect")
@@ -957,6 +1844,15 @@ def _debug_annotations(payload: dict[str, object]) -> tuple[OverlayDebugAnnotati
                 rect=rect,
                 confidence=confidence,
                 state=state,
+                detection_count=_optional_int_from_payload(cluster.get("detection_count")),
+                prevalence=_optional_float_from_payload(cluster.get("prevalence")),
+                average_face_confidence=_optional_float_from_payload(
+                    cluster.get("average_face_confidence")
+                ),
+                heuristic_multiplier=_optional_float_from_payload(
+                    cluster.get("heuristic_multiplier")
+                ),
+                final_score=_optional_float_from_payload(cluster.get("final_score")),
             )
         )
     return tuple(annotations)
@@ -1008,9 +1904,21 @@ def _float_from_payload(value: object, *, context: str) -> float:
     return float(value)
 
 
+def _optional_float_from_payload(value: object) -> float | None:
+    if value is None or not isinstance(value, (int, float)):
+        return None
+    return float(value)
+
+
 def _int_from_payload(value: object, *, context: str) -> int:
     if not isinstance(value, int):
         raise AnalysisError(f"Overlay metadata contains an invalid {context}.")
+    return value
+
+
+def _optional_int_from_payload(value: object) -> int | None:
+    if value is None or not isinstance(value, int):
+        return None
     return value
 
 
@@ -1056,15 +1964,24 @@ def _rects_close(first: NormalizedRect, second: NormalizedRect) -> bool:
     )
 
 
+def _detection_filter_reason(rect: NormalizedRect) -> str | None:
+    if rect.width <= 0:
+        return "non_positive_width"
+    if rect.height <= 0:
+        return "non_positive_height"
+    if rect.x < 0:
+        return "x_before_frame"
+    if rect.y < 0:
+        return "y_before_frame"
+    if rect.x + rect.width > 1.0:
+        return "x_after_frame"
+    if rect.y + rect.height > 1.0:
+        return "y_after_frame"
+    return None
+
+
 def _is_valid_rect(rect: NormalizedRect) -> bool:
-    return (
-        rect.width > 0
-        and rect.height > 0
-        and rect.x >= 0
-        and rect.y >= 0
-        and rect.x + rect.width <= 1.0
-        and rect.y + rect.height <= 1.0
-    )
+    return _detection_filter_reason(rect) is None
 
 
 def _safe_clip_id(clip_id: str) -> str:
