@@ -649,6 +649,8 @@ def _handle_clips_process_command(args: argparse.Namespace) -> int:
                 include_force=True,
                 include_rerender=True,
             )
+            if clip.status == "needs_rerender":
+                process_kwargs["force"] = True
             metadata_path = process_clip(clip.url, **process_kwargs)
         except Exception as exc:
             failures += 1

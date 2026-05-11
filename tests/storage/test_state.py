@@ -13,6 +13,7 @@ from clipforge.storage.state import (
     mark_clip_downloaded,
     mark_clip_exported,
     mark_clip_failed,
+    mark_clip_needs_rerender,
     mark_clip_rendered,
     mark_clip_skipped,
     reset_all_clips_to_discovered,
@@ -208,6 +209,42 @@ def test_skipped_clip_is_not_returned_by_review_eligibility(
 
     assert [clip.clip_id for clip in eligible] == ["clip-eligible"]
     assert "Excluding 1 skipped clip(s) from normal review eligibility." in caplog.text
+
+
+def test_needs_rerender_is_processing_eligible_but_not_normal_review_eligible(
+    tmp_path: Path,
+) -> None:
+    db_path = _db_path(tmp_path)
+    for clip_id in ("clip-rerender", "clip-eligible"):
+        upsert_discovered_clip(
+            clip_id=clip_id,
+            url=f"https://clips.twitch.tv/{clip_id}",
+            streamer_login="example",
+            rank_score=1.0 if clip_id == "clip-rerender" else 0.5,
+            db_path=db_path,
+        )
+    rerender = mark_clip_needs_rerender(
+        "clip-rerender",
+        skip_reason="layouts did not fit",
+        db_path=db_path,
+    )
+
+    assert rerender.status == "needs_rerender"
+    assert rerender.skip_reason == "layouts did not fit"
+    assert [clip.clip_id for clip in get_unprocessed_clips(db_path=db_path)] == [
+        "clip-rerender",
+        "clip-eligible",
+    ]
+    assert [clip.clip_id for clip in get_review_eligible_clips(db_path=db_path)] == [
+        "clip-eligible"
+    ]
+    assert [
+        clip.clip_id
+        for clip in get_review_eligible_clips(
+            db_path=db_path,
+            include_needs_rerender=True,
+        )
+    ] == ["clip-rerender", "clip-eligible"]
 
 
 def test_reset_clip_to_discovered_clears_processing_artifact_fields(

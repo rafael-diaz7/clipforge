@@ -12,6 +12,7 @@ from clipforge.pipeline.review import ClipReviewError, review_streamer_clips
 from clipforge.storage.state import (
     get_clip,
     mark_clip_exported,
+    mark_clip_needs_rerender,
     mark_clip_skipped,
     upsert_discovered_clip,
 )
@@ -180,7 +181,7 @@ def test_review_rejects_invalid_selection_and_reprompts(
         output_fn=output.append,
     )
 
-    assert output.count("Invalid selection. Enter 1-2 or s to skip.") == 2
+    assert output.count("Invalid selection. Enter 1-2, s to skip, or r to rerender.") == 2
     assert exported == (
         tmp_path / "exports" / "ready" / "example" / "clip-1" / "center_gameplay.mp4",
     )
@@ -216,6 +217,42 @@ def test_review_skip_does_not_export_or_mark_selected(
     assert state.skip_reason == "review skipped after candidates generated"
     assert state.export_path is None
     assert not (tmp_path / "exports").exists()
+
+
+def test_review_rerender_choice_marks_clip_needs_rerender(
+    monkeypatch,
+    tmp_path: Path,
+) -> None:
+    config = _config(tmp_path)
+    output: list[str] = []
+
+    monkeypatch.setattr(
+        "clipforge.pipeline.review.list_channel_clips",
+        lambda *args, **kwargs: (_clip("clip-1", views=100),),
+    )
+    monkeypatch.setattr(
+        "clipforge.pipeline.review.process_clip",
+        lambda url, **kwargs: _write_metadata(config, "clip-1"),
+    )
+
+    exported = review_streamer_clips(
+        streamer="example",
+        count=1,
+        config=config,
+        input_fn=lambda prompt: "r",
+        output_fn=output.append,
+    )
+
+    state = get_clip("clip-1", db_path=config.state_db_path)
+    assert exported == ()
+    assert state is not None
+    assert state.status == "needs_rerender"
+    assert state.skip_reason == "review requested rerender after candidates generated"
+    assert state.export_path is None
+    assert output[-1] == (
+        "rerender requested: clip-1 "
+        "(will be picked up by processing or review --rerender)"
+    )
 
 
 def test_review_marks_clip_failed_when_processing_fails(
@@ -363,6 +400,84 @@ def test_review_clip_id_override_processes_skipped_clip(
 
     state = get_clip("clip-skipped", db_path=config.state_db_path)
     assert calls == ["clip-skipped"]
+    assert state is not None
+    assert state.status == "exported"
+
+
+def test_review_without_rerender_rejects_clip_id_that_needs_rerender(
+    monkeypatch,
+    tmp_path: Path,
+) -> None:
+    config = _config(tmp_path)
+    upsert_discovered_clip(
+        clip_id="clip-rerender",
+        url="https://clips.twitch.tv/clip-rerender",
+        streamer_login="example",
+        db_path=config.state_db_path,
+    )
+    mark_clip_needs_rerender(
+        "clip-rerender",
+        skip_reason="layouts did not fit",
+        db_path=config.state_db_path,
+    )
+    monkeypatch.setattr(
+        "clipforge.pipeline.review.list_channel_clips",
+        lambda *args, **kwargs: (_clip("clip-rerender", views=100),),
+    )
+
+    with pytest.raises(ClipReviewError, match="Re-run with --rerender"):
+        review_streamer_clips(
+            streamer="example",
+            count=1,
+            clip_ids=("clip-rerender",),
+            config=config,
+            input_fn=lambda prompt: "1",
+            output_fn=lambda line: None,
+        )
+
+
+def test_review_rerender_includes_clip_that_needs_rerender(
+    monkeypatch,
+    tmp_path: Path,
+) -> None:
+    config = _config(tmp_path)
+    calls: list[dict[str, object]] = []
+    upsert_discovered_clip(
+        clip_id="clip-rerender",
+        url="https://clips.twitch.tv/clip-rerender",
+        streamer_login="example",
+        rank_score=1.0,
+        db_path=config.state_db_path,
+    )
+    mark_clip_needs_rerender(
+        "clip-rerender",
+        skip_reason="layouts did not fit",
+        db_path=config.state_db_path,
+    )
+
+    monkeypatch.setattr(
+        "clipforge.pipeline.review.list_channel_clips",
+        lambda *args, **kwargs: (_clip("clip-rerender", views=100),),
+    )
+
+    def fake_process(url: str, **kwargs) -> Path:
+        calls.append({"url": url, **kwargs})
+        return _write_metadata(config, "clip-rerender")
+
+    monkeypatch.setattr("clipforge.pipeline.review.process_clip", fake_process)
+
+    review_streamer_clips(
+        streamer="example",
+        count=1,
+        rerender=True,
+        config=config,
+        input_fn=lambda prompt: "1",
+        output_fn=lambda line: None,
+    )
+
+    state = get_clip("clip-rerender", db_path=config.state_db_path)
+    assert calls[0]["url"] == "https://clips.twitch.tv/clip-rerender"
+    assert calls[0]["rerender"] is True
     assert state is not None
     assert state.status == "exported"
 

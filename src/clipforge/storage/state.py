@@ -22,6 +22,7 @@ CLIP_STATUSES = frozenset(
         "queued",
         "downloaded",
         "rendered",
+        "needs_rerender",
         "approved",
         "selected",
         "exported",
@@ -30,8 +31,9 @@ CLIP_STATUSES = frozenset(
         "failed",
     }
 )
-UNPROCESSED_STATUSES = ("discovered", "queued")
+UNPROCESSED_STATUSES = ("discovered", "queued", "needs_rerender")
 REVIEW_EXCLUDED_STATUSES = (
+    "needs_rerender",
     "approved",
     "selected",
     "exported",
@@ -87,6 +89,7 @@ CREATE TABLE IF NOT EXISTS clips (
       'queued',
       'downloaded',
       'rendered',
+      'needs_rerender',
       'approved',
       'selected',
       'exported',
@@ -239,10 +242,11 @@ def get_unprocessed_clips(
 
     resolved_path = init_db(db_path)
     params: list[Any] = list(UNPROCESSED_STATUSES)
-    sql = """
+    placeholders = ", ".join("?" for _ in UNPROCESSED_STATUSES)
+    sql = f"""
         SELECT *
         FROM clips
-        WHERE status IN (?, ?)
+        WHERE status IN ({placeholders})
     """
     if streamer_login is not None:
         sql += " AND LOWER(streamer_login) = LOWER(?)"
@@ -257,6 +261,7 @@ def get_review_eligible_clips(
     db_path: Path | str = DEFAULT_STATE_DB_PATH,
     limit: int | None = None,
     streamer_login: str | None = None,
+    include_needs_rerender: bool = False,
 ) -> tuple[ClipState, ...]:
     """Return clips eligible for manual final-render review."""
 
@@ -271,8 +276,13 @@ def get_review_eligible_clips(
                 "Excluding %d skipped clip(s) from normal review eligibility.",
                 skipped_count,
             )
-    params: list[Any] = list(REVIEW_EXCLUDED_STATUSES)
-    placeholders = ", ".join("?" for _ in REVIEW_EXCLUDED_STATUSES)
+    excluded_statuses = tuple(
+        status
+        for status in REVIEW_EXCLUDED_STATUSES
+        if status != "needs_rerender" or not include_needs_rerender
+    )
+    params: list[Any] = list(excluded_statuses)
+    placeholders = ", ".join("?" for _ in excluded_statuses)
     sql = f"""
         SELECT *
         FROM clips
@@ -459,6 +469,23 @@ def mark_clip_skipped(
     )
 
 
+def mark_clip_needs_rerender(
+    clip_id: str,
+    *,
+    skip_reason: str,
+    db_path: Path | str = DEFAULT_STATE_DB_PATH,
+) -> ClipState:
+    """Mark a clip as needing regenerated render candidates."""
+
+    return _update_clip_status(
+        clip_id,
+        "needs_rerender",
+        db_path=db_path,
+        skip_reason=skip_reason,
+        clear_error_message=True,
+    )
+
+
 def mark_clip_exported(
     clip_id: str,
     *,
@@ -639,7 +666,11 @@ def _migrate_clips_table(connection: sqlite3.Connection) -> None:
         WHERE type = 'table' AND name = 'clips'
         """
     ).fetchone()["sql"]
-    if "'exported'" in table_sql and "'selected'" in table_sql:
+    if (
+        "'exported'" in table_sql
+        and "'selected'" in table_sql
+        and "'needs_rerender'" in table_sql
+    ):
         return
 
     existing_columns = _table_columns(connection, "clips")

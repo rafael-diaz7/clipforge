@@ -12,6 +12,7 @@ from clipforge.integrations.twitch import TwitchClip
 from clipforge.storage.state import (
     get_clip,
     mark_clip_failed,
+    mark_clip_needs_rerender,
     mark_clip_rendered,
     upsert_discovered_clip,
 )
@@ -849,6 +850,56 @@ def test_main_processes_top_pending_clips_by_rank_score(
     assert capsys.readouterr().out.splitlines() == [
         "processed: clip-high: clip-high.json",
         "processed: clip-mid: clip-mid.json",
+    ]
+
+
+def test_main_processes_needs_rerender_clip_with_force(
+    monkeypatch,
+    capsys,
+    tmp_path: Path,
+) -> None:
+    config = ClipforgeConfig(state_db_path=tmp_path / "state" / "clipforge.sqlite")
+    upsert_discovered_clip(
+        clip_id="clip-rerender",
+        url="https://clips.twitch.tv/clip-rerender",
+        rank_score=1.0,
+        db_path=config.state_db_path,
+    )
+    mark_clip_needs_rerender(
+        "clip-rerender",
+        skip_reason="layouts did not fit",
+        db_path=config.state_db_path,
+    )
+    calls: list[dict[str, object]] = []
+
+    def fake_process(url: str, **kwargs) -> Path:
+        calls.append({"url": url, **kwargs})
+        mark_clip_rendered(
+            "clip-rerender",
+            render_dir=tmp_path / "renders" / "clip-rerender",
+            metadata_path=tmp_path / "metadata" / "clip-rerender.json",
+            db_path=config.state_db_path,
+        )
+        return tmp_path / "metadata" / "clip-rerender.json"
+
+    monkeypatch.setattr("clipforge.pipeline.cli.load_config", lambda: config)
+    monkeypatch.setattr("clipforge.pipeline.cli.process_clip", fake_process)
+
+    exit_code = main(["clips", "process", "--top", "1"])
+
+    state = get_clip("clip-rerender", db_path=config.state_db_path)
+    assert exit_code == 0
+    assert calls == [
+        {
+            "url": "https://clips.twitch.tv/clip-rerender",
+            "config": config,
+            "force": True,
+        }
+    ]
+    assert state is not None
+    assert state.status == "rendered"
+    assert capsys.readouterr().out.splitlines() == [
+        f"processed: clip-rerender: {tmp_path / 'metadata' / 'clip-rerender.json'}"
     ]
 
 

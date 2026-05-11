@@ -5,6 +5,7 @@ from __future__ import annotations
 import json
 import shutil
 from dataclasses import dataclass
+from enum import Enum
 from pathlib import Path
 from typing import Callable, Sequence
 
@@ -22,6 +23,7 @@ from clipforge.storage.state import (
     get_review_eligible_clips,
     mark_clip_exported,
     mark_clip_failed,
+    mark_clip_needs_rerender,
     mark_clip_skipped,
 )
 from clipforge.utils.paths import ensure_directory, safe_filename
@@ -39,6 +41,11 @@ class ClipReviewError(RuntimeError):
 class RenderOption:
     layout: str
     path: Path
+
+
+class ReviewAction(Enum):
+    SKIP = "skip"
+    RERENDER = "rerender"
 
 
 def review_streamer_clips(
@@ -77,6 +84,7 @@ def review_streamer_clips(
     selected_clips = _selected_review_clips(
         clip_ids=clip_ids,
         count=count,
+        rerender=rerender,
         streamer_login=streamer_login,
         config=config,
     )
@@ -106,13 +114,13 @@ def review_streamer_clips(
             )
             raise
         render_options = _render_options_from_metadata(metadata_path)
-        selected = _prompt_for_render_selection(
+        choice = _prompt_for_render_selection(
             clip,
             render_options,
             input_fn=input_fn,
             output_fn=output_fn,
         )
-        if selected is None:
+        if choice is ReviewAction.SKIP:
             mark_clip_skipped(
                 clip.clip_id,
                 skip_reason="review skipped after candidates generated",
@@ -123,18 +131,29 @@ def review_streamer_clips(
                 "(will not be picked again by normal review)"
             )
             continue
+        if choice is ReviewAction.RERENDER:
+            mark_clip_needs_rerender(
+                clip.clip_id,
+                skip_reason="review requested rerender after candidates generated",
+                db_path=config.state_db_path,
+            )
+            output_fn(
+                f"rerender requested: {clip.clip_id} "
+                "(will be picked up by processing or review --rerender)"
+            )
+            continue
 
         export_path = _copy_selected_render(
             clip=clip,
             streamer_login=streamer_login,
-            selected=selected,
+            selected=choice,
             force=force,
             config=config,
         )
         mark_clip_exported(
             clip.clip_id,
-            selected_render_layout=selected.layout,
-            selected_render_path=selected.path,
+            selected_render_layout=choice.layout,
+            selected_render_path=choice.path,
             export_path=export_path,
             db_path=config.state_db_path,
         )
@@ -148,6 +167,7 @@ def _selected_review_clips(
     *,
     clip_ids: Sequence[str],
     count: int,
+    rerender: bool,
     streamer_login: str,
     config: ClipforgeConfig,
 ) -> tuple[ClipState, ...]:
@@ -156,6 +176,7 @@ def _selected_review_clips(
             db_path=config.state_db_path,
             streamer_login=streamer_login,
             limit=count,
+            include_needs_rerender=rerender,
         )
 
     clips: list[ClipState] = []
@@ -163,13 +184,31 @@ def _selected_review_clips(
         clip = get_clip(clip_id, db_path=config.state_db_path)
         if clip is None:
             raise ClipReviewError(f"Clip not found after discovery: {clip_id}.")
-        _ensure_manual_clip_is_eligible(clip, streamer_login=streamer_login)
+        _ensure_manual_clip_is_eligible(
+            clip,
+            streamer_login=streamer_login,
+            allow_needs_rerender=rerender,
+        )
         clips.append(clip)
     return tuple(clips)
 
 
-def _ensure_manual_clip_is_eligible(clip: ClipState, *, streamer_login: str) -> None:
-    if clip.status in REVIEW_EXCLUDED_STATUSES and clip.status != "skipped":
+def _ensure_manual_clip_is_eligible(
+    clip: ClipState,
+    *,
+    streamer_login: str,
+    allow_needs_rerender: bool,
+) -> None:
+    if clip.status == "needs_rerender" and not allow_needs_rerender:
+        raise ClipReviewError(
+            f"Clip needs rerender before review: {clip.clip_id}. "
+            "Re-run with --rerender."
+        )
+    if (
+        clip.status in REVIEW_EXCLUDED_STATUSES
+        and clip.status != "skipped"
+        and not (clip.status == "needs_rerender" and allow_needs_rerender)
+    ):
         raise ClipReviewError(
             f"Clip is not review-eligible: {clip.clip_id} ({clip.status})."
         )
@@ -221,24 +260,31 @@ def _prompt_for_render_selection(
     *,
     input_fn: InputFn,
     output_fn: OutputFn,
-) -> RenderOption | None:
+) -> RenderOption | ReviewAction:
     output_fn("render options:")
     for index, option in enumerate(options, start=1):
         output_fn(f"  {index}. {option.layout}: {option.path}")
 
-    prompt = f"Select render for {clip.clip_id} [1-{len(options)} or s to skip]: "
+    prompt = (
+        f"Select render for {clip.clip_id} "
+        f"[1-{len(options)}, s to skip, or r to rerender later]: "
+    )
     while True:
         value = input_fn(prompt).strip().lower()
         if value in {"s", "skip"}:
-            return None
+            return ReviewAction.SKIP
+        if value in {"r", "rerender"}:
+            return ReviewAction.RERENDER
         try:
             selected_index = int(value)
         except ValueError:
-            output_fn(f"Invalid selection. Enter 1-{len(options)} or s to skip.")
+            output_fn(
+                f"Invalid selection. Enter 1-{len(options)}, s to skip, or r to rerender."
+            )
             continue
         if 1 <= selected_index <= len(options):
             return options[selected_index - 1]
-        output_fn(f"Invalid selection. Enter 1-{len(options)} or s to skip.")
+        output_fn(f"Invalid selection. Enter 1-{len(options)}, s to skip, or r to rerender.")
 
 
 def _copy_selected_render(
