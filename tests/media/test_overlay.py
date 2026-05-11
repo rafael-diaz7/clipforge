@@ -240,6 +240,37 @@ def test_recurring_moderate_face_cluster_outranks_one_off_false_positive(
     assert selected["face_rect"]["x"] < 0.10
 
 
+def test_bottom_left_webcam_context_beats_higher_confidence_central_gameplay(
+    tmp_path: Path,
+) -> None:
+    analysis_dir, frame_names = _write_frames_metadata(tmp_path, clip_id="clip-123", count=8)
+    detections = {
+        name: (
+            _detection(0.03, 0.82, 0.14, 0.14, score=0.48),
+            _detection(0.38, 0.28, 0.22, 0.22, score=0.90),
+        )
+        for name in frame_names
+    }
+
+    overlay_path = analyze_overlay(
+        clip_id="clip-123",
+        analysis_dir=analysis_dir,
+        detector=SyntheticDetector(detections),
+        confidence_threshold=0.0,
+    )
+
+    payload = _read_json(overlay_path)
+    selected = payload["candidate_clusters"][0]
+    rejected = payload["candidate_clusters"][1]
+    assert selected["detector_confidence"] == pytest.approx(0.48)
+    assert rejected["detector_confidence"] == pytest.approx(0.90)
+    assert selected["face_rect"]["x"] < 0.10
+    assert rejected["central_gameplay_penalty"] > selected["central_gameplay_penalty"]
+    assert selected["edge_corner_prior"] > rejected["edge_corner_prior"]
+    assert selected["webcam_location_prior"] > rejected["webcam_location_prior"]
+    assert selected["final_score"] > rejected["final_score"]
+
+
 def test_one_off_central_gameplay_false_positive_is_penalized(
     tmp_path: Path,
 ) -> None:
@@ -264,6 +295,29 @@ def test_one_off_central_gameplay_false_positive_is_penalized(
     assert payload["confidence"] < 0.58
 
 
+def test_webcam_location_prior_uses_expanded_candidate_context(
+    tmp_path: Path,
+) -> None:
+    analysis_dir, frame_names = _write_frames_metadata(tmp_path, clip_id="clip-123", count=8)
+    detector = SyntheticDetector(
+        {name: (_detection(0.052, 0.84, 0.052, 0.093, score=0.48),) for name in frame_names}
+    )
+
+    overlay_path = analyze_overlay(
+        clip_id="clip-123",
+        analysis_dir=analysis_dir,
+        detector=detector,
+        confidence_threshold=0.0,
+    )
+
+    payload = _read_json(overlay_path)
+    cluster = payload["candidate_clusters"][0]
+    assert cluster["face_rect"]["x"] > 0.05
+    assert cluster["overlay_rect"]["x"] < 0.01
+    assert cluster["webcam_location_prior"] > 0.90
+    assert cluster["expanded_box_quality"] > 0.90
+
+
 def test_bottom_left_recurring_face_expands_to_clamped_webcam_rect(
     tmp_path: Path,
 ) -> None:
@@ -286,6 +340,31 @@ def test_bottom_left_recurring_face_expands_to_clamped_webcam_rect(
     assert crop_rect["y"] + crop_rect["height"] == pytest.approx(1.0)
     assert crop_rect["width"] > face_rect["width"]
     assert crop_rect["height"] > face_rect["height"]
+    _assert_rect_contains(crop_rect, face_rect)
+    _assert_target_streamer_crop_aspect(crop_rect)
+
+
+def test_right_edge_face_fragment_expands_to_side_webcam_rect(
+    tmp_path: Path,
+) -> None:
+    analysis_dir, frame_names = _write_frames_metadata(tmp_path, clip_id="clip-123", count=8)
+    detector = SyntheticDetector(
+        {name: (_detection(0.95, 0.146, 0.019, 0.034, score=0.92),) for name in frame_names}
+    )
+
+    overlay_path = analyze_overlay(
+        clip_id="clip-123",
+        analysis_dir=analysis_dir,
+        detector=detector,
+    )
+
+    payload = _read_json(overlay_path)
+    face_rect = payload["selected_face_rect"]
+    crop_rect = payload["selected_overlay_rect"]
+    assert payload["fallback"] is False
+    assert crop_rect["x"] + crop_rect["width"] == pytest.approx(1.0)
+    assert crop_rect["width"] > 0.20
+    assert crop_rect["height"] >= 0.30
     _assert_rect_contains(crop_rect, face_rect)
     _assert_target_streamer_crop_aspect(crop_rect)
 
@@ -371,7 +450,7 @@ def test_bottom_left_edge_detection_is_not_discarded_by_raw_filter(
     assert detection["cluster_id"] == 1
 
 
-def test_face_evidence_cluster_is_reported_even_when_not_selected(
+def test_low_confidence_webcam_cluster_can_outrank_gameplay_candidates(
     tmp_path: Path,
 ) -> None:
     analysis_dir, frame_names = _write_frames_metadata(tmp_path, clip_id="clip-123", count=8)
@@ -397,9 +476,10 @@ def test_face_evidence_cluster_is_reported_even_when_not_selected(
     )
 
     payload = _read_json(overlay_path)
-    assert payload["candidate_clusters"][0]["face_rect"]["x"] > 0.60
+    assert payload["candidate_clusters"][0]["face_rect"]["x"] < 0.05
+    assert payload["candidate_clusters"][0]["detector_confidence"] == pytest.approx(0.65)
     assert any(
-        cluster["face_rect"]["x"] < 0.05 and cluster["face_score"] > 0.0
+        cluster["face_rect"]["x"] > 0.60 and cluster["face_score"] > 0.0
         for cluster in payload["candidate_clusters"]
     )
 
@@ -538,9 +618,9 @@ def test_heuristics_do_not_create_high_score_from_near_zero_face_evidence(
     cluster = payload["candidate_clusters"][0]
     assert payload["fallback"] is True
     assert cluster["face_score"] == pytest.approx(0.01)
-    assert cluster["heuristic_multiplier"] <= 1.0
     assert cluster["final_score"] < 0.02
     assert cluster["confidence"] == cluster["final_score"]
+    assert cluster["render_eligible"] is False
 
 
 def test_detector_unavailable_writes_fallback_overlay_json(

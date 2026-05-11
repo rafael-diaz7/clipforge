@@ -35,11 +35,15 @@ STREAMER_CROP_MAX_WIDTH_FACE_RATIO = 1.65
 STREAMER_CROP_MAX_HEIGHT_FACE_RATIO = 2.10
 STREAMER_CROP_MAX_NORMALIZED_WIDTH = 0.36
 STREAMER_CROP_FACE_CENTER_Y_RATIO = 0.42
+STREAMER_CROP_SIDE_MIN_NORMALIZED_HEIGHT = 0.30
+STREAMER_CROP_SIDE_FACE_CENTER_Y_RATIO = 0.12
 SOURCE_ASPECT_RATIO = 16 / 9
 TARGET_ASPECT_RATIO = 9 / 16
 HYBRID_STREAMER_OUTPUT_HEIGHT_RATIO = 0.40
 MAX_REPORTED_FACE_CLUSTERS = 8
 MIN_VALID_FACE_HEURISTIC_MULTIPLIER = 0.08
+HIGH_CONFIDENCE_CLUSTER_THRESHOLD = DEFAULT_OVERLAY_CONFIDENCE_THRESHOLD
+MIN_RENDER_ELIGIBLE_FACE_SCORE = 0.02
 # Convert the hybrid top region's display aspect into normalized source coordinates.
 STREAMER_CROP_TARGET_NORMALIZED_ASPECT_RATIO = (
     TARGET_ASPECT_RATIO / HYBRID_STREAMER_OUTPUT_HEIGHT_RATIO
@@ -248,9 +252,32 @@ class _ScoredCluster:
             "component_scores": {
                 name: _round(value) for name, value in self.component_scores.items()
             },
+            "detector_confidence": _round(
+                self.component_scores.get("detector_confidence", self.average_face_confidence)
+            ),
+            "recurrence": _round(self.component_scores.get("recurrence", self.prevalence)),
+            "edge_corner_prior": _round(self.component_scores.get("edge_corner_prior", 0.0)),
+            "webcam_location_prior": _round(
+                self.component_scores.get("webcam_location_prior", 0.0)
+            ),
+            "central_gameplay_penalty": _round(
+                self.component_scores.get("central_gameplay_penalty", 0.0)
+            ),
+            "hud_penalty": _round(self.component_scores.get("hud_penalty", 0.0)),
+            "expanded_box_quality": _round(
+                self.component_scores.get("expanded_box_quality", 0.0)
+            ),
+            "overlay_support_score": _round(
+                self.component_scores.get("overlay_support_score", 0.0)
+            ),
             "face_score": _round(self.face_score),
             "heuristic_multiplier": _round(self.heuristic_multiplier),
             "final_score": _round(self.final_score),
+            "high_confidence": self.confidence >= HIGH_CONFIDENCE_CLUSTER_THRESHOLD,
+            "render_eligible": (
+                self.face_score >= MIN_RENDER_ELIGIBLE_FACE_SCORE
+                and self.component_scores.get("expanded_box_quality", 0.0) > 0.0
+            ),
             "ranking_position": self.ranking_position,
             "raw_score": _round(self.raw_score),
             "confidence": _round(self.confidence),
@@ -1200,10 +1227,12 @@ def _score_clusters(
     for index, cluster in enumerate(scored):
         penalty = _competition_penalty(cluster, scored[:index] + scored[index + 1 :])
         competition_multiplier = _clamp01(1.0 - penalty)
-        heuristic_multiplier = _clamp01(
-            cluster.heuristic_multiplier * competition_multiplier
+        heuristic_multiplier = _clamp(
+            cluster.heuristic_multiplier * competition_multiplier,
+            lower=0.0,
+            upper=1.85,
         )
-        final_score = _clamp01(cluster.face_score * heuristic_multiplier)
+        final_score = _clamp01(cluster.raw_score * competition_multiplier)
         adjusted.append(
             _ScoredCluster(
                 cluster_id=cluster.cluster_id,
@@ -1326,82 +1355,118 @@ def _score_cluster(
     position_stability = _position_stability(cluster)
     size_stability = _size_stability(cluster)
     edge_proximity = _edge_proximity(overlay_rect)
+    edge_corner_prior = _edge_corner_prior(overlay_rect)
+    webcam_location_prior = _webcam_location_prior(overlay_rect)
     center_avoidance = _center_avoidance(overlay_rect)
     size_score = _overlay_size_score(overlay_rect.area)
-    aspect_ratio_score = _face_aspect_ratio_score(face_rect)
+    expanded_aspect_ratio_score = _rect_aspect_ratio_score(
+        overlay_rect,
+        target_ratio=STREAMER_CROP_TARGET_NORMALIZED_ASPECT_RATIO,
+    )
+    expanded_box_quality = _clamp01(size_score * 0.62 + expanded_aspect_ratio_score * 0.38)
+    face_aspect_ratio_score = _face_aspect_ratio_score(face_rect)
     confidence_score = (
         average_face_confidence * 0.72
         + max_face_confidence * 0.18
         + min(average_face_confidence, max_face_confidence) * 0.10
     )
-    recurrence_multiplier = 0.20 + prevalence * 0.80
+    recurrence_multiplier = 0.35 + prevalence * 0.65
     face_score = _clamp01(confidence_score * recurrence_multiplier)
 
     one_frame_penalty = 0.32 if frame_count <= 1 and total_frames > 1 else 0.0
     brief_penalty = max(0.0, 0.45 - prevalence) * 0.70
-    central_penalty = (1.0 - center_avoidance) * 0.22
+    central_penalty = (1.0 - center_avoidance) * 0.50
+    hud_penalty = _hud_penalty(overlay_rect, webcam_location_prior=webcam_location_prior)
     huge_central_penalty = _huge_central_penalty(overlay_rect, center_avoidance)
-    tiny_penalty = max(
-        _tiny_penalty(overlay_rect.area, size_score),
-        _tiny_face_penalty(face_rect.area),
-    )
+    tiny_penalty = _tiny_penalty(overlay_rect.area, size_score)
 
     prevalence_multiplier = 0.45 + prevalence * 0.55
     stability_multiplier = 0.70 + (
         position_stability * 0.58 + size_stability * 0.42
     ) * 0.30
-    placement_multiplier = 0.70 + (
-        edge_proximity * 0.62 + center_avoidance * 0.38
-    ) * 0.30
-    size_multiplier = 0.25 + size_score * 0.75
-    aspect_ratio_multiplier = 0.70 + aspect_ratio_score * 0.30
+    placement_multiplier = 0.70 + edge_corner_prior * 0.30
+    size_multiplier = 0.25 + expanded_box_quality * 0.75
+    aspect_ratio_multiplier = 0.70 + expanded_aspect_ratio_score * 0.30
+    penalty_score = _clamp(
+        one_frame_penalty
+        + brief_penalty
+        + central_penalty
+        + hud_penalty
+        + huge_central_penalty
+        + tiny_penalty,
+        lower=0.0,
+        upper=1.35,
+    )
     penalty_multiplier = _clamp01(
         1.0
         - one_frame_penalty
         - brief_penalty
         - central_penalty
+        - hud_penalty
         - huge_central_penalty
         - tiny_penalty
     )
-    heuristic_multiplier = _clamp01(
-        prevalence_multiplier
-        * stability_multiplier
-        * placement_multiplier
-        * size_multiplier
-        * aspect_ratio_multiplier
-        * penalty_multiplier
+    overlay_support_score = _clamp01(
+        position_stability * 0.36
+        + size_stability * 0.24
+        + prevalence * 0.40
+    )
+    context_support_score = _clamp01(
+        prevalence * 0.18
+        + edge_corner_prior * 0.20
+        + webcam_location_prior * 0.22
+        + expanded_box_quality * 0.18
+        + overlay_support_score * 0.17
+        + confidence_score * 0.05
+    )
+    heuristic_multiplier = _clamp(
+        0.45 + context_support_score * 1.45 - penalty_score,
+        lower=0.0,
+        upper=1.85,
     )
     heuristic_floor_applied = 0.0
     if face_score > 0.0 and heuristic_multiplier < MIN_VALID_FACE_HEURISTIC_MULTIPLIER:
         heuristic_floor_applied = MIN_VALID_FACE_HEURISTIC_MULTIPLIER
         heuristic_multiplier = MIN_VALID_FACE_HEURISTIC_MULTIPLIER
     raw_score = _clamp01(face_score * heuristic_multiplier)
+    if tiny_penalty > 0.30 or huge_central_penalty > 0.20:
+        raw_score = min(raw_score, 0.45)
 
     component_scores = {
         "prevalence": prevalence,
+        "recurrence": prevalence,
         "detection_count": float(detection_count),
         "sampled_frame_count": float(total_frames),
         "position_stability": position_stability,
         "size_stability": size_stability,
         "edge_proximity": edge_proximity,
+        "edge_corner_prior": edge_corner_prior,
+        "webcam_location_prior": webcam_location_prior,
         "center_avoidance": center_avoidance,
+        "central_gameplay_penalty": central_penalty,
         "overlay_size": size_score,
-        "face_aspect_ratio": aspect_ratio_score,
+        "expanded_aspect_ratio": expanded_aspect_ratio_score,
+        "expanded_box_quality": expanded_box_quality,
+        "face_aspect_ratio": face_aspect_ratio_score,
         "average_face_confidence": average_face_confidence,
         "max_face_confidence": max_face_confidence,
         "confidence_score": confidence_score,
         "recurrence_multiplier": recurrence_multiplier,
         "detector_confidence": average_face_confidence,
+        "overlay_support_score": overlay_support_score,
+        "context_support_score": context_support_score,
         "prevalence_multiplier": prevalence_multiplier,
         "stability_multiplier": stability_multiplier,
         "placement_multiplier": placement_multiplier,
         "size_multiplier": size_multiplier,
         "aspect_ratio_multiplier": aspect_ratio_multiplier,
+        "penalty_score": penalty_score,
         "penalty_multiplier": penalty_multiplier,
         "heuristic_floor_applied": heuristic_floor_applied,
         "one_frame_penalty": one_frame_penalty,
         "brief_penalty": brief_penalty,
         "central_penalty": central_penalty,
+        "hud_penalty": hud_penalty,
         "huge_central_penalty": huge_central_penalty,
         "tiny_penalty": tiny_penalty,
     }
@@ -1547,8 +1612,22 @@ def _edge_anchored_streamer_crop(
     bottom_aligned_face = face_rect.y + face_rect.height >= 0.90
     left_aligned_face = face_rect.x <= 0.05
     right_aligned_face = face_rect.x + face_rect.width >= 0.95
-    if not bottom_aligned_face or not (left_aligned_face or right_aligned_face):
+    if not left_aligned_face and not right_aligned_face:
         return None
+    if not bottom_aligned_face:
+        side_fragment_face = (
+            face_rect.width <= 0.08
+            and face_rect.height <= 0.14
+            and face_rect.y >= 0.08
+        )
+        if not side_fragment_face:
+            return None
+        return _side_anchored_streamer_crop(
+            face_rect,
+            width=width,
+            height=height,
+            align_right=right_aligned_face,
+        )
 
     if left_aligned_face:
         minimum_width = face_rect.x + face_rect.width
@@ -1573,6 +1652,32 @@ def _edge_anchored_streamer_crop(
     return _fit_rect_to_frame(
         x=x,
         y=1.0 - anchored_height,
+        width=anchored_width,
+        height=anchored_height,
+    )
+
+
+def _side_anchored_streamer_crop(
+    face_rect: NormalizedRect,
+    *,
+    width: float,
+    height: float,
+    align_right: bool,
+) -> NormalizedRect:
+    anchored_height = max(height, STREAMER_CROP_SIDE_MIN_NORMALIZED_HEIGHT)
+    anchored_height = min(
+        anchored_height,
+        min(1.0, 1.0 / STREAMER_CROP_TARGET_NORMALIZED_ASPECT_RATIO),
+    )
+    anchored_width = max(width, anchored_height * STREAMER_CROP_TARGET_NORMALIZED_ASPECT_RATIO)
+    anchored_width = min(anchored_width, 1.0)
+    x = 1.0 - anchored_width if align_right else 0.0
+    y = face_rect.center_y - anchored_height * STREAMER_CROP_SIDE_FACE_CENTER_Y_RATIO
+    y = max(face_rect.y + face_rect.height - anchored_height, min(y, face_rect.y))
+
+    return _fit_rect_to_frame(
+        x=x,
+        y=y,
         width=anchored_width,
         height=anchored_height,
     )
@@ -1638,6 +1743,14 @@ def _edge_proximity(rect: NormalizedRect) -> float:
     return _clamp01(edge_score * 0.75 + corner_score * 0.25)
 
 
+def _edge_corner_prior(rect: NormalizedRect) -> float:
+    corner_score = max(
+        _corner_affinity(rect, corner)
+        for corner in ("top_left", "top_right", "bottom_left", "bottom_right")
+    )
+    return _clamp01(_edge_proximity(rect) * 0.46 + corner_score * 0.54)
+
+
 def _corner_affinity(rect: NormalizedRect, corner: str) -> float:
     left = rect.x
     top = rect.y
@@ -1656,6 +1769,14 @@ def _corner_affinity(rect: NormalizedRect, corner: str) -> float:
     )
 
 
+def _webcam_location_prior(rect: NormalizedRect) -> float:
+    corner_score = max(
+        _corner_affinity(rect, corner)
+        for corner in ("top_left", "top_right", "bottom_left", "bottom_right")
+    )
+    return _clamp01(corner_score * (0.68 + _overlay_size_score(rect.area) * 0.32))
+
+
 def _center_avoidance(rect: NormalizedRect) -> float:
     center_distance = math.hypot(rect.center_x - 0.5, rect.center_y - 0.5)
     return _clamp01((center_distance - 0.12) / 0.38)
@@ -1671,11 +1792,32 @@ def _overlay_size_score(area: float) -> float:
     return _clamp01(1.0 - (area - 0.12) / (0.24 - 0.12))
 
 
+def _rect_aspect_ratio_score(rect: NormalizedRect, *, target_ratio: float) -> float:
+    if rect.height <= 0 or target_ratio <= 0:
+        return 0.0
+    return _clamp01(1.0 - abs(rect.width / rect.height - target_ratio) / target_ratio)
+
+
 def _face_aspect_ratio_score(rect: NormalizedRect) -> float:
     if rect.height <= 0:
         return 0.0
-    ratio = rect.width / rect.height
+    ratio = (rect.width * SOURCE_ASPECT_RATIO) / rect.height
     return _clamp01(1.0 - abs(ratio - 1.0) / 0.55)
+
+
+def _hud_penalty(rect: NormalizedRect, *, webcam_location_prior: float) -> float:
+    if webcam_location_prior >= 0.35:
+        return 0.0
+
+    bottom_hud = _clamp01((rect.center_y - 0.68) / 0.22)
+    bottom_center = _clamp01(1.0 - abs(rect.center_x - 0.50) / 0.34)
+    ability_bar_penalty = bottom_hud * bottom_center * 0.30
+
+    minimap_like = _clamp01((rect.center_y - 0.70) / 0.20) * _clamp01(
+        (rect.center_x - 0.66) / 0.20
+    )
+    minimap_penalty = minimap_like * 0.18
+    return max(ability_bar_penalty, minimap_penalty)
 
 
 def _huge_central_penalty(rect: NormalizedRect, center_avoidance: float) -> float:
@@ -1687,12 +1829,6 @@ def _tiny_penalty(area: float, size_score: float) -> float:
     if area >= 0.025:
         return 0.0
     return (1.0 - size_score) * 0.45
-
-
-def _tiny_face_penalty(area: float) -> float:
-    if area >= 0.008:
-        return 0.0
-    return _clamp01((0.008 - area) / 0.005) * 0.45
 
 
 def _competition_penalty(
@@ -1992,6 +2128,10 @@ def _safe_clip_id(clip_id: str) -> str:
 
 def _clamp01(value: float) -> float:
     return max(0.0, min(1.0, value))
+
+
+def _clamp(value: float, *, lower: float, upper: float) -> float:
+    return max(lower, min(upper, value))
 
 
 def _opencv_face_score(level_weight: float) -> float:
