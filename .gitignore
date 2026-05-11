@@ -24,3 +24,5 @@ data/assets/
 *.sqlite-wal
 *.sqlite-shm
 *.log
+
+yolo11n.pt

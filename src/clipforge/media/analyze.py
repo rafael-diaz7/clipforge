@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import json
+import os
 import subprocess
 from dataclasses import dataclass
 from pathlib import Path
@@ -45,11 +46,13 @@ Runner = Callable[..., subprocess.CompletedProcess[str]]
 
 def sample_timestamps(
     *,
-    count: int = DEFAULT_FRAME_SAMPLE_COUNT,
+    count: int | None = None,
     interval_seconds: float | None = None,
 ) -> tuple[float, ...]:
     """Return deterministic frame timestamps in seconds."""
 
+    if count is None:
+        count = _default_frame_sample_count()
     _validate_positive_int(count, "count")
     interval = _sample_interval(interval_seconds)
     return tuple(round(index * interval, 3) for index in range(count))
@@ -89,7 +92,7 @@ def sample_frames(
     source_path: Path,
     *,
     clip_id: str,
-    count: int = DEFAULT_FRAME_SAMPLE_COUNT,
+    count: int | None = None,
     interval_seconds: float | None = None,
     analysis_dir: Path = ANALYSIS_DIR,
     ffmpeg_binary: str = "ffmpeg",
@@ -141,16 +144,29 @@ def sample_frames(
 
 def _sampling_mode(
     *,
-    count: int,
+    count: int | None,
     interval_seconds: float | None,
 ) -> dict[str, float | int | str]:
+    sample_count = count if count is not None else _default_frame_sample_count()
     interval = _sample_interval(interval_seconds)
     mode_type = "interval_seconds" if interval_seconds is not None else "default_interval"
     return {
         "type": mode_type,
-        "count": count,
+        "count": sample_count,
         "interval_seconds": interval,
     }
+
+
+def _default_frame_sample_count() -> int:
+    value = os.getenv("CLIPFORGE_SUBJECT_SAMPLE_COUNT")
+    if value is None or not value.strip():
+        return DEFAULT_FRAME_SAMPLE_COUNT
+    try:
+        count = int(value)
+    except ValueError as exc:
+        raise AnalysisError("CLIPFORGE_SUBJECT_SAMPLE_COUNT must be an integer.") from exc
+    _validate_positive_int(count, "CLIPFORGE_SUBJECT_SAMPLE_COUNT")
+    return count
 
 
 def _sample_interval(interval_seconds: float | None) -> float:

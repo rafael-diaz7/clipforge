@@ -403,7 +403,7 @@ def build_parser() -> argparse.ArgumentParser:
     analyze_overlay_parser.add_argument(
         "--debug-raw-faces",
         action="store_true",
-        help="Write raw face detection JSON and annotated raw-face debug frames.",
+        help="Write raw detector JSON and annotated raw subject/face debug frames.",
     )
     analyze_overlay_debug_parser = analyze_subparsers.add_parser(
         "overlay-debug",

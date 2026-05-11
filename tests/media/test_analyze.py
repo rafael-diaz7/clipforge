@@ -31,6 +31,14 @@ def test_sample_timestamps_defaults_to_twelve_short_clip_samples() -> None:
     )
 
 
+def test_sample_timestamps_uses_subject_sample_count_env(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    monkeypatch.setenv("CLIPFORGE_SUBJECT_SAMPLE_COUNT", "4")
+
+    assert sample_timestamps() == (0, 2, 4, 6)
+
+
 def test_sample_timestamps_uses_custom_count_and_interval() -> None:
     assert sample_timestamps(count=4, interval_seconds=1.5) == (0, 1.5, 3, 4.5)
 

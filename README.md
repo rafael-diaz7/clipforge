@@ -92,6 +92,11 @@ Clipforge loads `.env` from the project root.
 | `CLIPFORGE_CAPTION_RENDERER` | No | `drawtext` | Caption renderer. Supported values: `drawtext`, `ass`. |
 | `CLIPFORGE_ASS_TEMP_DIR` | No | `data/metadata/ass` | Directory for generated `.ass` files when using the `ass` renderer. |
 | `CLIPFORGE_CAPTION_FONT_FALLBACKS` | No | `Arial` | Comma-separated fallback font names for generated ASS styles. |
+| `CLIPFORGE_SUBJECT_DETECTOR` | No | `yolo` | Primary subject detector. Supported values: `yolo`, `haar`, `none`. |
+| `CLIPFORGE_YOLO_MODEL` | No | `yolo11n.pt` | Ultralytics YOLO model for person detection, for example `yolo11n.pt` or `yolo11s.pt`. |
+| `CLIPFORGE_YOLO_DEVICE` | No | `auto` | YOLO inference device. Use `cuda` for NVIDIA GPU, `cpu`, or `auto`. |
+| `CLIPFORGE_YOLO_CONFIDENCE_THRESHOLD` | No | `0.30` | Minimum YOLO confidence for person detections. |
+| `CLIPFORGE_SUBJECT_SAMPLE_COUNT` | No | `12` | Number of sampled frames used by subject/overlay analysis when no explicit count is passed. |
 | `{CHANNEL_NAME}_WATERMARK` | No | none | Optional PNG watermark path for one streamer, using an uppercase env-safe channel key. |
 
 `yt-dlp` is installed as a Python dependency and is the default downloader even

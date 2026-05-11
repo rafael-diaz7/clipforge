@@ -18,6 +18,10 @@ dev = [
     "pytest"
 ]
 
+yolo = [
+    "ultralytics"
+]
+
 [tool.pytest.ini_options]
 pythonpath = [
     "."

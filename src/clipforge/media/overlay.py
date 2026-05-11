@@ -5,6 +5,7 @@ from __future__ import annotations
 import json
 import logging
 import math
+import os
 import statistics
 from collections import Counter
 from dataclasses import dataclass
@@ -120,6 +121,10 @@ class OverlayDebugAnnotation:
     average_face_confidence: float | None = None
     heuristic_multiplier: float | None = None
     final_score: float | None = None
+    source: str | None = None
+    edge_corner_prior: float | None = None
+    central_gameplay_penalty: float | None = None
+    expanded_box_quality: float | None = None
 
     @property
     def label(self) -> str:
@@ -127,6 +132,20 @@ class OverlayDebugAnnotation:
             return (
                 f"cluster {self.cluster_id} | confidence {self.confidence:.3f} | "
                 f"{self.state}"
+            )
+        if (
+            self.edge_corner_prior is not None
+            and self.central_gameplay_penalty is not None
+            and self.expanded_box_quality is not None
+        ):
+            source = f"{self.source} | " if self.source else ""
+            return (
+                f"cluster {self.cluster_id} | {source}conf {self.confidence:.3f} | "
+                f"prevalence {self.prevalence:.3f} | "
+                f"edge {self.edge_corner_prior:.3f} | "
+                f"central_penalty {self.central_gameplay_penalty:.3f} | "
+                f"box {self.expanded_box_quality:.3f} | "
+                f"score {self.final_score or self.confidence:.3f} | {self.state}"
             )
         return (
             f"cluster {self.cluster_id} | detections {self.detection_count} | "
@@ -157,6 +176,8 @@ class _FrameDetection:
     timestamp: float | None
     rect: NormalizedRect
     score: float
+    class_label: str = "face"
+    detector_name: str = "haar_face"
 
 
 @dataclass(frozen=True)
@@ -198,6 +219,14 @@ class _FaceDetectionReport:
     sampled_timestamps: tuple[float | None, ...]
 
 
+@dataclass(frozen=True)
+class _SubjectDetectionReport:
+    detections: tuple[_FrameDetection, ...]
+    raw_detections: tuple[_FrameDetection, ...]
+    detector_info: object
+    sampled_timestamps: tuple[float | None, ...]
+
+
 @dataclass
 class _Cluster:
     detections: list[_FrameDetection]
@@ -209,6 +238,9 @@ class _Cluster:
 @dataclass(frozen=True)
 class _ScoredCluster:
     cluster_id: int
+    source: str
+    class_label: str
+    detector_name: str
     face_rect: NormalizedRect
     overlay_rect: NormalizedRect
     representative_face_rect: NormalizedRect
@@ -236,7 +268,12 @@ class _ScoredCluster:
     def to_dict(self) -> dict[str, object]:
         return {
             "cluster_id": self.cluster_id,
+            "source": self.source,
+            "class_label": self.class_label,
+            "detector_name": self.detector_name,
             "rect": self.overlay_rect.to_dict(),
+            "subject_rect": self.face_rect.to_dict(),
+            "person_rect": self.face_rect.to_dict() if self.class_label == "person" else None,
             "face_rect": self.face_rect.to_dict(),
             "overlay_rect": self.overlay_rect.to_dict(),
             "representative_face_box": self.representative_face_rect.to_dict(),
@@ -650,6 +687,7 @@ def analyze_overlay(
     clip_id: str,
     analysis_dir: Path = ANALYSIS_DIR,
     detector: FaceDetector | None = None,
+    subject_detector: object | None = None,
     confidence_threshold: float = DEFAULT_OVERLAY_CONFIDENCE_THRESHOLD,
     debug_raw_faces: bool = False,
 ) -> Path:
@@ -671,6 +709,59 @@ def analyze_overlay(
     _require_existing_frames(frame_paths)
     output_path = analysis_clip_dir / "overlay.json"
 
+    subject_unavailable_reason: str | None = None
+    subject_scored_clusters: tuple[_ScoredCluster, ...] = ()
+    if detector is None or subject_detector is not None:
+        try:
+            subject_detector_instance = subject_detector or _build_subject_detector_from_env()
+        except OverlayDetectorUnavailable as exc:
+            subject_detector_instance = None
+            subject_unavailable_reason = str(exc)
+        if subject_detector_instance is not None:
+            try:
+                subject_report = _detect_subjects(
+                    frame_paths,
+                    sampled_timestamps=sampled_timestamps,
+                    detector=subject_detector_instance,
+                )
+            except OverlayDetectorUnavailable as exc:
+                subject_report = None
+                subject_unavailable_reason = str(exc)
+            else:
+                subject_clusters = _cluster_detections(subject_report.detections)
+                subject_scored_clusters = _score_clusters(
+                    subject_clusters,
+                    total_frames=len(frame_paths),
+                )
+                if debug_raw_faces:
+                    _write_raw_subject_debug(
+                        analysis_clip_dir=analysis_clip_dir,
+                        frame_paths=frame_paths,
+                        detection_report=subject_report,
+                        clusters=subject_clusters,
+                        scored_clusters=subject_scored_clusters,
+                        selected_mode=(
+                            "yolo_person"
+                            if subject_scored_clusters
+                            and subject_scored_clusters[0].confidence >= confidence_threshold
+                            else "haar_face_fallback"
+                        ),
+                    )
+                if subject_scored_clusters and subject_scored_clusters[0].confidence >= confidence_threshold:
+                    selected_subject = subject_scored_clusters[0]
+                    return _write_overlay_result(
+                        output_path,
+                        clip_id=metadata_clip_id,
+                        selected_face_rect=selected_subject.face_rect,
+                        selected_overlay_rect=selected_subject.overlay_rect,
+                        confidence=selected_subject.confidence,
+                        fallback=False,
+                        reason=_selection_reason(selected_subject, subject_scored_clusters),
+                        candidate_clusters=subject_scored_clusters,
+                        selected_source="yolo_person",
+                        subject_detector_error=None,
+                    )
+
     detector_instance: FaceDetector
     try:
         detector_instance = detector or OpenCVFaceDetector()
@@ -683,7 +774,9 @@ def analyze_overlay(
             confidence=0.0,
             fallback=True,
             reason=f"fallback: detector unavailable: {exc}",
-            candidate_clusters=(),
+            candidate_clusters=subject_scored_clusters,
+            selected_source="overlay_fallback",
+            subject_detector_error=subject_unavailable_reason,
         )
 
     try:
@@ -701,7 +794,9 @@ def analyze_overlay(
             confidence=0.0,
             fallback=True,
             reason=f"fallback: detector failed: {exc}",
-            candidate_clusters=(),
+            candidate_clusters=subject_scored_clusters,
+            selected_source="overlay_fallback",
+            subject_detector_error=subject_unavailable_reason,
         )
 
     clusters = _cluster_detections(detection_report.detections)
@@ -732,7 +827,9 @@ def analyze_overlay(
             confidence=0.0,
             fallback=True,
             reason="fallback: no face detections found in sampled frames",
-            candidate_clusters=(),
+            candidate_clusters=subject_scored_clusters,
+            selected_source="overlay_fallback",
+            subject_detector_error=subject_unavailable_reason,
         )
 
     selected = scored_clusters[0]
@@ -767,6 +864,8 @@ def analyze_overlay(
             fallback=True,
             reason=fallback_reason,
             candidate_clusters=scored_clusters,
+            selected_source="overlay_fallback",
+            subject_detector_error=subject_unavailable_reason,
         )
 
     _log_face_detection_diagnostics(
@@ -795,6 +894,8 @@ def analyze_overlay(
         fallback=False,
         reason=_selection_reason(selected, scored_clusters),
         candidate_clusters=scored_clusters,
+        selected_source="haar_face",
+        subject_detector_error=subject_unavailable_reason,
     )
 
 
@@ -873,6 +974,93 @@ def _detect_faces(
         raw_detections=tuple(raw_detections),
         detector_info=_detector_debug_info(detector),
         sampled_timestamps=sampled_timestamps,
+    )
+
+
+def _detect_subjects(
+    frame_paths: tuple[Path, ...],
+    *,
+    sampled_timestamps: tuple[float | None, ...],
+    detector: object,
+) -> _SubjectDetectionReport:
+    detections: list[_FrameDetection] = []
+    for frame_index, (frame_path, timestamp) in enumerate(
+        zip(frame_paths, sampled_timestamps, strict=True)
+    ):
+        try:
+            frame_detections = detector.detect(
+                frame_path,
+                frame_index=frame_index,
+                timestamp=timestamp,
+            )
+        except Exception as exc:
+            raise OverlayDetectorUnavailable(str(exc)) from exc
+        for detection in frame_detections:
+            if detection.class_label != "person":
+                continue
+            if not _is_valid_rect(detection.rect):
+                continue
+            detections.append(
+                _FrameDetection(
+                    frame_index=frame_index,
+                    timestamp=timestamp,
+                    rect=detection.rect,
+                    score=_clamp01(detection.confidence),
+                    class_label=detection.class_label,
+                    detector_name=detection.detector_name,
+                )
+            )
+    return _SubjectDetectionReport(
+        detections=tuple(detections),
+        raw_detections=tuple(detections),
+        detector_info=_subject_detector_debug_info(detector),
+        sampled_timestamps=sampled_timestamps,
+    )
+
+
+def _subject_detector_debug_info(detector: object) -> object:
+    info = getattr(detector, "debug_info", None)
+    if info is not None:
+        return info
+    return {
+        "name": detector.__class__.__name__,
+        "settings": {"source": "SubjectDetector.detect(frame_path)"},
+    }
+
+
+def _build_subject_detector_from_env() -> object | None:
+    detector_name = os.getenv("CLIPFORGE_SUBJECT_DETECTOR", "yolo").strip().lower()
+    if detector_name in {"", "none", "off", "disabled", "haar", "haar_face"}:
+        return None
+    if detector_name != "yolo":
+        raise OverlayDetectorUnavailable(
+            "Unsupported subject detector "
+            f"{detector_name!r}; supported values are yolo, haar, or none."
+        )
+
+    from clipforge.media.subject import (
+        DEFAULT_YOLO_CONFIDENCE_THRESHOLD,
+        DEFAULT_YOLO_DEVICE,
+        DEFAULT_YOLO_MODEL,
+        YOLOPersonDetector,
+    )
+
+    threshold_value = os.getenv("CLIPFORGE_YOLO_CONFIDENCE_THRESHOLD")
+    try:
+        threshold = (
+            float(threshold_value)
+            if threshold_value is not None and threshold_value.strip()
+            else DEFAULT_YOLO_CONFIDENCE_THRESHOLD
+        )
+    except ValueError as exc:
+        raise OverlayDetectorUnavailable(
+            "Invalid CLIPFORGE_YOLO_CONFIDENCE_THRESHOLD; expected a number."
+        ) from exc
+
+    return YOLOPersonDetector(
+        model=os.getenv("CLIPFORGE_YOLO_MODEL", DEFAULT_YOLO_MODEL),
+        device=os.getenv("CLIPFORGE_YOLO_DEVICE", DEFAULT_YOLO_DEVICE).strip().lower(),
+        confidence_threshold=threshold,
     )
 
 
@@ -1008,6 +1196,156 @@ def _write_raw_face_debug(
     output_path = debug_dir / "raw_faces.json"
     output_path.write_text(json.dumps(payload, indent=2), encoding="utf-8")
     return output_path
+
+
+def _write_raw_subject_debug(
+    *,
+    analysis_clip_dir: Path,
+    frame_paths: tuple[Path, ...],
+    detection_report: _SubjectDetectionReport,
+    clusters: tuple[_Cluster, ...],
+    scored_clusters: tuple[_ScoredCluster, ...],
+    selected_mode: str,
+) -> Path:
+    debug_dir = ensure_directory(analysis_clip_dir / "debug" / "raw_subjects")
+    _write_raw_subject_debug_images(
+        debug_dir=debug_dir,
+        frame_paths=frame_paths,
+        raw_detections=detection_report.raw_detections,
+    )
+    payload = _raw_subject_debug_payload(
+        detection_report=detection_report,
+        frame_paths=frame_paths,
+        clusters=clusters,
+        scored_clusters=scored_clusters,
+        selected_mode=selected_mode,
+    )
+    output_path = debug_dir / "raw_subjects.json"
+    output_path.write_text(json.dumps(payload, indent=2), encoding="utf-8")
+    return output_path
+
+
+def _write_raw_subject_debug_images(
+    *,
+    debug_dir: Path,
+    frame_paths: tuple[Path, ...],
+    raw_detections: tuple[_FrameDetection, ...],
+) -> None:
+    try:
+        import cv2
+    except ImportError as exc:
+        raise AnalysisError(
+            "OpenCV is not installed; install opencv-python to write raw subject debug images."
+        ) from exc
+
+    detections_by_frame: dict[int, list[_FrameDetection]] = {
+        index: [] for index, _path in enumerate(frame_paths)
+    }
+    for detection in raw_detections:
+        detections_by_frame.setdefault(detection.frame_index, []).append(detection)
+
+    for frame_index, frame_path in enumerate(frame_paths):
+        image = cv2.imread(str(frame_path))
+        if image is None:
+            raise AnalysisError(f"Could not read sampled frame for raw subject debug: {frame_path}")
+
+        height, width = image.shape[:2]
+        banner = (
+            f"raw YOLO person detections | frame {frame_index} | "
+            f"count {len(detections_by_frame[frame_index])}"
+        )
+        _draw_debug_label(
+            cv2,
+            image,
+            banner,
+            (8, 24),
+            color=(255, 255, 255),
+            background=(32, 32, 32),
+        )
+        for detection in detections_by_frame[frame_index]:
+            left, top, right, bottom = _rect_pixels(detection.rect, width=width, height=height)
+            color = (255, 180, 0)
+            cv2.rectangle(image, (left, top), (right, bottom), color, 2)
+            label = (
+                f"f{detection.frame_index} {detection.detector_name} "
+                f"{detection.class_label} conf {detection.score:.3f} "
+                f"x{detection.rect.x:.3f} y{detection.rect.y:.3f} "
+                f"w{detection.rect.width:.3f} h{detection.rect.height:.3f}"
+            )
+            _draw_debug_label(
+                cv2,
+                image,
+                label,
+                (left, max(18, top - 8)),
+                color=(255, 255, 255),
+                background=color,
+            )
+
+        output_path = debug_dir / f"{frame_path.stem}.png"
+        if not cv2.imwrite(str(output_path), image):
+            raise AnalysisError(f"Could not write raw subject debug image: {output_path}")
+
+
+def _raw_subject_debug_payload(
+    *,
+    detection_report: _SubjectDetectionReport,
+    frame_paths: tuple[Path, ...],
+    clusters: tuple[_Cluster, ...],
+    scored_clusters: tuple[_ScoredCluster, ...],
+    selected_mode: str,
+) -> dict[str, object]:
+    cluster_lookup = _raw_detection_cluster_lookup(clusters, scored_clusters)
+    frames = []
+    for frame_index, frame_path in enumerate(frame_paths):
+        frame_detections = [
+            detection
+            for detection in detection_report.raw_detections
+            if detection.frame_index == frame_index
+        ]
+        frames.append(
+            {
+                "frame_index": frame_index,
+                "frame_path": str(frame_path),
+                "frame_timestamp": detection_report.sampled_timestamps[frame_index],
+                "raw_detections": [
+                    {
+                        "x": _round(detection.rect.x),
+                        "y": _round(detection.rect.y),
+                        "w": _round(detection.rect.width),
+                        "h": _round(detection.rect.height),
+                        "confidence": _round(detection.score),
+                        "class_label": detection.class_label,
+                        "detector_name": detection.detector_name,
+                        "cluster_id": (
+                            cluster_lookup[_raw_detection_key(detection)]["cluster_id"]
+                            if _raw_detection_key(detection) in cluster_lookup
+                            else None
+                        ),
+                    }
+                    for detection in frame_detections
+                ],
+            }
+        )
+
+    info_name = getattr(detection_report.detector_info, "name", None)
+    info_settings = getattr(detection_report.detector_info, "settings", None)
+    if info_name is None and isinstance(detection_report.detector_info, dict):
+        info_name = detection_report.detector_info.get("name")
+        info_settings = detection_report.detector_info.get("settings")
+
+    return {
+        "sampled_frame_count": len(frame_paths),
+        "raw_subject_detection_count": len(detection_report.raw_detections),
+        "clusters_formed": len(clusters),
+        "reported_clusters": len(scored_clusters),
+        "selected_mode": selected_mode,
+        "detector": {
+            "name": info_name,
+            "settings": info_settings or {},
+        },
+        "frames": frames,
+        "clusters": [cluster.to_dict() for cluster in scored_clusters],
+    }
 
 
 def _write_raw_face_debug_images(
@@ -1236,6 +1574,9 @@ def _score_clusters(
         adjusted.append(
             _ScoredCluster(
                 cluster_id=cluster.cluster_id,
+                source=cluster.source,
+                class_label=cluster.class_label,
+                detector_name=cluster.detector_name,
                 face_rect=cluster.face_rect,
                 overlay_rect=cluster.overlay_rect,
                 representative_face_rect=cluster.representative_face_rect,
@@ -1266,6 +1607,9 @@ def _score_clusters(
     return tuple(
         _ScoredCluster(
             cluster_id=cluster.cluster_id,
+            source=cluster.source,
+            class_label=cluster.class_label,
+            detector_name=cluster.detector_name,
             face_rect=cluster.face_rect,
             overlay_rect=cluster.overlay_rect,
             representative_face_rect=cluster.representative_face_rect,
@@ -1334,10 +1678,15 @@ def _score_cluster(
     cluster_id: int,
     total_frames: int,
 ) -> _ScoredCluster:
+    subject_label = _cluster_class_label(cluster)
+    detector_name = _cluster_detector_name(cluster)
     average_face_rect = _cluster_rect(cluster)
     representative_face_rect = _representative_rect(cluster, average_face_rect)
     face_rect = average_face_rect
-    overlay_rect = _expand_face_rect_to_streamer_crop_rect(face_rect)
+    if subject_label == "person":
+        overlay_rect = _expand_person_rect_to_streamer_crop_rect(face_rect)
+    else:
+        overlay_rect = _expand_face_rect_to_streamer_crop_rect(face_rect)
     detection_count = len(cluster.detections)
     frame_indexes = tuple(sorted({detection.frame_index for detection in cluster.detections}))
     timestamps = tuple(
@@ -1379,6 +1728,16 @@ def _score_cluster(
     hud_penalty = _hud_penalty(overlay_rect, webcam_location_prior=webcam_location_prior)
     huge_central_penalty = _huge_central_penalty(overlay_rect, center_avoidance)
     tiny_penalty = _tiny_penalty(overlay_rect.area, size_score)
+
+    if subject_label == "person":
+        recurrence_multiplier = 0.30 + prevalence * 0.70
+        face_score = _clamp01(confidence_score * recurrence_multiplier)
+        one_frame_penalty = 0.42 if frame_count <= 1 and total_frames > 1 else 0.0
+        brief_penalty = max(0.0, 0.38 - prevalence) * 0.55
+        central_penalty = (1.0 - center_avoidance) * (0.72 - webcam_location_prior * 0.22)
+        hud_penalty = _hud_penalty(overlay_rect, webcam_location_prior=webcam_location_prior) * 0.55
+        huge_central_penalty = _huge_central_penalty(overlay_rect, center_avoidance) * 0.55
+        tiny_penalty = 0.0
 
     prevalence_multiplier = 0.45 + prevalence * 0.55
     stability_multiplier = 0.70 + (
@@ -1429,6 +1788,8 @@ def _score_cluster(
         heuristic_floor_applied = MIN_VALID_FACE_HEURISTIC_MULTIPLIER
         heuristic_multiplier = MIN_VALID_FACE_HEURISTIC_MULTIPLIER
     raw_score = _clamp01(face_score * heuristic_multiplier)
+    if subject_label == "person" and webcam_location_prior < 0.18 and center_avoidance < 0.45:
+        raw_score = min(raw_score, 0.50)
     if tiny_penalty > 0.30 or huge_central_penalty > 0.20:
         raw_score = min(raw_score, 0.45)
 
@@ -1472,6 +1833,9 @@ def _score_cluster(
     }
     return _ScoredCluster(
         cluster_id=cluster_id,
+        source="yolo_person" if subject_label == "person" else "haar_face",
+        class_label=subject_label,
+        detector_name=detector_name,
         face_rect=face_rect,
         overlay_rect=overlay_rect,
         representative_face_rect=representative_face_rect,
@@ -1519,6 +1883,66 @@ def _representative_rect(cluster: _Cluster, average_rect: NormalizedRect) -> Nor
     return min(
         (detection.rect for detection in cluster.detections),
         key=lambda rect: _cluster_distance(average_rect, rect),
+    )
+
+
+def _cluster_class_label(cluster: _Cluster) -> str:
+    labels = Counter(detection.class_label for detection in cluster.detections)
+    return labels.most_common(1)[0][0] if labels else "face"
+
+
+def _cluster_detector_name(cluster: _Cluster) -> str:
+    names = Counter(detection.detector_name for detection in cluster.detections)
+    return names.most_common(1)[0][0] if names else "haar_face"
+
+
+def _expand_person_rect_to_streamer_crop_rect(person_rect: NormalizedRect) -> NormalizedRect:
+    min_height = 0.28 if _edge_proximity(person_rect) > 0.45 else 0.20
+    natural_height = max(person_rect.height * 1.18, min_height)
+    natural_width = max(
+        person_rect.width * 1.60,
+        natural_height * STREAMER_CROP_TARGET_NORMALIZED_ASPECT_RATIO,
+        0.20 if _edge_proximity(person_rect) > 0.45 else 0.14,
+    )
+    natural_height = max(natural_height, natural_width / STREAMER_CROP_TARGET_NORMALIZED_ASPECT_RATIO)
+
+    max_height = 0.62 if _edge_proximity(person_rect) > 0.45 else 0.46
+    natural_height = min(natural_height, max_height)
+    natural_width = min(
+        natural_height * STREAMER_CROP_TARGET_NORMALIZED_ASPECT_RATIO,
+        0.46,
+    )
+    natural_height = natural_width / STREAMER_CROP_TARGET_NORMALIZED_ASPECT_RATIO
+
+    left_edge = person_rect.x <= 0.14 or person_rect.center_x <= 0.28
+    right_edge = person_rect.x + person_rect.width >= 0.86 or person_rect.center_x >= 0.72
+    bottom_edge = person_rect.y + person_rect.height >= 0.78
+    if bottom_edge and natural_height < 1.0 - person_rect.y:
+        natural_height = min(1.0 - person_rect.y, max_height)
+        natural_width = min(
+            natural_height * STREAMER_CROP_TARGET_NORMALIZED_ASPECT_RATIO,
+            0.46,
+        )
+        natural_height = natural_width / STREAMER_CROP_TARGET_NORMALIZED_ASPECT_RATIO
+
+    if left_edge:
+        x = 0.0
+    elif right_edge:
+        x = 1.0 - natural_width
+    else:
+        x = person_rect.center_x - natural_width / 2
+
+    if bottom_edge:
+        y = 1.0 - natural_height
+    else:
+        y = person_rect.center_y - natural_height * STREAMER_CROP_FACE_CENTER_Y_RATIO
+        y = max(person_rect.y + person_rect.height - natural_height, min(y, person_rect.y))
+
+    return _fit_rect_to_frame(
+        x=x,
+        y=y,
+        width=natural_width,
+        height=natural_height,
     )
 
 
@@ -1852,8 +2276,9 @@ def _selection_reason(
     scored_clusters: tuple[_ScoredCluster, ...],
 ) -> str:
     components = selected.component_scores
+    subject_name = "YOLO person" if selected.source == "yolo_person" else "face"
     reason = (
-        "selected stable edge/corner face cluster expanded into a streamer crop "
+        f"selected stable edge/corner {subject_name} cluster expanded into a streamer crop "
         f"seen in {selected.frame_count} sampled frame(s); "
         f"prevalence={components['prevalence']:.3f}, "
         f"position_stability={components['position_stability']:.3f}, "
@@ -1882,6 +2307,8 @@ def _write_overlay_result(
     fallback: bool,
     reason: str,
     candidate_clusters: tuple[_ScoredCluster, ...],
+    selected_source: str | None = None,
+    subject_detector_error: str | None = None,
 ) -> Path:
     ensure_directory(output_path.parent)
     payload = {
@@ -1893,9 +2320,12 @@ def _write_overlay_result(
         ),
         "confidence": _round(confidence),
         "fallback": fallback,
+        "selected_source": selected_source or ("overlay_fallback" if fallback else "haar_face"),
         "reason": reason,
         "candidate_clusters": [cluster.to_dict() for cluster in candidate_clusters],
     }
+    if subject_detector_error:
+        payload["subject_detector_error"] = subject_detector_error
     output_path.write_text(json.dumps(payload, indent=2), encoding="utf-8")
     return output_path
 
@@ -1989,6 +2419,16 @@ def _debug_annotations(payload: dict[str, object]) -> tuple[OverlayDebugAnnotati
                     cluster.get("heuristic_multiplier")
                 ),
                 final_score=_optional_float_from_payload(cluster.get("final_score")),
+                source=str(cluster.get("source")) if cluster.get("source") else None,
+                edge_corner_prior=_optional_float_from_payload(
+                    cluster.get("edge_corner_prior")
+                ),
+                central_gameplay_penalty=_optional_float_from_payload(
+                    cluster.get("central_gameplay_penalty")
+                ),
+                expanded_box_quality=_optional_float_from_payload(
+                    cluster.get("expanded_box_quality")
+                ),
             )
         )
     return tuple(annotations)
@@ -1998,6 +2438,9 @@ def _debug_banner(payload: dict[str, object]) -> str:
     confidence = _float_from_payload(payload.get("confidence"), context="overlay confidence")
     fallback = bool(payload.get("fallback"))
     state = "fallback" if fallback else "selected"
+    selected_source = payload.get("selected_source")
+    if isinstance(selected_source, str) and selected_source:
+        return f"overlay {state} | source {selected_source} | confidence {confidence:.3f}"
     return f"overlay {state} | confidence {confidence:.3f}"
 
 

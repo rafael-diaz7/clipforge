@@ -1,6 +1,8 @@
 from __future__ import annotations
 
 import json
+import sys
+import types
 from pathlib import Path
 
 import pytest
@@ -17,6 +19,7 @@ from clipforge.media.overlay import (
     analyze_overlay,
     write_overlay_debug_images,
 )
+from clipforge.media.subject import SubjectDetection, YOLOPersonDetector
 
 
 TARGET_STREAMER_CROP_ASPECT_RATIO = ((9 / 16) / 0.40) / (16 / 9)
@@ -28,6 +31,30 @@ class SyntheticDetector:
 
     def detect(self, frame_path: Path) -> tuple[FaceDetection, ...]:
         return self._detections.get(frame_path.name, ())
+
+
+class SyntheticSubjectDetector:
+    def __init__(self, detections: dict[str, tuple[SubjectDetection, ...]]) -> None:
+        self._detections = detections
+
+    def detect(
+        self,
+        frame_path: Path,
+        *,
+        frame_index: int,
+        timestamp: float | None,
+    ) -> tuple[SubjectDetection, ...]:
+        return tuple(
+            SubjectDetection(
+                rect=detection.rect,
+                confidence=detection.confidence,
+                class_label=detection.class_label,
+                detector_name=detection.detector_name,
+                frame_index=frame_index,
+                timestamp=timestamp,
+            )
+            for detection in self._detections.get(frame_path.name, ())
+        )
 
 
 class RecordingDebugWriter:
@@ -138,6 +165,7 @@ def test_no_detections_writes_fallback_overlay_json(tmp_path: Path) -> None:
         "selected_overlay_rect": None,
         "confidence": 0.0,
         "fallback": True,
+        "selected_source": "overlay_fallback",
         "reason": "fallback: no face detections found in sampled frames",
         "candidate_clusters": [],
     }
@@ -269,6 +297,171 @@ def test_bottom_left_webcam_context_beats_higher_confidence_central_gameplay(
     assert selected["edge_corner_prior"] > rejected["edge_corner_prior"]
     assert selected["webcam_location_prior"] > rejected["webcam_location_prior"]
     assert selected["final_score"] > rejected["final_score"]
+
+
+def test_yolo_person_detections_cluster_by_location(tmp_path: Path) -> None:
+    analysis_dir, frame_names = _write_frames_metadata(tmp_path, clip_id="clip-123", count=6)
+    detections = {
+        frame_names[0]: (_subject_detection(0.04, 0.54, 0.16, 0.34, score=0.78),),
+        frame_names[1]: (_subject_detection(0.045, 0.545, 0.16, 0.33, score=0.80),),
+        frame_names[3]: (_subject_detection(0.038, 0.535, 0.17, 0.34, score=0.76),),
+        frame_names[5]: (_subject_detection(0.042, 0.540, 0.16, 0.34, score=0.79),),
+    }
+
+    overlay_path = analyze_overlay(
+        clip_id="clip-123",
+        analysis_dir=analysis_dir,
+        detector=SyntheticDetector({}),
+        subject_detector=SyntheticSubjectDetector(detections),
+        confidence_threshold=0.0,
+    )
+
+    payload = _read_json(overlay_path)
+    selected = payload["candidate_clusters"][0]
+    assert payload["selected_source"] == "yolo_person"
+    assert selected["source"] == "yolo_person"
+    assert selected["class_label"] == "person"
+    assert selected["detection_count"] == 4
+    assert selected["frame_indexes"] == [0, 1, 3, 5]
+    assert selected["prevalence"] == pytest.approx(4 / 6)
+
+
+def test_yolo_edge_person_beats_central_gameplay_person(tmp_path: Path) -> None:
+    analysis_dir, frame_names = _write_frames_metadata(tmp_path, clip_id="clip-123", count=8)
+    detections = {
+        name: (
+            _subject_detection(0.03, 0.52, 0.16, 0.38, score=0.62),
+            _subject_detection(0.39, 0.18, 0.22, 0.50, score=0.92),
+        )
+        for name in frame_names
+    }
+
+    overlay_path = analyze_overlay(
+        clip_id="clip-123",
+        analysis_dir=analysis_dir,
+        detector=SyntheticDetector({}),
+        subject_detector=SyntheticSubjectDetector(detections),
+        confidence_threshold=0.0,
+    )
+
+    payload = _read_json(overlay_path)
+    selected = payload["candidate_clusters"][0]
+    rejected = payload["candidate_clusters"][1]
+    assert selected["source"] == "yolo_person"
+    assert selected["person_rect"]["x"] < 0.10
+    assert rejected["person_rect"]["x"] > 0.30
+    assert selected["edge_corner_prior"] > rejected["edge_corner_prior"]
+    assert rejected["central_gameplay_penalty"] > selected["central_gameplay_penalty"]
+    assert selected["final_score"] > rejected["final_score"]
+
+
+def test_yolo_person_expands_bottom_left_to_webcam_rect(tmp_path: Path) -> None:
+    analysis_dir, frame_names = _write_frames_metadata(tmp_path, clip_id="clip-123", count=8)
+    detector = SyntheticSubjectDetector(
+        {name: (_subject_detection(0.03, 0.52, 0.16, 0.40, score=0.86),) for name in frame_names}
+    )
+
+    overlay_path = analyze_overlay(
+        clip_id="clip-123",
+        analysis_dir=analysis_dir,
+        detector=SyntheticDetector({}),
+        subject_detector=detector,
+        confidence_threshold=0.0,
+    )
+
+    payload = _read_json(overlay_path)
+    person_rect = payload["selected_face_rect"]
+    crop_rect = payload["selected_overlay_rect"]
+    assert payload["selected_source"] == "yolo_person"
+    assert crop_rect["x"] == 0.0
+    assert crop_rect["y"] + crop_rect["height"] == pytest.approx(1.0)
+    assert crop_rect["width"] > person_rect["width"]
+    assert crop_rect["height"] >= person_rect["height"]
+    _assert_rect_contains(crop_rect, person_rect)
+
+
+def test_haar_fallback_still_works_when_yolo_returns_no_detections(
+    tmp_path: Path,
+) -> None:
+    analysis_dir, frame_names = _write_frames_metadata(tmp_path, clip_id="clip-123", count=8)
+    face_detector = SyntheticDetector(
+        {name: (_detection(0.03, 0.82, 0.14, 0.14, score=0.86),) for name in frame_names}
+    )
+
+    overlay_path = analyze_overlay(
+        clip_id="clip-123",
+        analysis_dir=analysis_dir,
+        detector=face_detector,
+        subject_detector=SyntheticSubjectDetector({}),
+    )
+
+    payload = _read_json(overlay_path)
+    assert payload["fallback"] is False
+    assert payload["selected_source"] == "haar_face"
+    assert payload["candidate_clusters"][0]["source"] == "haar_face"
+
+
+def test_yolo_person_detector_normalizes_and_filters_fake_ultralytics_output(
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Path,
+) -> None:
+    calls: list[dict[str, object]] = []
+
+    class FakeBox:
+        def __init__(self, xyxy: list[float], cls: int, conf: float) -> None:
+            self.xyxy = [xyxy]
+            self.cls = [cls]
+            self.conf = [conf]
+
+    class FakeResult:
+        orig_shape = (100, 200)
+        boxes = (
+            FakeBox([20, 10, 80, 90], 0, 0.77),
+            FakeBox([0, 0, 10, 10], 2, 0.99),
+            FakeBox([0, 0, 20, 20], 0, 0.10),
+        )
+
+    class FakeYOLO:
+        def __init__(self, model: str) -> None:
+            self.model = model
+
+        def predict(self, **kwargs):
+            calls.append(kwargs)
+            return [FakeResult()]
+
+    monkeypatch.setitem(
+        sys.modules,
+        "ultralytics",
+        types.SimpleNamespace(YOLO=FakeYOLO),
+    )
+    detector = YOLOPersonDetector(
+        model="fake.pt",
+        device="cpu",
+        confidence_threshold=0.30,
+    )
+
+    detections = detector.detect(
+        tmp_path / "frame.jpg",
+        frame_index=3,
+        timestamp=1.5,
+    )
+
+    assert len(detections) == 1
+    detection = detections[0]
+    assert detection.rect.to_dict() == {
+        "x": 0.1,
+        "y": 0.1,
+        "width": 0.3,
+        "height": 0.8,
+    }
+    assert detection.confidence == pytest.approx(0.77)
+    assert detection.class_label == "person"
+    assert detection.detector_name == "yolo_person"
+    assert detection.frame_index == 3
+    assert detection.timestamp == pytest.approx(1.5)
+    assert calls[0]["classes"] == [0]
+    assert calls[0]["device"] == "cpu"
+    assert calls[0]["conf"] == pytest.approx(0.30)
 
 
 def test_one_off_central_gameplay_false_positive_is_penalized(
@@ -1094,6 +1287,24 @@ def _detection(
     score: float = 1.0,
 ) -> FaceDetection:
     return FaceDetection(rect=NormalizedRect(x=x, y=y, width=width, height=height), score=score)
+
+
+def _subject_detection(
+    x: float,
+    y: float,
+    width: float,
+    height: float,
+    *,
+    score: float = 1.0,
+) -> SubjectDetection:
+    return SubjectDetection(
+        rect=NormalizedRect(x=x, y=y, width=width, height=height),
+        confidence=score,
+        class_label="person",
+        detector_name="yolo_person",
+        frame_index=-1,
+        timestamp=None,
+    )
 
 
 def _haar_detection(
