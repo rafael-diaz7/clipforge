@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import json
+import logging
 import sqlite3
 from dataclasses import dataclass
 from pathlib import Path
@@ -13,6 +14,7 @@ from clipforge.utils.paths import ensure_directory, utc_timestamp
 
 
 DEFAULT_STATE_DB_PATH = STATE_DB_PATH
+LOGGER = logging.getLogger(__name__)
 
 CLIP_STATUSES = frozenset(
     {
@@ -259,6 +261,16 @@ def get_review_eligible_clips(
     """Return clips eligible for manual final-render review."""
 
     resolved_path = init_db(db_path)
+    if LOGGER.isEnabledFor(logging.INFO):
+        skipped_count = _count_skipped_review_exclusions(
+            db_path=resolved_path,
+            streamer_login=streamer_login,
+        )
+        if skipped_count:
+            LOGGER.info(
+                "Excluding %d skipped clip(s) from normal review eligibility.",
+                skipped_count,
+            )
     params: list[Any] = list(REVIEW_EXCLUDED_STATUSES)
     placeholders = ", ".join("?" for _ in REVIEW_EXCLUDED_STATUSES)
     sql = f"""
@@ -272,6 +284,25 @@ def get_review_eligible_clips(
     sql += _RANKED_CLIPS_ORDER_SQL
     sql += _limit_clause(limit, label="Review clip", params=params)
     return _select_clips(db_path=resolved_path, sql=sql, params=params)
+
+
+def _count_skipped_review_exclusions(
+    *,
+    db_path: Path,
+    streamer_login: str | None,
+) -> int:
+    params: list[Any] = ["skipped"]
+    sql = """
+        SELECT COUNT(*)
+        FROM clips
+        WHERE status = ?
+    """
+    if streamer_login is not None:
+        sql += " AND LOWER(streamer_login) = LOWER(?)"
+        params.append(streamer_login)
+
+    with _connect(db_path) as connection:
+        return int(connection.execute(sql, params).fetchone()[0])
 
 
 def get_persisted_clips(

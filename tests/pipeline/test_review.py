@@ -12,6 +12,7 @@ from clipforge.pipeline.review import ClipReviewError, review_streamer_clips
 from clipforge.storage.state import (
     get_clip,
     mark_clip_exported,
+    mark_clip_skipped,
     upsert_discovered_clip,
 )
 
@@ -211,7 +212,8 @@ def test_review_skip_does_not_export_or_mark_selected(
     state = get_clip("clip-1", db_path=config.state_db_path)
     assert exported == ()
     assert state is not None
-    assert state.status == "discovered"
+    assert state.status == "skipped"
+    assert state.skip_reason == "review skipped after candidates generated"
     assert state.export_path is None
     assert not (tmp_path / "exports").exists()
 
@@ -244,6 +246,7 @@ def test_review_marks_clip_failed_when_processing_fails(
     assert state is not None
     assert state.status == "failed"
     assert state.error_message == "render failed"
+    assert state.skip_reason is None
 
 
 def test_review_force_controls_export_overwrite(
@@ -316,6 +319,52 @@ def test_review_clip_id_override_processes_named_clip(
     )
 
     assert calls == ["clip-low"]
+
+
+def test_review_clip_id_override_processes_skipped_clip(
+    monkeypatch,
+    tmp_path: Path,
+) -> None:
+    config = _config(tmp_path)
+    calls: list[str] = []
+
+    upsert_discovered_clip(
+        clip_id="clip-skipped",
+        url="https://clips.twitch.tv/clip-skipped",
+        streamer_login="example",
+        db_path=config.state_db_path,
+    )
+    mark_clip_skipped(
+        "clip-skipped",
+        skip_reason="already reviewed",
+        db_path=config.state_db_path,
+    )
+
+    monkeypatch.setattr(
+        "clipforge.pipeline.review.list_channel_clips",
+        lambda *args, **kwargs: (_clip("clip-skipped", views=100),),
+    )
+
+    def fake_process(url: str, **kwargs) -> Path:
+        clip_id = url.rsplit("/", 1)[-1]
+        calls.append(clip_id)
+        return _write_metadata(config, clip_id)
+
+    monkeypatch.setattr("clipforge.pipeline.review.process_clip", fake_process)
+
+    review_streamer_clips(
+        streamer="example",
+        count=1,
+        clip_ids=("clip-skipped",),
+        config=config,
+        input_fn=lambda prompt: "1",
+        output_fn=lambda line: None,
+    )
+
+    state = get_clip("clip-skipped", db_path=config.state_db_path)
+    assert calls == ["clip-skipped"]
+    assert state is not None
+    assert state.status == "exported"
 
 
 def test_review_rerender_passes_visual_only_flag(

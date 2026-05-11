@@ -22,6 +22,7 @@ from clipforge.storage.state import (
     get_review_eligible_clips,
     mark_clip_exported,
     mark_clip_failed,
+    mark_clip_skipped,
 )
 from clipforge.utils.paths import ensure_directory, safe_filename
 
@@ -112,7 +113,15 @@ def review_streamer_clips(
             output_fn=output_fn,
         )
         if selected is None:
-            output_fn(f"skipped: {clip.clip_id}")
+            mark_clip_skipped(
+                clip.clip_id,
+                skip_reason="review skipped after candidates generated",
+                db_path=config.state_db_path,
+            )
+            output_fn(
+                f"skipped: {clip.clip_id} "
+                "(will not be picked again by normal review)"
+            )
             continue
 
         export_path = _copy_selected_render(
@@ -160,7 +169,7 @@ def _selected_review_clips(
 
 
 def _ensure_manual_clip_is_eligible(clip: ClipState, *, streamer_login: str) -> None:
-    if clip.status in REVIEW_EXCLUDED_STATUSES:
+    if clip.status in REVIEW_EXCLUDED_STATUSES and clip.status != "skipped":
         raise ClipReviewError(
             f"Clip is not review-eligible: {clip.clip_id} ({clip.status})."
         )

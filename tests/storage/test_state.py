@@ -7,6 +7,7 @@ import pytest
 from clipforge.storage.state import (
     ClipStateError,
     get_clip,
+    get_review_eligible_clips,
     get_unprocessed_clips,
     init_db,
     mark_clip_downloaded,
@@ -178,6 +179,35 @@ def test_rendered_clip_is_not_returned_by_unprocessed_query(tmp_path: Path) -> N
     mark_clip_rendered("clip-1", render_dir=tmp_path / "renders" / "clip-1", db_path=db_path)
 
     assert [clip.clip_id for clip in get_unprocessed_clips(db_path=db_path)] == ["clip-2"]
+
+
+def test_skipped_clip_is_not_returned_by_review_eligibility(
+    caplog,
+    tmp_path: Path,
+) -> None:
+    db_path = _db_path(tmp_path)
+    for clip_id in ("clip-skipped", "clip-eligible"):
+        upsert_discovered_clip(
+            clip_id=clip_id,
+            url=f"https://clips.twitch.tv/{clip_id}",
+            streamer_login="example",
+            rank_score=1.0,
+            db_path=db_path,
+        )
+    mark_clip_skipped(
+        "clip-skipped",
+        skip_reason="already reviewed",
+        db_path=db_path,
+    )
+
+    with caplog.at_level("INFO", logger="clipforge.storage.state"):
+        eligible = get_review_eligible_clips(
+            db_path=db_path,
+            streamer_login="example",
+        )
+
+    assert [clip.clip_id for clip in eligible] == ["clip-eligible"]
+    assert "Excluding 1 skipped clip(s) from normal review eligibility." in caplog.text
 
 
 def test_reset_clip_to_discovered_clears_processing_artifact_fields(
