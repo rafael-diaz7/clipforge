@@ -17,6 +17,10 @@ from clipforge.core.config import (
     STATE_DB_PATH,
     load_config,
 )
+from clipforge.media.render_settings import (
+    DEFAULT_FFMPEG_RENDER_SETTINGS,
+    FFmpegRenderSettings,
+)
 
 
 def test_load_config_uses_env_for_clipr_api_key(monkeypatch: pytest.MonkeyPatch) -> None:
@@ -110,6 +114,73 @@ def test_load_config_defaults_caption_renderer_to_drawtext(
     assert config.caption_renderer_backend == DEFAULT_CAPTION_RENDERER_BACKEND
     assert config.require_caption_renderer_backend() == "drawtext"
     assert config.caption_font_fallbacks == ("Arial",)
+
+
+def test_load_config_defaults_ffmpeg_render_settings(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    monkeypatch.delenv("CLIPFORGE_FFMPEG_ENCODER", raising=False)
+    monkeypatch.delenv("CLIPFORGE_REVIEW_FAST_RENDER", raising=False)
+    monkeypatch.delenv("CLIPFORGE_REVIEW_FFMPEG_ENCODER", raising=False)
+
+    config = load_config(load_dotenv_file=False)
+
+    assert config.ffmpeg_render_settings == DEFAULT_FFMPEG_RENDER_SETTINGS
+    assert config.render_settings_for(review=False) == DEFAULT_FFMPEG_RENDER_SETTINGS
+    assert config.render_settings_for(review=True) == DEFAULT_FFMPEG_RENDER_SETTINGS
+
+
+def test_load_config_uses_env_for_ffmpeg_render_settings(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    monkeypatch.setenv("CLIPFORGE_FFMPEG_ENCODER", "libx264")
+    monkeypatch.setenv("CLIPFORGE_FFMPEG_PRESET", "slow")
+    monkeypatch.setenv("CLIPFORGE_FFMPEG_CRF", "20")
+    monkeypatch.setenv("CLIPFORGE_FFMPEG_THREADS", "4")
+
+    config = load_config(load_dotenv_file=False)
+
+    assert config.render_settings_for(review=False) == FFmpegRenderSettings(
+        encoder="libx264",
+        preset="slow",
+        crf=20,
+        threads=4,
+    )
+
+
+def test_load_config_can_select_nvenc_for_review_renders(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    monkeypatch.setenv("CLIPFORGE_REVIEW_FFMPEG_ENCODER", "h264_nvenc")
+    monkeypatch.setenv("CLIPFORGE_REVIEW_FFMPEG_PRESET", "p4")
+    monkeypatch.setenv("CLIPFORGE_REVIEW_FFMPEG_QUALITY", "24")
+
+    config = load_config(load_dotenv_file=False)
+
+    assert config.render_settings_for(review=False).encoder == "libx264"
+    assert config.render_settings_for(review=True) == FFmpegRenderSettings(
+        encoder="h264_nvenc",
+        preset="p4",
+        crf=23,
+        quality=24,
+        threads=0,
+    )
+
+
+def test_load_config_fast_review_mode_only_changes_review_settings(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    monkeypatch.setenv("CLIPFORGE_REVIEW_FAST_RENDER", "true")
+
+    config = load_config(load_dotenv_file=False)
+
+    assert config.render_settings_for(review=False) == DEFAULT_FFMPEG_RENDER_SETTINGS
+    assert config.render_settings_for(review=True) == FFmpegRenderSettings(
+        encoder="libx264",
+        preset="veryfast",
+        crf=23,
+        threads=0,
+    )
 
 
 def test_load_config_rejects_invalid_caption_renderer_backend(

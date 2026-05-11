@@ -92,6 +92,16 @@ Clipforge loads `.env` from the project root.
 | `CLIPFORGE_CAPTION_RENDERER` | No | `drawtext` | Caption renderer. Supported values: `drawtext`, `ass`. |
 | `CLIPFORGE_ASS_TEMP_DIR` | No | `data/metadata/ass` | Directory for generated `.ass` files when using the `ass` renderer. |
 | `CLIPFORGE_CAPTION_FONT_FALLBACKS` | No | `Arial` | Comma-separated fallback font names for generated ASS styles. |
+| `CLIPFORGE_FFMPEG_ENCODER` | No | `libx264` | Base video encoder. Supported values: `libx264`, `h264_nvenc`. Hardware encoding is opt-in. |
+| `CLIPFORGE_FFMPEG_PRESET` | No | `medium` | Base encoder preset. For `libx264`, this is an x264 preset. |
+| `CLIPFORGE_FFMPEG_CRF` | No | `23` | Base quality value for `libx264`; used as NVENC `-cq` only when no explicit quality is set. |
+| `CLIPFORGE_FFMPEG_QUALITY` | No | none | Explicit NVENC quality value, emitted as `-cq` instead of `-crf`. |
+| `CLIPFORGE_FFMPEG_THREADS` | No | `0` | FFmpeg thread count. `0` lets FFmpeg choose automatically. |
+| `CLIPFORGE_REVIEW_FAST_RENDER` | No | `false` | Uses faster review/candidate presets without changing base render settings. |
+| `CLIPFORGE_REVIEW_FFMPEG_ENCODER` | No | none | Optional review-only encoder override, for example `h264_nvenc`. Falls back to `libx264` if NVENC is unavailable. |
+| `CLIPFORGE_REVIEW_FFMPEG_PRESET` | No | none | Optional review-only encoder preset, for example `p4` for NVENC. |
+| `CLIPFORGE_REVIEW_FFMPEG_CRF` | No | none | Optional review-only x264 CRF, or NVENC `-cq` fallback when no review quality is set. |
+| `CLIPFORGE_REVIEW_FFMPEG_QUALITY` | No | none | Optional review-only NVENC `-cq` quality value. |
 | `CLIPFORGE_SUBJECT_DETECTOR` | No | `yolo` | Primary subject detector. Supported values: `yolo`, `haar`, `none`. |
 | `CLIPFORGE_YOLO_MODEL` | No | `yolo11n.pt` | Ultralytics YOLO model for person detection, for example `yolo11n.pt` or `yolo11s.pt`. |
 | `CLIPFORGE_YOLO_DEVICE` | No | `auto` | YOLO inference device. Use `cuda` for NVIDIA GPU, `cpu`, or `auto`. |

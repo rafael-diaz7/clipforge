@@ -7,6 +7,7 @@ import os
 import re
 import subprocess
 import textwrap
+import time
 from dataclasses import dataclass, replace
 from enum import Enum
 from pathlib import Path
@@ -19,11 +20,27 @@ from clipforge.media.caption_escaping import (
 )
 from clipforge.media.captions import CaptionMetadata, CaptionSegment, CaptionWord
 from clipforge.media.layouts import Layout, LayoutRegion, NormalizedRect, OutputSize
+from clipforge.media.render_settings import (
+    DEFAULT_FFMPEG_RENDER_SETTINGS,
+    DEFAULT_X264_PRESET,
+    FFmpegRenderSettings,
+    NVENC_H264_ENCODER,
+)
 from clipforge.utils.paths import ensure_directory
 
 
 class RenderError(RuntimeError):
     """Raised when an FFmpeg command cannot be built or executed."""
+
+
+class FFmpegCommandError(RenderError):
+    """Raised when FFmpeg exits unsuccessfully."""
+
+    def __init__(self, returncode: int, stderr: str) -> None:
+        self.returncode = returncode
+        self.stderr = stderr
+        detail = f": {stderr}" if stderr else "."
+        super().__init__(f"FFmpeg failed with exit code {returncode}{detail}")
 
 
 DEFAULT_CAPTION_RENDERER_BACKEND = "drawtext"
@@ -333,11 +350,13 @@ def build_ffmpeg_command(
     caption_renderer_backend: str = DEFAULT_CAPTION_RENDERER_BACKEND,
     ass_temp_dir: Path | None = None,
     watermark: Watermark | None = None,
+    render_settings: FFmpegRenderSettings = DEFAULT_FFMPEG_RENDER_SETTINGS,
     ffmpeg_binary: str = "ffmpeg",
 ) -> list[str]:
     """Build an FFmpeg argv list that renders one layout to an MP4."""
 
     output_size = layout.output
+    render_settings = render_settings.normalized()
     ass_subtitle_path = _ass_subtitle_path(
         output_path,
         ass_temp_dir=ass_temp_dir,
@@ -370,7 +389,9 @@ def build_ffmpeg_command(
             "-map",
             "0:a?",
             "-c:v",
-            "libx264",
+            render_settings.encoder,
+            *_video_encoder_args(render_settings),
+            *_thread_args(render_settings),
             "-c:a",
             "aac",
             "-pix_fmt",
@@ -499,8 +520,7 @@ def run_ffmpeg_command(command: list[str]) -> None:
 
     if completed.returncode != 0:
         stderr = (completed.stderr or "").strip()
-        detail = f": {stderr}" if stderr else "."
-        raise RenderError(f"FFmpeg failed with exit code {completed.returncode}{detail}")
+        raise FFmpegCommandError(completed.returncode, stderr)
 
 
 def render_layout(
@@ -513,6 +533,7 @@ def render_layout(
     caption_renderer_backend: str = DEFAULT_CAPTION_RENDERER_BACKEND,
     ass_temp_dir: Path | None = None,
     watermark: Watermark | None = None,
+    render_settings: FFmpegRenderSettings = DEFAULT_FFMPEG_RENDER_SETTINGS,
     ffmpeg_binary: str = "ffmpeg",
 ) -> Path:
     """Render one layout and return the output path."""
@@ -520,6 +541,7 @@ def render_layout(
     if not source_path.is_file():
         raise RenderError(f"Source video not found: {source_path}")
 
+    render_settings = render_settings.normalized()
     command = build_ffmpeg_command(
         source_path,
         output_path,
@@ -529,15 +551,66 @@ def render_layout(
         caption_renderer_backend=caption_renderer_backend,
         ass_temp_dir=ass_temp_dir,
         watermark=watermark,
+        render_settings=render_settings,
         ffmpeg_binary=ffmpeg_binary,
     )
+    start_time = time.perf_counter()
+    rendered = False
+    _log_render_settings(layout, output_path, render_settings)
     try:
         run_ffmpeg_command(command)
+        rendered = True
+    except FFmpegCommandError as exc:
+        if _can_retry_with_software_encoder(render_settings, exc):
+            fallback_settings = _software_fallback_settings(render_settings)
+            LOGGER.warning(
+                "FFmpeg encoder %s failed for layout %s; retrying with %s. "
+                "output=%s",
+                render_settings.encoder,
+                layout.name,
+                fallback_settings.encoder,
+                output_path,
+            )
+            fallback_command = build_ffmpeg_command(
+                source_path,
+                output_path,
+                layout,
+                caption_metadata=caption_metadata,
+                caption_style=caption_style,
+                caption_renderer_backend=caption_renderer_backend,
+                ass_temp_dir=ass_temp_dir,
+                watermark=watermark,
+                render_settings=fallback_settings,
+                ffmpeg_binary=ffmpeg_binary,
+            )
+            _log_render_settings(layout, output_path, fallback_settings)
+            try:
+                run_ffmpeg_command(fallback_command)
+                rendered = True
+            except RenderError as fallback_exc:
+                raise RenderError(
+                    f"Could not render layout {layout.name!r} from {source_path} "
+                    f"to {output_path}: {fallback_exc}"
+                ) from fallback_exc
+        else:
+            raise RenderError(
+                f"Could not render layout {layout.name!r} from {source_path} "
+                f"to {output_path}: {exc}"
+            ) from exc
     except RenderError as exc:
         raise RenderError(
             f"Could not render layout {layout.name!r} from {source_path} "
             f"to {output_path}: {exc}"
         ) from exc
+    finally:
+        if rendered:
+            elapsed_seconds = time.perf_counter() - start_time
+            LOGGER.info(
+                "Rendered layout %s in %.2fs. output=%s",
+                layout.name,
+                elapsed_seconds,
+                output_path,
+            )
 
     return output_path
 
@@ -651,6 +724,83 @@ def _region_filter(region: LayoutRegion, output_rect: PixelRect) -> str:
     if region.effect == "blur":
         filter_chain += ",boxblur=20:1"
     return filter_chain
+
+
+def _video_encoder_args(render_settings: FFmpegRenderSettings) -> tuple[str, ...]:
+    if render_settings.encoder == NVENC_H264_ENCODER:
+        args: list[str] = []
+        if render_settings.preset is not None:
+            args.extend(("-preset", render_settings.preset))
+        quality = render_settings.quality
+        if quality is None:
+            quality = render_settings.crf
+        if quality is not None:
+            args.extend(("-rc", "vbr", "-cq", str(quality)))
+        return tuple(args)
+
+    args = []
+    if render_settings.preset is not None:
+        args.extend(("-preset", render_settings.preset))
+    if render_settings.crf is not None:
+        args.extend(("-crf", str(render_settings.crf)))
+    return tuple(args)
+
+
+def _thread_args(render_settings: FFmpegRenderSettings) -> tuple[str, ...]:
+    if render_settings.threads is None:
+        return ()
+    return ("-threads", str(render_settings.threads))
+
+
+def _log_render_settings(
+    layout: Layout,
+    output_path: Path,
+    render_settings: FFmpegRenderSettings,
+) -> None:
+    LOGGER.info(
+        "Rendering layout %s with FFmpeg encoder=%s preset=%s crf=%s quality=%s "
+        "threads=%s. output=%s",
+        layout.name,
+        render_settings.encoder,
+        render_settings.preset,
+        render_settings.crf,
+        render_settings.quality,
+        render_settings.threads,
+        output_path,
+    )
+
+
+def _can_retry_with_software_encoder(
+    render_settings: FFmpegRenderSettings,
+    error: FFmpegCommandError,
+) -> bool:
+    if (
+        render_settings.encoder != NVENC_H264_ENCODER
+        or not render_settings.fallback_to_software
+    ):
+        return False
+    stderr = error.stderr.lower()
+    return any(
+        marker in stderr
+        for marker in (
+            "unknown encoder",
+            "no capable devices found",
+            "cannot load",
+            "failed loading",
+            "error initializing output stream",
+            "device creation failed",
+            "provided device doesn't support",
+        )
+    )
+
+
+def _software_fallback_settings(
+    render_settings: FFmpegRenderSettings,
+) -> FFmpegRenderSettings:
+    preset = render_settings.preset
+    if preset is not None and re.fullmatch(r"p[1-7]", preset.lower()):
+        preset = DEFAULT_X264_PRESET
+    return replace(render_settings, encoder="libx264", preset=preset)
 
 
 def _watermark_filters(

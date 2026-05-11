@@ -39,6 +39,7 @@ from clipforge.media.layouts import (
 from clipforge.media.overlay import analyze_overlay
 from clipforge.media.render import load_streamer_watermark, render_layout
 from clipforge.media.render import CaptionStyle
+from clipforge.media.render_settings import DEFAULT_FFMPEG_RENDER_SETTINGS
 from clipforge.pipeline.artifacts import write_metadata
 from clipforge.pipeline.state_sync import record_rendered_clip
 from clipforge.storage.state import get_clip
@@ -777,6 +778,9 @@ def _render_layout_with_optional_captions(
     render_kwargs = {}
     if watermark is not None:
         render_kwargs["watermark"] = watermark
+    render_settings = config.render_settings_for(review=True)
+    if render_settings != DEFAULT_FFMPEG_RENDER_SETTINGS:
+        render_kwargs["render_settings"] = render_settings
 
     if caption_metadata is None:
         return render_layout(source_path, output_path, layout, **render_kwargs)

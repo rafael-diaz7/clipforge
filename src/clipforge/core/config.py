@@ -3,11 +3,19 @@
 from __future__ import annotations
 
 import os
-from dataclasses import dataclass
+from dataclasses import dataclass, field, replace
 from pathlib import Path
 
 from dotenv import load_dotenv
 
+from clipforge.media.render_settings import (
+    DEFAULT_FFMPEG_RENDER_SETTINGS,
+    DEFAULT_REVIEW_NVENC_PRESET,
+    DEFAULT_REVIEW_X264_PRESET,
+    FFmpegRenderSettings,
+    NVENC_H264_ENCODER,
+    SUPPORTED_FFMPEG_ENCODERS,
+)
 from clipforge.utils.config_validation import require_config_value, require_config_values
 
 
@@ -68,6 +76,11 @@ class ClipforgeConfig:
     target_height: int = TARGET_HEIGHT
     output_format: str = OUTPUT_FORMAT
     downloader_backend: str = DEFAULT_DOWNLOADER_BACKEND
+    ffmpeg_render_settings: FFmpegRenderSettings = field(
+        default_factory=lambda: DEFAULT_FFMPEG_RENDER_SETTINGS
+    )
+    review_fast_render: bool = False
+    review_ffmpeg_render_settings: FFmpegRenderSettings | None = None
 
     @property
     def target_resolution(self) -> tuple[int, int]:
@@ -92,6 +105,11 @@ class ClipforgeConfig:
                 f"{self.caption_renderer_backend!r}. Supported values: {supported}."
             )
         return backend
+
+    def render_settings_for(self, *, review: bool) -> FFmpegRenderSettings:
+        if review and self.review_ffmpeg_render_settings is not None:
+            return self.review_ffmpeg_render_settings.normalized()
+        return self.ffmpeg_render_settings.normalized()
 
     def require_twitch_credentials(self) -> tuple[str, str]:
         client_id, client_secret = require_config_values(
@@ -126,6 +144,8 @@ def load_config(*, load_dotenv_file: bool = True) -> ClipforgeConfig:
 
     if load_dotenv_file:
         load_dotenv(PROJECT_ROOT / ".env")
+    ffmpeg_render_settings = _ffmpeg_settings_from_env("CLIPFORGE_FFMPEG_")
+    review_fast_render = _env_bool("CLIPFORGE_REVIEW_FAST_RENDER", default=False)
     config = ClipforgeConfig(
         clipr_api_key=os.getenv("CLIPR_API_KEY"),
         twitch_client_id=os.getenv("TWITCH_CLIENT_ID"),
@@ -150,10 +170,19 @@ def load_config(*, load_dotenv_file: bool = True) -> ClipforgeConfig:
             "CLIPFORGE_DOWNLOADER",
             DEFAULT_DOWNLOADER_BACKEND,
         ),
+        ffmpeg_render_settings=ffmpeg_render_settings,
+        review_fast_render=review_fast_render,
+        review_ffmpeg_render_settings=_review_ffmpeg_settings_from_env(
+            ffmpeg_render_settings,
+            fast_render=review_fast_render,
+        ),
     )
 
     config.require_downloader_backend()
     config.require_caption_renderer_backend()
+    _require_ffmpeg_settings(config.ffmpeg_render_settings)
+    if config.review_ffmpeg_render_settings is not None:
+        _require_ffmpeg_settings(config.review_ffmpeg_render_settings)
 
     return config
 
@@ -189,3 +218,90 @@ def _env_list(name: str, *, default: tuple[str, ...]) -> tuple[str, ...]:
 
     items = tuple(item.strip() for item in value.split(",") if item.strip())
     return items or default
+
+
+def _ffmpeg_settings_from_env(
+    prefix: str,
+    *,
+    base: FFmpegRenderSettings = DEFAULT_FFMPEG_RENDER_SETTINGS,
+) -> FFmpegRenderSettings:
+    settings = base
+    encoder = _env_str(f"{prefix}ENCODER")
+    preset = _env_str(f"{prefix}PRESET")
+    crf = _env_int(f"{prefix}CRF")
+    quality = _env_int(f"{prefix}QUALITY")
+    threads = _env_int(f"{prefix}THREADS")
+
+    if encoder is not None:
+        settings = replace(settings, encoder=encoder)
+    if preset is not None:
+        settings = replace(settings, preset=preset)
+    if crf is not None:
+        settings = replace(settings, crf=crf)
+    if quality is not None:
+        settings = replace(settings, quality=quality)
+    if threads is not None:
+        settings = replace(settings, threads=threads)
+    return settings.normalized()
+
+
+def _review_ffmpeg_settings_from_env(
+    base: FFmpegRenderSettings,
+    *,
+    fast_render: bool,
+) -> FFmpegRenderSettings | None:
+    has_review_override = any(
+        _env_str(name) is not None
+        for name in (
+            "CLIPFORGE_REVIEW_FFMPEG_ENCODER",
+            "CLIPFORGE_REVIEW_FFMPEG_PRESET",
+            "CLIPFORGE_REVIEW_FFMPEG_CRF",
+            "CLIPFORGE_REVIEW_FFMPEG_QUALITY",
+            "CLIPFORGE_REVIEW_FFMPEG_THREADS",
+        )
+    )
+    if not fast_render and not has_review_override:
+        return None
+
+    settings = _ffmpeg_settings_from_env("CLIPFORGE_REVIEW_FFMPEG_", base=base)
+    if fast_render and _env_str("CLIPFORGE_REVIEW_FFMPEG_PRESET") is None:
+        fast_preset = (
+            DEFAULT_REVIEW_NVENC_PRESET
+            if settings.encoder == NVENC_H264_ENCODER
+            else DEFAULT_REVIEW_X264_PRESET
+        )
+        settings = replace(settings, preset=fast_preset)
+    return settings.normalized()
+
+
+def _require_ffmpeg_settings(settings: FFmpegRenderSettings) -> None:
+    normalized = settings.normalized()
+    if normalized.encoder not in SUPPORTED_FFMPEG_ENCODERS:
+        supported = ", ".join(sorted(SUPPORTED_FFMPEG_ENCODERS))
+        raise ConfigError(
+            "Invalid FFmpeg encoder: "
+            f"{settings.encoder!r}. Supported values: {supported}."
+        )
+    if normalized.crf is not None and normalized.crf < 0:
+        raise ConfigError("FFmpeg CRF must be non-negative.")
+    if normalized.quality is not None and normalized.quality < 0:
+        raise ConfigError("FFmpeg quality must be non-negative.")
+    if normalized.threads is not None and normalized.threads < 0:
+        raise ConfigError("FFmpeg thread count must be non-negative.")
+
+
+def _env_str(name: str) -> str | None:
+    value = os.getenv(name)
+    if value is None or not value.strip():
+        return None
+    return value.strip()
+
+
+def _env_int(name: str) -> int | None:
+    value = _env_str(name)
+    if value is None:
+        return None
+    try:
+        return int(value)
+    except ValueError as exc:
+        raise ConfigError(f"Invalid integer configuration for {name}: {value!r}.") from exc

@@ -12,6 +12,7 @@ from clipforge.media.render import (
     CaptionCue,
     CaptionStyle,
     CaptionVerticalSafeArea,
+    FFmpegCommandError,
     RenderError,
     Watermark,
     _caption_chunk_duration,
@@ -27,6 +28,7 @@ from clipforge.media.render import (
     streamer_watermark_path,
     watermark_placement,
 )
+from clipforge.media.render_settings import FFmpegRenderSettings
 
 
 def _layout(
@@ -826,11 +828,58 @@ def test_build_ffmpeg_command_returns_argument_list(tmp_path: Path) -> None:
     assert "-map" in command
     assert "[out]" in command
     assert "0:a?" in command
+    assert command[command.index("-c:v") + 1] == "libx264"
+    assert command[command.index("-preset") + 1] == "medium"
+    assert command[command.index("-crf") + 1] == "23"
+    assert command[command.index("-threads") + 1] == "0"
     assert "-shortest" in command
     assert "-s" in command
     assert "1080x1920" in command
     assert command[-1] == str(output)
     assert all(isinstance(part, str) for part in command)
+
+
+def test_build_ffmpeg_command_applies_custom_x264_performance_settings(
+    tmp_path: Path,
+) -> None:
+    source = tmp_path / "source.mp4"
+    output = tmp_path / "render.mp4"
+
+    command = build_ffmpeg_command(
+        source,
+        output,
+        _layout(_region()),
+        render_settings=FFmpegRenderSettings(preset="veryfast", crf=20, threads=4),
+    )
+
+    assert command[command.index("-c:v") + 1] == "libx264"
+    assert command[command.index("-preset") + 1] == "veryfast"
+    assert command[command.index("-crf") + 1] == "20"
+    assert command[command.index("-threads") + 1] == "4"
+
+
+def test_build_ffmpeg_command_uses_nvenc_quality_flags_without_crf(
+    tmp_path: Path,
+) -> None:
+    source = tmp_path / "source.mp4"
+    output = tmp_path / "render.mp4"
+
+    command = build_ffmpeg_command(
+        source,
+        output,
+        _layout(_region()),
+        render_settings=FFmpegRenderSettings(
+            encoder="h264_nvenc",
+            preset="p4",
+            crf=22,
+        ),
+    )
+
+    assert command[command.index("-c:v") + 1] == "h264_nvenc"
+    assert command[command.index("-preset") + 1] == "p4"
+    assert "-crf" not in command
+    assert command[command.index("-rc") + 1] == "vbr"
+    assert command[command.index("-cq") + 1] == "22"
 
 
 def test_build_ffmpeg_command_accepts_caption_metadata(tmp_path: Path) -> None:
@@ -1022,6 +1071,36 @@ def test_render_layout_runs_command_and_returns_output_path(
 
     assert render_layout(source_path, output_path, _layout(_region())) == output_path
     assert calls
+
+
+def test_render_layout_falls_back_to_libx264_when_nvenc_is_unavailable(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    calls: list[list[str]] = []
+    source_path = tmp_path / "source.mp4"
+    output_path = tmp_path / "render.mp4"
+    source_path.write_bytes(b"video")
+
+    def fake_run(command: list[str]) -> None:
+        calls.append(command)
+        if len(calls) == 1:
+            raise FFmpegCommandError(1, "Unknown encoder 'h264_nvenc'")
+
+    monkeypatch.setattr("clipforge.media.render.run_ffmpeg_command", fake_run)
+
+    assert (
+        render_layout(
+            source_path,
+            output_path,
+            _layout(_region()),
+            render_settings=FFmpegRenderSettings(encoder="h264_nvenc", preset="p4"),
+        )
+        == output_path
+    )
+    assert calls[0][calls[0].index("-c:v") + 1] == "h264_nvenc"
+    assert calls[1][calls[1].index("-c:v") + 1] == "libx264"
+    assert calls[1][calls[1].index("-preset") + 1] == "medium"
 
 
 def test_render_layout_reports_missing_source_path(tmp_path: Path) -> None:

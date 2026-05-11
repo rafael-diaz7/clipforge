@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import json
+from dataclasses import replace
 from pathlib import Path
 
 import pytest
@@ -10,6 +11,7 @@ from clipforge.media.download import DownloadResult
 from clipforge.media.captions import CaptionMetadata, CaptionSegment, save_captions
 from clipforge.media.layouts import load_example_layout
 from clipforge.media.render import Watermark
+from clipforge.media.render_settings import FFmpegRenderSettings
 from clipforge.pipeline.workflows import (
     ClipProcessingError,
     process_clip,
@@ -139,6 +141,36 @@ def test_render_candidate_can_burn_caption_metadata(
     )
     assert calls[0]["caption_renderer_backend"] == "drawtext"
     assert calls[0]["ass_temp_dir"] == config.ass_temp_dir
+
+
+def test_render_candidate_passes_review_ffmpeg_settings_when_configured(
+    tmp_path: Path,
+    monkeypatch,
+) -> None:
+    calls: list[dict[str, object]] = []
+    config = replace(
+        _config(tmp_path),
+        review_fast_render=True,
+        review_ffmpeg_render_settings=FFmpegRenderSettings(preset="veryfast", crf=23),
+    )
+
+    def fake_render(source_path: Path, output_path: Path, layout, **kwargs) -> Path:
+        calls.append(kwargs)
+        return output_path
+
+    monkeypatch.setattr("clipforge.pipeline.workflows.render_layout", fake_render)
+
+    render_candidate(
+        tmp_path / "source.mp4",
+        layout_ref="center_gameplay",
+        clip_id="clip-123",
+        config=config,
+    )
+
+    assert calls[0]["render_settings"] == FFmpegRenderSettings(
+        preset="veryfast",
+        crf=23,
+    )
 
 
 def test_render_all_candidates_renders_default_layouts(
