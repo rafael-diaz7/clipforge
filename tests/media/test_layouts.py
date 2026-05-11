@@ -334,16 +334,23 @@ def test_generate_detected_layouts_from_high_confidence_overlay(tmp_path: Path) 
     assert paths == (
         analysis_dir / "clip-123" / "layouts" / "detected_streamer_focus.json",
         analysis_dir / "clip-123" / "layouts" / "detected_hybrid.json",
+        analysis_dir
+        / "clip-123"
+        / "layouts"
+        / "detected_hybrid_full_game_bottom.json",
     )
     layouts = tuple(load_layout(path) for path in paths)
     assert [layout.name for layout in layouts] == [
         "detected_streamer_focus",
         "detected_hybrid",
+        "detected_hybrid_full_game_bottom",
     ]
     focus_background = layouts[0].regions[0]
     focus_streamer = layouts[0].regions[1]
     hybrid_gameplay = layouts[1].regions[0]
     hybrid_streamer = layouts[1].regions[1]
+    full_game_bottom_gameplay = layouts[2].regions[0]
+    full_game_bottom_streamer = layouts[2].regions[1]
 
     assert focus_background.name == "background"
     assert focus_background.source_region == NormalizedRect(
@@ -383,6 +390,31 @@ def test_generate_detected_layouts_from_high_confidence_overlay(tmp_path: Path) 
     )
     assert layouts[1].caption_region.y == pytest.approx(hybrid_streamer.output_region.height)
     assert focus_streamer.output_region.height > hybrid_streamer.output_region.height
+    assert full_game_bottom_streamer.source_region == NormalizedRect(**overlay_rect)
+    assert full_game_bottom_gameplay.source_region == NormalizedRect(
+        x=0.0,
+        y=0.0,
+        width=1.0,
+        height=1.0,
+    )
+    expected_full_game_bottom_gameplay = load_example_layout(
+        "hybrid_full_game_bottom"
+    ).regions[0]
+    assert full_game_bottom_gameplay.output_region.x == pytest.approx(
+        expected_full_game_bottom_gameplay.output_region.x
+    )
+    assert full_game_bottom_gameplay.output_region.y == pytest.approx(
+        expected_full_game_bottom_gameplay.output_region.y
+    )
+    assert full_game_bottom_gameplay.output_region.width == pytest.approx(
+        expected_full_game_bottom_gameplay.output_region.width
+    )
+    assert full_game_bottom_gameplay.output_region.height == pytest.approx(
+        expected_full_game_bottom_gameplay.output_region.height
+    )
+    assert layouts[2].caption_region == load_example_layout(
+        "hybrid_full_game_bottom"
+    ).caption_region
 
     payload = _read_json(paths[0])
     assert payload["metadata"]["generation_source"] == "overlay_analysis"
@@ -409,8 +441,10 @@ def test_generated_layouts_directly_reuse_selected_overlay_rect(tmp_path: Path) 
 
     focus = load_layout(paths[0])
     hybrid = load_layout(paths[1])
+    full_game_bottom = load_layout(paths[2])
     assert focus.regions[1].source_region == NormalizedRect(**overlay_rect)
     assert hybrid.regions[1].source_region == NormalizedRect(**overlay_rect)
+    assert full_game_bottom.regions[1].source_region == NormalizedRect(**overlay_rect)
     assert focus.regions[1].output_region == NormalizedRect(
         x=0.0,
         y=0.19,
@@ -449,15 +483,33 @@ def test_fallback_overlay_generates_static_layout_candidates(tmp_path: Path) -> 
 
     focus = load_layout(paths[0])
     hybrid = load_layout(paths[1])
+    full_game_bottom = load_layout(paths[2])
     assert focus.name == "detected_streamer_focus"
     assert hybrid.name == "detected_hybrid"
+    assert full_game_bottom.name == "detected_hybrid_full_game_bottom"
     assert focus.regions == load_example_layout("facecam_focus").regions
     assert hybrid.regions == load_example_layout("hybrid").regions
+    expected_full_game_bottom = load_example_layout("hybrid_full_game_bottom")
+    assert full_game_bottom.regions[0].source_region == expected_full_game_bottom.regions[
+        0
+    ].source_region
+    assert full_game_bottom.regions[0].output_region.y == pytest.approx(
+        expected_full_game_bottom.regions[0].output_region.y
+    )
+    assert full_game_bottom.regions[0].output_region.height == pytest.approx(
+        expected_full_game_bottom.regions[0].output_region.height
+    )
+    assert full_game_bottom.regions[1].source_region == expected_full_game_bottom.regions[
+        1
+    ].source_region
+    assert full_game_bottom.regions[1].output_region.height == pytest.approx(
+        expected_full_game_bottom.regions[1].output_region.height
+    )
 
-    payload = _read_json(paths[1])
+    payload = _read_json(paths[2])
     assert payload["metadata"]["fallback_generated"] is True
-    assert payload["metadata"]["source_template"] == "hybrid"
-    assert payload["metadata"]["confidence_threshold"] == 0.58
+    assert payload["metadata"]["source_template"] == "hybrid_full_game_bottom"
+    assert "confidence_threshold" not in payload["metadata"]
 
 
 def test_generated_layout_json_matches_renderer_schema(tmp_path: Path) -> None:
@@ -511,14 +563,15 @@ def test_generated_layouts_are_deterministic(tmp_path: Path) -> None:
     assert second_contents == first_contents
 
 
-def test_low_confidence_overlay_uses_stable_fallback_paths(tmp_path: Path) -> None:
+def test_low_confidence_overlay_still_uses_detected_rect(tmp_path: Path) -> None:
     analysis_dir = tmp_path / "analysis"
+    overlay_rect = {"x": 0.04, "y": 0.12, "width": 0.2, "height": 0.3}
     _write_overlay_metadata(
         analysis_dir,
         clip_id="clip-123",
-        selected_overlay_rect={"x": 0.04, "y": 0.12, "width": 0.2, "height": 0.3},
+        selected_overlay_rect=overlay_rect,
         confidence=0.2,
-        fallback=False,
+        fallback=True,
     )
 
     paths = generate_detected_layout_candidates(
@@ -529,8 +582,16 @@ def test_low_confidence_overlay_uses_stable_fallback_paths(tmp_path: Path) -> No
     assert paths == (
         analysis_dir / "clip-123" / "layouts" / "detected_streamer_focus.json",
         analysis_dir / "clip-123" / "layouts" / "detected_hybrid.json",
+        analysis_dir
+        / "clip-123"
+        / "layouts"
+        / "detected_hybrid_full_game_bottom.json",
     )
-    assert _read_json(paths[0])["metadata"]["fallback_generated"] is True
+    payload = _read_json(paths[0])
+    assert payload["metadata"]["fallback_generated"] is False
+    assert payload["metadata"]["overlay_fallback"] is True
+    assert payload["metadata"]["selected_overlay_rect"] == overlay_rect
+    assert load_layout(paths[0]).regions[1].source_region == NormalizedRect(**overlay_rect)
 
 
 def _write_overlay_metadata(

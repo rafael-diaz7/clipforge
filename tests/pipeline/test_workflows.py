@@ -31,7 +31,7 @@ GENERATED_LAYOUT_CANDIDATE_NAMES = [
     "fullscreen_downscaled_blur_bg",
     "detected_streamer_focus",
     "detected_hybrid",
-    "hybrid_full_game_bottom",
+    "detected_hybrid_full_game_bottom",
 ]
 
 
@@ -188,6 +188,12 @@ def test_render_all_candidates_prefers_generated_analysis_layouts(
         source_template="hybrid",
         layout_name="detected_hybrid",
     )
+    _write_detected_layout(
+        config.analysis_dir,
+        clip_id="clip-123",
+        source_template="hybrid_full_game_bottom",
+        layout_name="detected_hybrid_full_game_bottom",
+    )
 
     def fake_render(source_path: Path, output_path: Path, layout) -> Path:
         rendered_layouts.append(layout.name)
@@ -207,7 +213,7 @@ def test_render_all_candidates_prefers_generated_analysis_layouts(
         tmp_path / "renders" / "clip-123_fullscreen_downscaled_blur_bg.mp4",
         tmp_path / "renders" / "clip-123_detected_streamer_focus.mp4",
         tmp_path / "renders" / "clip-123_detected_hybrid.mp4",
-        tmp_path / "renders" / "clip-123_hybrid_full_game_bottom.mp4",
+        tmp_path / "renders" / "clip-123_detected_hybrid_full_game_bottom.mp4",
     )
 
 
@@ -269,6 +275,12 @@ def test_render_all_candidates_static_layouts_opt_out(
         clip_id="clip-123",
         source_template="hybrid",
         layout_name="detected_hybrid",
+    )
+    _write_detected_layout(
+        config.analysis_dir,
+        clip_id="clip-123",
+        source_template="hybrid_full_game_bottom",
+        layout_name="detected_hybrid_full_game_bottom",
     )
 
     def fake_render(source_path: Path, output_path: Path, layout) -> Path:
@@ -418,6 +430,12 @@ def test_process_clip_uses_generated_layouts_when_present(
         source_template="hybrid",
         layout_name="detected_hybrid",
     )
+    _write_detected_layout(
+        config.analysis_dir,
+        clip_id=TWITCH_CLIP_SLUG,
+        source_template="hybrid_full_game_bottom",
+        layout_name="detected_hybrid_full_game_bottom",
+    )
     _write_frame_analysis(config.analysis_dir, clip_id=TWITCH_CLIP_SLUG)
     _write_overlay_analysis(config.analysis_dir, clip_id=TWITCH_CLIP_SLUG)
 
@@ -483,7 +501,7 @@ def test_process_clip_uses_generated_layouts_when_present(
             / "renders"
             / TWITCH_CLIP_SLUG
             / "clipr"
-            / "hybrid_full_game_bottom.mp4"
+            / "detected_hybrid_full_game_bottom.mp4"
         ),
     ]
     assert [layout["name"] for layout in metadata["layouts"]] == (
@@ -964,6 +982,12 @@ def test_process_clip_generates_analysis_artifacts_and_renders_outputs(
                 source_template="hybrid",
                 layout_name="detected_hybrid",
             ),
+            _write_detected_layout(
+                analysis_dir,
+                clip_id=clip_id,
+                source_template="hybrid_full_game_bottom",
+                layout_name="detected_hybrid_full_game_bottom",
+            ),
         )
 
     def fake_render(source: Path, output: Path, layout) -> Path:
@@ -996,7 +1020,7 @@ def test_process_clip_generates_analysis_artifacts_and_renders_outputs(
         "render:fullscreen_downscaled_blur_bg",
         "render:detected_streamer_focus",
         "render:detected_hybrid",
-        "render:hybrid_full_game_bottom",
+        "render:detected_hybrid_full_game_bottom",
     ]
     assert (config.analysis_dir / TWITCH_CLIP_SLUG / "frames.json").is_file()
     assert (config.analysis_dir / TWITCH_CLIP_SLUG / "overlay.json").is_file()
@@ -1033,6 +1057,12 @@ def test_process_clip_reuses_existing_analysis_and_render_artifacts_without_forc
         clip_id=TWITCH_CLIP_SLUG,
         source_template="hybrid",
         layout_name="detected_hybrid",
+    )
+    _write_detected_layout(
+        config.analysis_dir,
+        clip_id=TWITCH_CLIP_SLUG,
+        source_template="hybrid_full_game_bottom",
+        layout_name="detected_hybrid_full_game_bottom",
     )
     for name in GENERATED_LAYOUT_CANDIDATE_NAMES:
         render_path = config.renders_dir / TWITCH_CLIP_SLUG / "ytdlp" / f"{name}.mp4"
@@ -1102,6 +1132,12 @@ def test_process_clip_force_regenerates_analysis_and_render_artifacts(
         source_template="hybrid",
         layout_name="detected_hybrid",
     )
+    _write_detected_layout(
+        config.analysis_dir,
+        clip_id=TWITCH_CLIP_SLUG,
+        source_template="hybrid_full_game_bottom",
+        layout_name="detected_hybrid_full_game_bottom",
+    )
     events: list[str] = []
 
     def fake_sample_frames(
@@ -1140,6 +1176,12 @@ def test_process_clip_force_regenerates_analysis_and_render_artifacts(
                 source_template="hybrid",
                 layout_name="detected_hybrid",
             ),
+            _write_detected_layout(
+                analysis_dir,
+                clip_id=clip_id,
+                source_template="hybrid_full_game_bottom",
+                layout_name="detected_hybrid_full_game_bottom",
+            ),
         )
 
     def fake_render(source: Path, output: Path, layout) -> Path:
@@ -1170,7 +1212,7 @@ def test_process_clip_force_regenerates_analysis_and_render_artifacts(
         "render:fullscreen_downscaled_blur_bg",
         "render:detected_streamer_focus",
         "render:detected_hybrid",
-        "render:hybrid_full_game_bottom",
+        "render:detected_hybrid_full_game_bottom",
     ]
 
 
@@ -1201,6 +1243,12 @@ def test_process_clip_rerender_reuses_source_and_captions_without_transcription(
         clip_id=TWITCH_CLIP_SLUG,
         source_template="hybrid",
         layout_name="detected_hybrid",
+    )
+    _write_detected_layout(
+        config.analysis_dir,
+        clip_id=TWITCH_CLIP_SLUG,
+        source_template="hybrid_full_game_bottom",
+        layout_name="detected_hybrid_full_game_bottom",
     )
     events: list[str] = []
 
@@ -1246,6 +1294,12 @@ def test_process_clip_rerender_reuses_source_and_captions_without_transcription(
                 clip_id=clip_id,
                 source_template="hybrid",
                 layout_name="detected_hybrid",
+            ),
+            _write_detected_layout(
+                analysis_dir,
+                clip_id=clip_id,
+                source_template="hybrid_full_game_bottom",
+                layout_name="detected_hybrid_full_game_bottom",
             ),
         )
 
@@ -1293,7 +1347,7 @@ def test_process_clip_rerender_reuses_source_and_captions_without_transcription(
         "render:fullscreen_downscaled_blur_bg",
         "render:detected_streamer_focus",
         "render:detected_hybrid",
-        "render:hybrid_full_game_bottom",
+        "render:detected_hybrid_full_game_bottom",
     ]
 
 

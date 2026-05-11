@@ -318,6 +318,10 @@ Default candidate layouts live in `examples/layouts/` and currently include
 `center_gameplay`, `fullscreen_downscaled_blur_bg`, `facecam_focus`, `hybrid`,
 and `hybrid_full_game_bottom`.
 
+When generated layouts are enabled, facecam-aware analysis can replace
+`facecam_focus`, `hybrid`, and `hybrid_full_game_bottom` with detected variants
+that use the selected overlay rectangle from `overlay.json`.
+
 ## Caption Workflow
 
 Captions are optional. Enable them for the full processing flow with either an

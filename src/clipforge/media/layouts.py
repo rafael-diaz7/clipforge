@@ -28,8 +28,11 @@ DEFAULT_LAYOUT_NAMES = (
     "hybrid",
     "hybrid_full_game_bottom",
 )
-GENERATED_LAYOUT_NAMES = ("detected_streamer_focus", "detected_hybrid")
-DYNAMIC_LAYOUT_CONFIDENCE_THRESHOLD = 0.58
+GENERATED_LAYOUT_NAMES = (
+    "detected_streamer_focus",
+    "detected_hybrid",
+    "detected_hybrid_full_game_bottom",
+)
 SUPPORTED_REGION_EFFECTS = frozenset({"blur"})
 HYBRID_STREAMER_REGION_NAMES = frozenset({"facecam", "streamer"})
 HYBRID_GAMEPLAY_REGION_NAME = "gameplay"
@@ -122,10 +125,11 @@ def generate_detected_layout_candidates(
     clip_id: str,
     analysis_dir: Path = ANALYSIS_DIR,
     example_layouts_dir: Path = EXAMPLE_LAYOUTS_DIR,
-    confidence_threshold: float = DYNAMIC_LAYOUT_CONFIDENCE_THRESHOLD,
+    confidence_threshold: float | None = None,
 ) -> tuple[Path, ...]:
     """Generate deterministic layout JSON candidates from overlay analysis metadata."""
 
+    del confidence_threshold
     safe_clip_id = _safe_clip_id(clip_id)
     analysis_clip_dir = clip_analysis_dir(analysis_dir, safe_clip_id)
     overlay_path = analysis_clip_dir / "overlay.json"
@@ -134,10 +138,7 @@ def generate_detected_layout_candidates(
 
     overlay_metadata = _read_overlay_metadata(overlay_path)
     layouts_dir = ensure_directory(analysis_clip_dir / "layouts")
-    if _can_generate_dynamic_layouts(
-        overlay_metadata,
-        confidence_threshold=confidence_threshold,
-    ):
+    if _can_generate_dynamic_layouts(overlay_metadata):
         payloads = _dynamic_layout_payloads(
             overlay_metadata,
             overlay_path=overlay_path,
@@ -148,7 +149,6 @@ def generate_detected_layout_candidates(
             overlay_metadata,
             overlay_path=overlay_path,
             example_layouts_dir=example_layouts_dir,
-            confidence_threshold=confidence_threshold,
         )
 
     paths: list[Path] = []
@@ -376,6 +376,10 @@ def _dynamic_layout_payloads(
         width=1.0,
         height=1.0 - HYBRID_STREAMER_OUTPUT_HEIGHT,
     )
+    full_game_bottom_template = load_example_layout(
+        "hybrid_full_game_bottom",
+        layouts_dir=example_layouts_dir,
+    )
 
     return {
         "detected_streamer_focus": {
@@ -423,6 +427,19 @@ def _dynamic_layout_payloads(
                 },
             ],
         },
+        "detected_hybrid_full_game_bottom": _layout_payload_with_streamer_source(
+            full_game_bottom_template,
+            streamer_source=overlay_rect,
+            name="detected_hybrid_full_game_bottom",
+            description=(
+                "Generated full-game-bottom hybrid layout from detected overlay analysis."
+            ),
+            metadata={
+                **metadata,
+                "layout_goal": "hybrid_full_game_bottom",
+                "source_template": "hybrid_full_game_bottom",
+            },
+        ),
     }
 
 
@@ -431,19 +448,21 @@ def _fallback_layout_payloads(
     *,
     overlay_path: Path,
     example_layouts_dir: Path,
-    confidence_threshold: float,
 ) -> dict[str, dict[str, object]]:
     metadata = _generation_metadata(
         overlay_metadata,
         overlay_path=overlay_path,
         fallback_generated=True,
-        confidence_threshold=confidence_threshold,
     )
     focus_template = load_example_layout(
         "facecam_focus",
         layouts_dir=example_layouts_dir,
     )
     hybrid_template = load_example_layout("hybrid", layouts_dir=example_layouts_dir)
+    hybrid_full_game_bottom_template = load_example_layout(
+        "hybrid_full_game_bottom",
+        layouts_dir=example_layouts_dir,
+    )
 
     return {
         "detected_streamer_focus": _renamed_layout_payload(
@@ -468,6 +487,18 @@ def _fallback_layout_payloads(
                 "source_template": "hybrid",
             },
         ),
+        "detected_hybrid_full_game_bottom": _renamed_layout_payload(
+            hybrid_full_game_bottom_template,
+            name="detected_hybrid_full_game_bottom",
+            description=(
+                "Fallback full-game-bottom hybrid layout generated from static template."
+            ),
+            metadata={
+                **metadata,
+                "layout_goal": "hybrid_full_game_bottom",
+                "source_template": "hybrid_full_game_bottom",
+            },
+        ),
     }
 
 
@@ -482,8 +513,51 @@ def _renamed_layout_payload(
         "name": name,
         "description": description,
         "output": _output_to_payload(layout.output),
+        **(
+            {"caption_region": _rect_to_payload(layout.caption_region)}
+            if layout.caption_region is not None
+            else {}
+        ),
         "metadata": metadata,
         "regions": [_region_to_payload(region) for region in layout.regions],
+    }
+
+
+def _layout_payload_with_streamer_source(
+    layout: Layout,
+    *,
+    streamer_source: NormalizedRect,
+    name: str,
+    description: str,
+    metadata: dict[str, object],
+) -> dict[str, object]:
+    regions: list[dict[str, object]] = []
+    for region in layout.regions:
+        if region.name in HYBRID_STREAMER_REGION_NAMES:
+            regions.append(
+                _region_to_payload(
+                    LayoutRegion(
+                        name=region.name,
+                        source_region=streamer_source,
+                        output_region=region.output_region,
+                        effect=region.effect,
+                    )
+                )
+            )
+        else:
+            regions.append(_region_to_payload(region))
+
+    return {
+        "name": name,
+        "description": description,
+        "output": _output_to_payload(layout.output),
+        **(
+            {"caption_region": _rect_to_payload(layout.caption_region)}
+            if layout.caption_region is not None
+            else {}
+        ),
+        "metadata": metadata,
+        "regions": regions,
     }
 
 
@@ -508,7 +582,6 @@ def _generation_metadata(
     *,
     overlay_path: Path,
     fallback_generated: bool,
-    confidence_threshold: float | None = None,
 ) -> dict[str, object]:
     metadata: dict[str, object] = {
         "generated_by": "clipforge analyze layouts",
@@ -522,20 +595,10 @@ def _generation_metadata(
     selected_overlay_rect = overlay_metadata.get("selected_overlay_rect")
     if isinstance(selected_overlay_rect, dict):
         metadata["selected_overlay_rect"] = selected_overlay_rect
-    if confidence_threshold is not None:
-        metadata["confidence_threshold"] = confidence_threshold
     return metadata
 
 
-def _can_generate_dynamic_layouts(
-    overlay_metadata: dict[str, object],
-    *,
-    confidence_threshold: float,
-) -> bool:
-    if bool(overlay_metadata.get("fallback")):
-        return False
-    if _overlay_confidence(overlay_metadata) < confidence_threshold:
-        return False
+def _can_generate_dynamic_layouts(overlay_metadata: dict[str, object]) -> bool:
     return overlay_metadata.get("selected_overlay_rect") is not None
 
 

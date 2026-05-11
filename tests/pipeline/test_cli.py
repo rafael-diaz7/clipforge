@@ -455,6 +455,11 @@ def test_main_routes_analyze_layouts_command(monkeypatch, capsys, tmp_path: Path
     layout_paths = (
         tmp_path / "analysis" / "clip-123" / "layouts" / "detected_streamer_focus.json",
         tmp_path / "analysis" / "clip-123" / "layouts" / "detected_hybrid.json",
+        tmp_path
+        / "analysis"
+        / "clip-123"
+        / "layouts"
+        / "detected_hybrid_full_game_bottom.json",
     )
     calls: list[str] = []
 

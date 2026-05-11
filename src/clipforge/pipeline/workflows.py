@@ -49,6 +49,7 @@ LOGGER = logging.getLogger("clipforge.pipeline.workflows")
 GENERATED_LAYOUT_REPLACEMENTS = {
     "facecam_focus": "detected_streamer_focus",
     "hybrid": "detected_hybrid",
+    "hybrid_full_game_bottom": "detected_hybrid_full_game_bottom",
 }
 
 
