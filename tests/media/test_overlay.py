@@ -164,6 +164,100 @@ def test_competing_stable_candidates_reduce_confidence(tmp_path: Path) -> None:
     assert selected_cluster["confidence"] < selected_cluster["raw_score"]
 
 
+def test_stable_low_face_evidence_region_does_not_outrank_real_face(
+    tmp_path: Path,
+) -> None:
+    analysis_dir, frame_names = _write_frames_metadata(tmp_path, clip_id="clip-123", count=8)
+    detections = {}
+    for index, name in enumerate(frame_names):
+        stable_hud_region = _detection(0.02, 0.72, 0.16, 0.16, score=0.03)
+        real_face = ()
+        if index < 6:
+            real_face = (
+                _detection(
+                    0.68 + (0.012 if index % 2 else 0.0),
+                    0.54 + (0.010 if index % 3 == 0 else 0.0),
+                    0.18,
+                    0.18,
+                    score=0.84,
+                ),
+            )
+        detections[name] = (stable_hud_region, *real_face)
+
+    overlay_path = analyze_overlay(
+        clip_id="clip-123",
+        analysis_dir=analysis_dir,
+        detector=SyntheticDetector(detections),
+        confidence_threshold=0.0,
+    )
+
+    payload = _read_json(overlay_path)
+    selected = payload["candidate_clusters"][0]
+    rejected = payload["candidate_clusters"][1]
+    assert selected["face_rect"]["x"] > 0.60
+    assert rejected["face_rect"]["x"] < 0.05
+    assert selected["face_score"] > rejected["face_score"]
+    assert selected["final_score"] > rejected["final_score"]
+    assert selected["ranking_position"] == 1
+    assert rejected["ranking_position"] == 2
+
+
+def test_lower_stability_face_evidence_beats_stable_hud_region(tmp_path: Path) -> None:
+    analysis_dir, frame_names = _write_frames_metadata(tmp_path, clip_id="clip-123", count=8)
+    detections = {}
+    for index, name in enumerate(frame_names):
+        detections[name] = (
+            _detection(0.78, 0.72, 0.14, 0.14, score=0.08),
+            _detection(
+                0.04 + index * 0.006,
+                0.50 + (0.014 if index % 2 else 0.0),
+                0.18,
+                0.18,
+                score=0.74,
+            ),
+        )
+
+    overlay_path = analyze_overlay(
+        clip_id="clip-123",
+        analysis_dir=analysis_dir,
+        detector=SyntheticDetector(detections),
+        confidence_threshold=0.0,
+    )
+
+    payload = _read_json(overlay_path)
+    selected = payload["candidate_clusters"][0]
+    rejected = payload["candidate_clusters"][1]
+    assert selected["face_rect"]["x"] < 0.10
+    assert selected["component_scores"]["position_stability"] < rejected["component_scores"][
+        "position_stability"
+    ]
+    assert selected["face_score"] > rejected["face_score"]
+    assert selected["final_score"] > rejected["final_score"]
+
+
+def test_heuristics_do_not_create_high_score_from_near_zero_face_evidence(
+    tmp_path: Path,
+) -> None:
+    analysis_dir, frame_names = _write_frames_metadata(tmp_path, clip_id="clip-123", count=8)
+    detector = SyntheticDetector(
+        {name: (_detection(0.02, 0.62, 0.20, 0.20, score=0.01),) for name in frame_names}
+    )
+
+    overlay_path = analyze_overlay(
+        clip_id="clip-123",
+        analysis_dir=analysis_dir,
+        detector=detector,
+    )
+
+    payload = _read_json(overlay_path)
+    cluster = payload["candidate_clusters"][0]
+    assert payload["fallback"] is True
+    assert cluster["face_score"] == pytest.approx(0.01)
+    assert cluster["heuristic_multiplier"] <= 1.0
+    assert cluster["final_score"] < 0.02
+    assert cluster["confidence"] == cluster["final_score"]
+
+
 def test_detector_unavailable_writes_fallback_overlay_json(
     monkeypatch: pytest.MonkeyPatch,
     tmp_path: Path,
@@ -566,8 +660,15 @@ def _write_overlay_metadata(
     )
 
 
-def _detection(x: float, y: float, width: float, height: float) -> FaceDetection:
-    return FaceDetection(rect=NormalizedRect(x=x, y=y, width=width, height=height))
+def _detection(
+    x: float,
+    y: float,
+    width: float,
+    height: float,
+    *,
+    score: float = 1.0,
+) -> FaceDetection:
+    return FaceDetection(rect=NormalizedRect(x=x, y=y, width=width, height=height), score=score)
 
 
 def _assert_rect_contains(

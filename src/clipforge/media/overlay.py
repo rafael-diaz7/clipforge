@@ -132,6 +132,10 @@ class _ScoredCluster:
     overlay_rect: NormalizedRect
     frame_count: int
     component_scores: dict[str, float]
+    face_score: float
+    heuristic_multiplier: float
+    final_score: float
+    ranking_position: int | None
     raw_score: float
     confidence: float
 
@@ -149,6 +153,10 @@ class _ScoredCluster:
             "component_scores": {
                 name: _round(value) for name, value in self.component_scores.items()
             },
+            "face_score": _round(self.face_score),
+            "heuristic_multiplier": _round(self.heuristic_multiplier),
+            "final_score": _round(self.final_score),
+            "ranking_position": self.ranking_position,
             "raw_score": _round(self.raw_score),
             "confidence": _round(self.confidence),
         }
@@ -190,14 +198,9 @@ class OpenCVFaceDetector:
             return ()
 
         gray = self._cv2.cvtColor(image, self._cv2.COLOR_BGR2GRAY)
-        faces = self._cascade.detectMultiScale(
-            gray,
-            scaleFactor=1.1,
-            minNeighbors=5,
-            minSize=(24, 24),
-        )
+        faces, face_scores = self._detect_faces_with_scores(gray)
         detections: list[FaceDetection] = []
-        for x, y, face_width, face_height in faces:
+        for (x, y, face_width, face_height), score in zip(faces, face_scores, strict=True):
             rect = NormalizedRect(
                 x=float(x) / width,
                 y=float(y) / height,
@@ -205,8 +208,29 @@ class OpenCVFaceDetector:
                 height=float(face_height) / height,
             )
             if _is_valid_rect(rect):
-                detections.append(FaceDetection(rect=rect))
+                detections.append(FaceDetection(rect=rect, score=score))
         return tuple(detections)
+
+    def _detect_faces_with_scores(self, gray: object) -> tuple[object, tuple[float, ...]]:
+        try:
+            faces, _reject_levels, level_weights = self._cascade.detectMultiScale3(
+                gray,
+                scaleFactor=1.1,
+                minNeighbors=5,
+                minSize=(24, 24),
+                outputRejectLevels=True,
+            )
+        except (AttributeError, TypeError):
+            faces = self._cascade.detectMultiScale(
+                gray,
+                scaleFactor=1.1,
+                minNeighbors=5,
+                minSize=(24, 24),
+            )
+            return faces, tuple(1.0 for _face in faces)
+
+        scores = tuple(_opencv_face_score(float(weight)) for weight in level_weights)
+        return faces, scores
 
 
 class OpenCVOverlayDebugImageWriter:
@@ -477,19 +501,47 @@ def _score_clusters(
     adjusted: list[_ScoredCluster] = []
     for index, cluster in enumerate(scored):
         penalty = _competition_penalty(cluster, scored[:index] + scored[index + 1 :])
+        competition_multiplier = _clamp01(1.0 - penalty)
+        heuristic_multiplier = _clamp01(
+            cluster.heuristic_multiplier * competition_multiplier
+        )
+        final_score = _clamp01(cluster.face_score * heuristic_multiplier)
         adjusted.append(
             _ScoredCluster(
                 cluster_id=cluster.cluster_id,
                 face_rect=cluster.face_rect,
                 overlay_rect=cluster.overlay_rect,
                 frame_count=cluster.frame_count,
-                component_scores={**cluster.component_scores, "competition_penalty": penalty},
+                component_scores={
+                    **cluster.component_scores,
+                    "competition_penalty": penalty,
+                    "competition_multiplier": competition_multiplier,
+                },
+                face_score=cluster.face_score,
+                heuristic_multiplier=heuristic_multiplier,
+                final_score=final_score,
+                ranking_position=None,
                 raw_score=cluster.raw_score,
-                confidence=_clamp01(cluster.raw_score - penalty),
+                confidence=final_score,
             )
         )
     adjusted.sort(key=lambda cluster: cluster.confidence, reverse=True)
-    return tuple(adjusted)
+    return tuple(
+        _ScoredCluster(
+            cluster_id=cluster.cluster_id,
+            face_rect=cluster.face_rect,
+            overlay_rect=cluster.overlay_rect,
+            frame_count=cluster.frame_count,
+            component_scores=cluster.component_scores,
+            face_score=cluster.face_score,
+            heuristic_multiplier=cluster.heuristic_multiplier,
+            final_score=cluster.final_score,
+            ranking_position=index,
+            raw_score=cluster.raw_score,
+            confidence=cluster.confidence,
+        )
+        for index, cluster in enumerate(adjusted, start=1)
+    )
 
 
 def _score_cluster(
@@ -508,7 +560,8 @@ def _score_cluster(
     edge_proximity = _edge_proximity(overlay_rect)
     center_avoidance = _center_avoidance(overlay_rect)
     size_score = _overlay_size_score(overlay_rect.area)
-    detection_score = statistics.fmean(detection.score for detection in cluster.detections)
+    aspect_ratio_score = _face_aspect_ratio_score(face_rect)
+    face_score = statistics.fmean(detection.score for detection in cluster.detections)
 
     brief_penalty = max(0.0, 0.45 - prevalence) * 0.75
     central_penalty = (1.0 - center_avoidance) * 0.22
@@ -518,19 +571,31 @@ def _score_cluster(
         _tiny_face_penalty(face_rect.area),
     )
 
-    raw_score = _clamp01(
-        prevalence * 0.30
-        + position_stability * 0.16
-        + size_stability * 0.12
-        + edge_proximity * 0.18
-        + center_avoidance * 0.12
-        + size_score * 0.10
-        + detection_score * 0.02
+    prevalence_multiplier = 0.45 + prevalence * 0.55
+    stability_multiplier = 0.70 + (
+        position_stability * 0.58 + size_stability * 0.42
+    ) * 0.30
+    placement_multiplier = 0.70 + (
+        edge_proximity * 0.62 + center_avoidance * 0.38
+    ) * 0.30
+    size_multiplier = 0.25 + size_score * 0.75
+    aspect_ratio_multiplier = 0.70 + aspect_ratio_score * 0.30
+    penalty_multiplier = _clamp01(
+        1.0
         - brief_penalty
         - central_penalty
         - huge_central_penalty
         - tiny_penalty
     )
+    heuristic_multiplier = _clamp01(
+        prevalence_multiplier
+        * stability_multiplier
+        * placement_multiplier
+        * size_multiplier
+        * aspect_ratio_multiplier
+        * penalty_multiplier
+    )
+    raw_score = _clamp01(face_score * heuristic_multiplier)
 
     component_scores = {
         "prevalence": prevalence,
@@ -539,7 +604,14 @@ def _score_cluster(
         "edge_proximity": edge_proximity,
         "center_avoidance": center_avoidance,
         "overlay_size": size_score,
-        "detector_confidence": detection_score,
+        "face_aspect_ratio": aspect_ratio_score,
+        "detector_confidence": face_score,
+        "prevalence_multiplier": prevalence_multiplier,
+        "stability_multiplier": stability_multiplier,
+        "placement_multiplier": placement_multiplier,
+        "size_multiplier": size_multiplier,
+        "aspect_ratio_multiplier": aspect_ratio_multiplier,
+        "penalty_multiplier": penalty_multiplier,
         "brief_penalty": brief_penalty,
         "central_penalty": central_penalty,
         "huge_central_penalty": huge_central_penalty,
@@ -551,6 +623,10 @@ def _score_cluster(
         overlay_rect=overlay_rect,
         frame_count=frame_count,
         component_scores=component_scores,
+        face_score=face_score,
+        heuristic_multiplier=heuristic_multiplier,
+        final_score=raw_score,
+        ranking_position=None,
         raw_score=raw_score,
         confidence=raw_score,
     )
@@ -727,6 +803,13 @@ def _overlay_size_score(area: float) -> float:
     if area <= 0.12:
         return 1.0
     return _clamp01(1.0 - (area - 0.12) / (0.24 - 0.12))
+
+
+def _face_aspect_ratio_score(rect: NormalizedRect) -> float:
+    if rect.height <= 0:
+        return 0.0
+    ratio = rect.width / rect.height
+    return _clamp01(1.0 - abs(ratio - 1.0) / 0.55)
 
 
 def _huge_central_penalty(rect: NormalizedRect, center_avoidance: float) -> float:
@@ -992,6 +1075,10 @@ def _safe_clip_id(clip_id: str) -> str:
 
 def _clamp01(value: float) -> float:
     return max(0.0, min(1.0, value))
+
+
+def _opencv_face_score(level_weight: float) -> float:
+    return _clamp01((level_weight + 3.0) / 7.0)
 
 
 def _round(value: float) -> float:
