@@ -32,6 +32,7 @@ CLIP_STATUSES = frozenset(
     }
 )
 UNPROCESSED_STATUSES = ("discovered", "queued", "needs_rerender")
+REVIEW_ELIGIBLE_STATUSES = ("rendered",)
 REVIEW_EXCLUDED_STATUSES = (
     "needs_rerender",
     "approved",
@@ -276,17 +277,22 @@ def get_review_eligible_clips(
                 "Excluding %d skipped clip(s) from normal review eligibility.",
                 skipped_count,
             )
-    excluded_statuses = tuple(
-        status
-        for status in REVIEW_EXCLUDED_STATUSES
-        if status != "needs_rerender" or not include_needs_rerender
+    eligible_statuses = (
+        REVIEW_ELIGIBLE_STATUSES
+        + (("needs_rerender",) if include_needs_rerender else ())
     )
-    params: list[Any] = list(excluded_statuses)
-    placeholders = ", ".join("?" for _ in excluded_statuses)
+    params: list[Any] = list(eligible_statuses)
+    placeholders = ", ".join("?" for _ in eligible_statuses)
     sql = f"""
         SELECT *
         FROM clips
-        WHERE status NOT IN ({placeholders})
+        WHERE status IN ({placeholders})
+          AND render_dir IS NOT NULL
+          AND metadata_path IS NOT NULL
+          AND selected_render_layout IS NULL
+          AND selected_render_path IS NULL
+          AND export_path IS NULL
+          AND exported_at IS NULL
     """
     if streamer_login is not None:
         sql += " AND LOWER(streamer_login) = LOWER(?)"
@@ -429,6 +435,8 @@ def mark_clip_downloaded(
         metadata_path=_optional_path_string(metadata_path),
         clear_skip_reason=True,
         clear_error_message=True,
+        clear_selected_render=True,
+        clear_export=True,
     )
 
 
@@ -449,6 +457,8 @@ def mark_clip_rendered(
         metadata_path=_optional_path_string(metadata_path),
         clear_skip_reason=True,
         clear_error_message=True,
+        clear_selected_render=True,
+        clear_export=True,
     )
 
 
@@ -466,6 +476,8 @@ def mark_clip_skipped(
         db_path=db_path,
         skip_reason=skip_reason,
         clear_error_message=True,
+        clear_selected_render=True,
+        clear_export=True,
     )
 
 
@@ -483,6 +495,29 @@ def mark_clip_needs_rerender(
         db_path=db_path,
         skip_reason=skip_reason,
         clear_error_message=True,
+        clear_selected_render=True,
+        clear_export=True,
+    )
+
+
+def mark_clip_selected(
+    clip_id: str,
+    *,
+    selected_render_layout: str,
+    selected_render_path: Path | str,
+    db_path: Path | str = DEFAULT_STATE_DB_PATH,
+) -> ClipState:
+    """Mark a clip as reviewed and selected for export."""
+
+    return _update_clip_status(
+        clip_id,
+        "selected",
+        db_path=db_path,
+        selected_render_layout=selected_render_layout,
+        selected_render_path=str(selected_render_path),
+        clear_skip_reason=True,
+        clear_error_message=True,
+        clear_export=True,
     )
 
 
@@ -605,6 +640,8 @@ def _update_clip_status(
     exported_at: str | None = None,
     clear_skip_reason: bool = False,
     clear_error_message: bool = False,
+    clear_selected_render: bool = False,
+    clear_export: bool = False,
 ) -> ClipState:
     if status not in CLIP_STATUSES:
         raise ClipStateError(f"Unsupported clip status: {status}.")
@@ -621,10 +658,16 @@ def _update_clip_status(
               render_dir = COALESCE(?, render_dir),
               skip_reason = CASE WHEN ? THEN NULL ELSE COALESCE(?, skip_reason) END,
               error_message = CASE WHEN ? THEN NULL ELSE COALESCE(?, error_message) END,
-              selected_render_layout = COALESCE(?, selected_render_layout),
-              selected_render_path = COALESCE(?, selected_render_path),
-              export_path = COALESCE(?, export_path),
-              exported_at = COALESCE(?, exported_at)
+              selected_render_layout = CASE
+                WHEN ? THEN NULL
+                ELSE COALESCE(?, selected_render_layout)
+              END,
+              selected_render_path = CASE
+                WHEN ? THEN NULL
+                ELSE COALESCE(?, selected_render_path)
+              END,
+              export_path = CASE WHEN ? THEN NULL ELSE COALESCE(?, export_path) END,
+              exported_at = CASE WHEN ? THEN NULL ELSE COALESCE(?, exported_at) END
             WHERE clip_id = ?
             """,
             (
@@ -636,9 +679,13 @@ def _update_clip_status(
                 skip_reason,
                 clear_error_message,
                 error_message,
+                clear_selected_render,
                 selected_render_layout,
+                clear_selected_render,
                 selected_render_path,
+                clear_export,
                 export_path,
+                clear_export,
                 exported_at,
                 clip_id,
             ),

@@ -15,6 +15,7 @@ from clipforge.storage.state import (
     mark_clip_failed,
     mark_clip_needs_rerender,
     mark_clip_rendered,
+    mark_clip_selected,
     mark_clip_skipped,
     reset_all_clips_to_discovered,
     reset_clip_to_discovered,
@@ -200,6 +201,12 @@ def test_skipped_clip_is_not_returned_by_review_eligibility(
         skip_reason="already reviewed",
         db_path=db_path,
     )
+    mark_clip_rendered(
+        "clip-eligible",
+        render_dir=tmp_path / "renders" / "clip-eligible",
+        metadata_path=tmp_path / "metadata" / "clip-eligible.json",
+        db_path=db_path,
+    )
 
     with caplog.at_level("INFO", logger="clipforge.storage.state"):
         eligible = get_review_eligible_clips(
@@ -228,12 +235,17 @@ def test_needs_rerender_is_processing_eligible_but_not_normal_review_eligible(
         skip_reason="layouts did not fit",
         db_path=db_path,
     )
+    mark_clip_rendered(
+        "clip-eligible",
+        render_dir=tmp_path / "renders" / "clip-eligible",
+        metadata_path=tmp_path / "metadata" / "clip-eligible.json",
+        db_path=db_path,
+    )
 
     assert rerender.status == "needs_rerender"
     assert rerender.skip_reason == "layouts did not fit"
     assert [clip.clip_id for clip in get_unprocessed_clips(db_path=db_path)] == [
         "clip-rerender",
-        "clip-eligible",
     ]
     assert [clip.clip_id for clip in get_review_eligible_clips(db_path=db_path)] == [
         "clip-eligible"
@@ -244,7 +256,78 @@ def test_needs_rerender_is_processing_eligible_but_not_normal_review_eligible(
             db_path=db_path,
             include_needs_rerender=True,
         )
-    ] == ["clip-rerender", "clip-eligible"]
+    ] == ["clip-eligible"]
+
+
+def test_review_eligibility_requires_render_candidates(tmp_path: Path) -> None:
+    db_path = _db_path(tmp_path)
+    for clip_id in ("clip-discovered", "clip-rendered-without-metadata", "clip-ready"):
+        upsert_discovered_clip(
+            clip_id=clip_id,
+            url=f"https://clips.twitch.tv/{clip_id}",
+            rank_score=1.0,
+            db_path=db_path,
+        )
+    mark_clip_rendered(
+        "clip-rendered-without-metadata",
+        render_dir=tmp_path / "renders" / "clip-rendered-without-metadata",
+        db_path=db_path,
+    )
+    mark_clip_rendered(
+        "clip-ready",
+        render_dir=tmp_path / "renders" / "clip-ready",
+        metadata_path=tmp_path / "metadata" / "clip-ready.json",
+        db_path=db_path,
+    )
+
+    assert [clip.clip_id for clip in get_review_eligible_clips(db_path=db_path)] == [
+        "clip-ready"
+    ]
+
+
+def test_selected_and_exported_metadata_control_review_eligibility(
+    tmp_path: Path,
+) -> None:
+    db_path = _db_path(tmp_path)
+    upsert_discovered_clip(
+        clip_id="clip-1",
+        url="https://clips.twitch.tv/clip-1",
+        db_path=db_path,
+    )
+    mark_clip_rendered(
+        "clip-1",
+        render_dir=tmp_path / "renders" / "clip-1",
+        metadata_path=tmp_path / "metadata" / "clip-1.json",
+        db_path=db_path,
+    )
+
+    selected = mark_clip_selected(
+        "clip-1",
+        selected_render_layout="hybrid",
+        selected_render_path=tmp_path / "renders" / "clip-1" / "hybrid.mp4",
+        db_path=db_path,
+    )
+
+    assert selected.status == "selected"
+    assert selected.selected_render_layout == "hybrid"
+    assert selected.selected_render_path == str(
+        tmp_path / "renders" / "clip-1" / "hybrid.mp4"
+    )
+    assert get_review_eligible_clips(db_path=db_path) == ()
+
+    exported = mark_clip_exported(
+        "clip-1",
+        selected_render_layout="hybrid",
+        selected_render_path=tmp_path / "renders" / "clip-1" / "hybrid.mp4",
+        export_path=tmp_path / "exports" / "clip-1.mp4",
+        db_path=db_path,
+        exported_at="2026-05-01T00:00:00+00:00",
+    )
+
+    assert exported.status == "exported"
+    assert exported.export_path == str(tmp_path / "exports" / "clip-1.mp4")
+    assert exported.exported_at == "2026-05-01T00:00:00+00:00"
+    assert get_review_eligible_clips(db_path=db_path) == ()
 
 
 def test_reset_clip_to_discovered_clears_processing_artifact_fields(

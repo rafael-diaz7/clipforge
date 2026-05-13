@@ -13,6 +13,7 @@ from clipforge.storage.state import (
     get_clip,
     mark_clip_exported,
     mark_clip_needs_rerender,
+    mark_clip_rendered,
     mark_clip_skipped,
     upsert_discovered_clip,
 )
@@ -171,6 +172,51 @@ def test_review_discovers_upserts_selects_top_ranked_and_exports(
     assert exported_state.selected_render_layout == "hybrid"
     assert exported_state.selected_render_path.endswith("hybrid.mp4")
     assert exported_state.export_path == str(exported[0])
+
+
+def test_review_reuses_rendered_candidates_without_reprocessing(
+    monkeypatch,
+    tmp_path: Path,
+) -> None:
+    config = _config(tmp_path)
+    metadata_path = _write_metadata(config, "clip-1")
+    upsert_discovered_clip(
+        clip_id="clip-1",
+        url="https://clips.twitch.tv/clip-1",
+        streamer_login="example",
+        title="ready",
+        rank_score=1.0,
+        db_path=config.state_db_path,
+    )
+    mark_clip_rendered(
+        "clip-1",
+        render_dir=metadata_path.parent,
+        metadata_path=metadata_path,
+        db_path=config.state_db_path,
+    )
+
+    monkeypatch.setattr(
+        "clipforge.pipeline.review.list_channel_clips",
+        lambda *args, **kwargs: (_clip("clip-1", views=100, title="ready"),),
+    )
+    monkeypatch.setattr(
+        "clipforge.pipeline.review.process_clip",
+        lambda *args, **kwargs: (_ for _ in ()).throw(
+            AssertionError("Rendered clips should reuse existing metadata.")
+        ),
+    )
+
+    exported = review_streamer_clips(
+        streamer="example",
+        count=1,
+        config=config,
+        input_fn=lambda prompt: "1",
+        output_fn=lambda line: None,
+    )
+
+    assert exported == (
+        tmp_path / "exports" / "example" / "ready__clip-1" / "center_gameplay.mp4",
+    )
 
 
 def test_review_reuses_candidate_when_preview_matches_final_profile(
@@ -601,7 +647,50 @@ def test_review_clip_id_override_processes_named_clip(
     assert calls == ["clip-low"]
 
 
-def test_review_clip_id_override_processes_skipped_clip(
+def test_review_clip_id_override_requires_force_for_skipped_clip(
+    monkeypatch,
+    tmp_path: Path,
+) -> None:
+    config = _config(tmp_path)
+
+    upsert_discovered_clip(
+        clip_id="clip-skipped",
+        url="https://clips.twitch.tv/clip-skipped",
+        streamer_login="example",
+        db_path=config.state_db_path,
+    )
+    mark_clip_skipped(
+        "clip-skipped",
+        skip_reason="already reviewed",
+        db_path=config.state_db_path,
+    )
+
+    monkeypatch.setattr(
+        "clipforge.pipeline.review.list_channel_clips",
+        lambda *args, **kwargs: (_clip("clip-skipped", views=100),),
+    )
+
+    def fake_process(url: str, **kwargs) -> Path:
+        raise AssertionError("Skipped clip should require --force.")
+
+    monkeypatch.setattr("clipforge.pipeline.review.process_clip", fake_process)
+
+    with pytest.raises(ClipReviewError, match="--force"):
+        review_streamer_clips(
+            streamer="example",
+            count=1,
+            clip_ids=("clip-skipped",),
+            config=config,
+            input_fn=lambda prompt: "1",
+            output_fn=lambda line: None,
+        )
+
+    state = get_clip("clip-skipped", db_path=config.state_db_path)
+    assert state is not None
+    assert state.status == "skipped"
+
+
+def test_review_clip_id_override_force_processes_skipped_clip(
     monkeypatch,
     tmp_path: Path,
 ) -> None:
@@ -635,6 +724,7 @@ def test_review_clip_id_override_processes_skipped_clip(
     review_streamer_clips(
         streamer="example",
         count=1,
+        force=True,
         clip_ids=("clip-skipped",),
         config=config,
         input_fn=lambda prompt: "1",

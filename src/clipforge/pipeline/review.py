@@ -22,10 +22,13 @@ from clipforge.storage.state import (
     REVIEW_EXCLUDED_STATUSES,
     ClipState,
     get_clip,
+    get_persisted_clips,
     get_review_eligible_clips,
+    get_unprocessed_clips,
     mark_clip_exported,
     mark_clip_failed,
     mark_clip_needs_rerender,
+    mark_clip_selected,
     mark_clip_skipped,
 )
 from clipforge.utils.paths import ensure_directory
@@ -96,6 +99,7 @@ def review_streamer_clips(
     selected_clips = _selected_review_clips(
         clip_ids=clip_ids,
         count=count,
+        force=force,
         rerender=rerender,
         streamer_login=streamer_login,
         config=config,
@@ -120,8 +124,19 @@ def review_streamer_clips(
         if force_captions:
             process_kwargs["force_captions"] = True
 
+        metadata_path = _existing_render_metadata_path(clip)
+        if metadata_path is None:
+            try:
+                metadata_path = process_clip(clip.url, **process_kwargs)
+            except Exception as exc:
+                mark_clip_failed(
+                    clip.clip_id,
+                    error_message=str(exc),
+                    db_path=config.state_db_path,
+                )
+                raise
         try:
-            metadata_path = process_clip(clip.url, **process_kwargs)
+            render_options = _render_options_from_metadata(metadata_path)
         except Exception as exc:
             mark_clip_failed(
                 clip.clip_id,
@@ -129,7 +144,6 @@ def review_streamer_clips(
                 db_path=config.state_db_path,
             )
             raise
-        render_options = _render_options_from_metadata(metadata_path)
         choice = _prompt_for_render_selection(
             clip,
             render_options,
@@ -159,14 +173,28 @@ def review_streamer_clips(
             )
             continue
 
-        selected_export = _export_selected_render(
-            clip=clip,
-            streamer_login=streamer_login,
-            metadata_path=metadata_path,
-            selected=choice,
-            force=force,
-            config=config,
+        mark_clip_selected(
+            clip.clip_id,
+            selected_render_layout=choice.layout,
+            selected_render_path=choice.path,
+            db_path=config.state_db_path,
         )
+        try:
+            selected_export = _export_selected_render(
+                clip=clip,
+                streamer_login=streamer_login,
+                metadata_path=metadata_path,
+                selected=choice,
+                force=force,
+                config=config,
+            )
+        except Exception as exc:
+            mark_clip_failed(
+                clip.clip_id,
+                error_message=str(exc),
+                db_path=config.state_db_path,
+            )
+            raise
         mark_clip_exported(
             clip.clip_id,
             selected_render_layout=choice.layout,
@@ -189,17 +217,55 @@ def _selected_review_clips(
     *,
     clip_ids: Sequence[str],
     count: int,
+    force: bool,
     rerender: bool,
     streamer_login: str,
     config: ClipforgeConfig,
 ) -> tuple[ClipState, ...]:
     if not clip_ids:
-        return get_review_eligible_clips(
+        eligible = list(
+            get_review_eligible_clips(
+                db_path=config.state_db_path,
+                streamer_login=streamer_login,
+                limit=count,
+                include_needs_rerender=rerender,
+            )
+        )
+        if len(eligible) >= count:
+            return tuple(eligible)
+
+        selected_ids = {clip.clip_id for clip in eligible}
+        candidates = get_unprocessed_clips(
             db_path=config.state_db_path,
             streamer_login=streamer_login,
-            limit=count,
-            include_needs_rerender=rerender,
         )
+        for clip in candidates:
+            if clip.clip_id in selected_ids:
+                continue
+            if clip.status == "needs_rerender" and not rerender:
+                continue
+            eligible.append(clip)
+            selected_ids.add(clip.clip_id)
+            if len(eligible) >= count:
+                break
+        if force and len(eligible) < count:
+            for clip in get_persisted_clips(
+                db_path=config.state_db_path,
+                streamer_login=streamer_login,
+            ):
+                if clip.clip_id in selected_ids:
+                    continue
+                _ensure_manual_clip_is_eligible(
+                    clip,
+                    streamer_login=streamer_login,
+                    force=True,
+                    allow_needs_rerender=rerender,
+                )
+                eligible.append(clip)
+                selected_ids.add(clip.clip_id)
+                if len(eligible) >= count:
+                    break
+        return tuple(eligible)
 
     clips: list[ClipState] = []
     for clip_id in clip_ids:
@@ -209,6 +275,7 @@ def _selected_review_clips(
         _ensure_manual_clip_is_eligible(
             clip,
             streamer_login=streamer_login,
+            force=force,
             allow_needs_rerender=rerender,
         )
         clips.append(clip)
@@ -219,6 +286,7 @@ def _ensure_manual_clip_is_eligible(
     clip: ClipState,
     *,
     streamer_login: str,
+    force: bool,
     allow_needs_rerender: bool,
 ) -> None:
     if clip.status == "needs_rerender" and not allow_needs_rerender:
@@ -228,11 +296,12 @@ def _ensure_manual_clip_is_eligible(
         )
     if (
         clip.status in REVIEW_EXCLUDED_STATUSES
-        and clip.status != "skipped"
         and not (clip.status == "needs_rerender" and allow_needs_rerender)
+        and not force
     ):
         raise ClipReviewError(
-            f"Clip is not review-eligible: {clip.clip_id} ({clip.status})."
+            f"Clip is not review-eligible: {clip.clip_id} ({clip.status}). "
+            "Re-run with --force to review it anyway."
         )
     if (
         clip.streamer_login is not None
@@ -242,6 +311,12 @@ def _ensure_manual_clip_is_eligible(
             f"Clip {clip.clip_id} belongs to streamer {clip.streamer_login}, "
             f"not {streamer_login}."
         )
+
+
+def _existing_render_metadata_path(clip: ClipState) -> Path | None:
+    if clip.status != "rendered" or clip.metadata_path is None:
+        return None
+    return Path(clip.metadata_path)
 
 
 def _render_options_from_metadata(metadata_path: Path) -> tuple[RenderOption, ...]:
