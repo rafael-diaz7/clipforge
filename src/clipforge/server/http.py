@@ -44,7 +44,8 @@ class ReviewApplication:
         body: bytes = b"",
     ) -> HttpResponse:
         headers = headers or {}
-        path = urlsplit(target).path
+        parsed_target = urlsplit(target)
+        path = parsed_target.path
         if method == "GET" and path == "/":
             return self._review_page()
         if method == "GET":
@@ -61,6 +62,7 @@ class ReviewApplication:
                 return self._export_response(
                     relative_parts=export_request,
                     range_header=headers.get("Range"),
+                    disposition=_export_disposition(parsed_target.query),
                 )
         if method == "POST" and path in {"/approve", "/skip", "/rerender"}:
             return self._handle_action(path, body)
@@ -106,6 +108,7 @@ class ReviewApplication:
         *,
         relative_parts: tuple[str, ...],
         range_header: str | None,
+        disposition: str,
     ) -> HttpResponse:
         try:
             export_path = self.service.export_file_path(relative_parts=relative_parts)
@@ -121,7 +124,8 @@ class ReviewApplication:
         return _file_response(
             export_path,
             range_header=range_header,
-            attachment_filename=export_path.name,
+            disposition=disposition,
+            disposition_filename=export_path.name,
         )
 
     def _handle_action(self, path: str, body: bytes) -> HttpResponse:
@@ -211,6 +215,13 @@ def _parse_export_path(path: str) -> tuple[str, ...] | None:
     return tuple(unquote(part) for part in parts[2:])
 
 
+def _export_disposition(query: str) -> str:
+    values = parse_qs(query, keep_blank_values=True)
+    if _one(values, "disposition") == "inline" or _one(values, "inline") == "1":
+        return "inline"
+    return "attachment"
+
+
 def _review_item_html(item: ReviewItem, *, error: str | None) -> str:
     clip = item.clip
     facts = [
@@ -280,11 +291,14 @@ def _candidate_html(item: ReviewItem, layout: str) -> str:
 
 def _approved_html(approved: ApprovedExport) -> str:
     filename = approved.export_path.name
+    download_url = html.escape(approved.download_url)
+    view_url = html.escape(f"{approved.download_url}?disposition=inline")
     return f"""
 <main class="empty">
   <h1>Export ready</h1>
   <p>{html.escape(filename)}</p>
-  <a class="button" href="{html.escape(approved.download_url)}" download>Download MP4</a>
+  <a class="button" href="{download_url}" download>Download MP4</a>
+  <a class="button secondary" href="{view_url}">View MP4</a>
   <p><a href="/">Review next clip</a></p>
 </main>
 """
@@ -354,6 +368,7 @@ def _page(content: str, *, title: str) -> str:
       text-decoration: none;
     }}
     button.secondary {{ background: #2a2d34; color: #f5f5f2; }}
+    .button.secondary {{ background: #2a2d34; color: #f5f5f2; }}
     .empty {{ min-height: 100vh; display: grid; align-content: center; }}
     .error {{ padding: 12px; border: 1px solid #b64848; color: #ffd7d7; }}
     a, code {{ color: #9bd7c9; }}
@@ -374,7 +389,8 @@ def _file_response(
     path: Path,
     *,
     range_header: str | None,
-    attachment_filename: str | None = None,
+    disposition: str | None = None,
+    disposition_filename: str | None = None,
 ) -> HttpResponse:
     file_size = path.stat().st_size
     content_type = mimetypes.guess_type(path.name)[0] or "application/octet-stream"
@@ -384,11 +400,11 @@ def _file_response(
         ("Content-Type", content_type),
         ("Accept-Ranges", "bytes"),
     ]
-    if attachment_filename is not None:
+    if disposition is not None and disposition_filename is not None:
         headers.append(
             (
                 "Content-Disposition",
-                f'attachment; filename="{_disposition_filename(attachment_filename)}"',
+                f'{disposition}; filename="{_disposition_filename(disposition_filename)}"',
             )
         )
     if start is None or end is None:

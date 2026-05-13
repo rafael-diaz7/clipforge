@@ -167,7 +167,9 @@ def test_approve_action_exports_selected_render_and_removes_from_queue(
     )
     assert response.status == 200
     assert b"Download MP4" in response.body
+    assert b"View MP4" in response.body
     assert b"/exports/ready/example/clip-ready/hybrid.mp4" in response.body
+    assert b"/exports/ready/example/clip-ready/hybrid.mp4?disposition=inline" in response.body
     assert state is not None
     assert state.status == "exported"
     assert state.selected_render_layout == "hybrid"
@@ -227,7 +229,7 @@ def test_approve_action_is_idempotent_for_existing_export(tmp_path: Path) -> Non
     ).read_bytes() == b"video:clip-ready:hybrid"
 
 
-def test_export_download_route_serves_ready_mp4(tmp_path: Path) -> None:
+def test_export_download_route_serves_ready_mp4_as_attachment(tmp_path: Path) -> None:
     config = _config(tmp_path)
     export_path = config.exports_dir / "ready" / "example" / "clip-1" / "hybrid.mp4"
     export_path.parent.mkdir(parents=True, exist_ok=True)
@@ -244,6 +246,26 @@ def test_export_download_route_serves_ready_mp4(tmp_path: Path) -> None:
     assert (
         "Content-Disposition",
         'attachment; filename="hybrid.mp4"',
+    ) in response.headers
+
+
+def test_export_view_route_serves_ready_mp4_inline(tmp_path: Path) -> None:
+    config = _config(tmp_path)
+    export_path = config.exports_dir / "ready" / "example" / "clip-1" / "hybrid.mp4"
+    export_path.parent.mkdir(parents=True, exist_ok=True)
+    export_path.write_bytes(b"exported")
+
+    response = _app(config).handle(
+        "GET",
+        "/exports/ready/example/clip-1/hybrid.mp4?disposition=inline",
+    )
+
+    assert response.status == 200
+    assert response.body == b"exported"
+    assert ("Content-Type", "video/mp4") in response.headers
+    assert (
+        "Content-Disposition",
+        'inline; filename="hybrid.mp4"',
     ) in response.headers
 
 
