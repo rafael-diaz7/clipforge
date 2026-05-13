@@ -70,6 +70,16 @@ def _write_png_header(path: Path, *, width: int = 400, height: int = 100) -> Pat
     return path
 
 
+def _scaled_test_watermark(path: Path = Path("watermark.png")) -> Watermark:
+    return Watermark(
+        path=path,
+        native_width=400,
+        native_height=100,
+        margin=32,
+        max_width_ratio=0.34,
+    )
+
+
 def test_rect_to_pixels_converts_normalized_output_region() -> None:
     rect = NormalizedRect(x=0.0, y=0.36, width=1.0, height=0.64)
 
@@ -153,7 +163,7 @@ def test_load_streamer_watermark_reports_invalid_png(tmp_path: Path) -> None:
 
 def test_watermark_placement_uses_bottom_center_margin_and_scaled_width() -> None:
     placement = watermark_placement(
-        Watermark(path=Path("watermark.png"), native_width=400, native_height=100),
+        _scaled_test_watermark(),
         OutputSize(width=1080, height=1920),
     )
 
@@ -188,11 +198,7 @@ def test_watermark_placement_keeps_large_watermark_inside_frame() -> None:
 
 
 def test_build_filter_complex_can_overlay_watermark() -> None:
-    watermark = Watermark(
-        path=Path("watermark.png"),
-        native_width=400,
-        native_height=100,
-    )
+    watermark = _scaled_test_watermark()
 
     filter_complex = build_filter_complex(_layout(_region()), watermark=watermark)
 
@@ -213,11 +219,7 @@ def test_build_filter_complex_applies_watermark_after_captions() -> None:
         clip_id="clip-123",
         segments=(CaptionSegment(start_time=0, end_time=1, text="hello"),),
     )
-    watermark = Watermark(
-        path=Path("watermark.png"),
-        native_width=400,
-        native_height=100,
-    )
+    watermark = _scaled_test_watermark()
 
     filter_complex = build_filter_complex(
         _layout(_region()),
@@ -238,7 +240,7 @@ def test_build_ffmpeg_command_adds_watermark_png_input(tmp_path: Path) -> None:
     source = tmp_path / "source.mp4"
     output = tmp_path / "render.mp4"
     watermark_path = tmp_path / "watermark.png"
-    watermark = Watermark(path=watermark_path, native_width=400, native_height=100)
+    watermark = _scaled_test_watermark(watermark_path)
 
     command = build_ffmpeg_command(
         source,

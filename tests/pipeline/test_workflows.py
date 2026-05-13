@@ -38,6 +38,12 @@ GENERATED_LAYOUT_CANDIDATE_NAMES = [
 ]
 
 
+@pytest.fixture(autouse=True)
+def _isolate_streamer_watermark_env(monkeypatch: pytest.MonkeyPatch) -> None:
+    monkeypatch.delenv("DIMA_WALLHACKS_WATERMARK", raising=False)
+    monkeypatch.delenv("OHNEPIXEL_WATERMARK", raising=False)
+
+
 def _config(tmp_path: Path) -> ClipforgeConfig:
     return ClipforgeConfig(
         project_root=tmp_path,
