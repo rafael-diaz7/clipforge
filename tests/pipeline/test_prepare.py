@@ -1,15 +1,18 @@
 from __future__ import annotations
 
 import json
+from dataclasses import replace
 from pathlib import Path
 
 import pytest
 
 from clipforge.core.config import ClipforgeConfig
 from clipforge.integrations.twitch import TwitchClip
+from clipforge.media.layouts import OutputSize
 from clipforge.pipeline.prepare import ClipPrepareError, prepare_streamer_clips
 from clipforge.storage.state import (
     get_clip,
+    get_mobile_review_clips,
     get_review_eligible_clips,
     mark_clip_exported,
     mark_clip_failed,
@@ -87,6 +90,7 @@ def test_prepare_discovers_upserts_reranks_and_processes_top_ranked(
         events.append(f"process:{clip_id}")
         assert kwargs["config"] == config
         assert kwargs["channel"] == "example"
+        assert kwargs["candidate_output_size"] == OutputSize(width=1080, height=1920)
         return _write_metadata(config, clip_id)
 
     monkeypatch.setattr(
@@ -110,7 +114,7 @@ def test_prepare_discovers_upserts_reranks_and_processes_top_ranked(
     assert result.failed == ()
     assert result.prepared[0].clip_id == "clip-high"
     assert prepared_state is not None
-    assert prepared_state.status == "rendered"
+    assert prepared_state.status == "mobile_review"
     assert prepared_state.render_dir is not None
     assert prepared_state.metadata_path == str(config.metadata_dir / "clip-high.json")
     assert prepared_state.selected_render_layout is None
@@ -284,10 +288,10 @@ def test_prepare_marks_failures_and_continues_when_practical(
     assert failed_state.status == "failed"
     assert failed_state.error_message == "render failed"
     assert prepared_state is not None
-    assert prepared_state.status == "rendered"
+    assert prepared_state.status == "mobile_review"
 
 
-def test_prepared_clips_are_visible_to_normal_review_queue(
+def test_prepared_clips_are_visible_to_mobile_review_queue_only(
     monkeypatch,
     tmp_path: Path,
 ) -> None:
@@ -305,13 +309,43 @@ def test_prepared_clips_are_visible_to_normal_review_queue(
         process_clip_fn=lambda url, **kwargs: _write_metadata(config, "clip-ready"),
     )
 
-    eligible = get_review_eligible_clips(
-        db_path=config.state_db_path,
-        streamer_login="example",
-    )
+    eligible = get_mobile_review_clips(db_path=config.state_db_path)
     assert [clip.clip_id for clip in eligible] == ["clip-ready"]
     assert eligible[0].selected_render_layout is None
     assert eligible[0].export_path is None
+    assert (
+        get_review_eligible_clips(
+            db_path=config.state_db_path,
+            streamer_login="example",
+        )
+        == ()
+    )
+
+
+def test_prepare_output_size_is_not_overridden_by_review_output_width(
+    monkeypatch,
+    tmp_path: Path,
+) -> None:
+    config = replace(_config(tmp_path), review_output_width=720)
+    candidate_sizes: list[OutputSize] = []
+
+    monkeypatch.setattr(
+        "clipforge.pipeline.prepare.list_channel_clips",
+        lambda *args, **kwargs: (_clip("clip-ready", views=100),),
+    )
+
+    def fake_process(url: str, **kwargs) -> Path:
+        candidate_sizes.append(kwargs["candidate_output_size"])
+        return _write_metadata(config, "clip-ready")
+
+    prepare_streamer_clips(
+        streamer="example",
+        count=1,
+        config=config,
+        process_clip_fn=fake_process,
+    )
+
+    assert candidate_sizes == [OutputSize(width=1080, height=1920)]
 
 
 def test_prepare_does_not_prompt_or_export(

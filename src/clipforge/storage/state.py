@@ -22,6 +22,7 @@ CLIP_STATUSES = frozenset(
         "queued",
         "downloaded",
         "rendered",
+        "mobile_review",
         "needs_rerender",
         "selected",
         "exported",
@@ -31,7 +32,9 @@ CLIP_STATUSES = frozenset(
 )
 UNPROCESSED_STATUSES = ("discovered", "queued", "needs_rerender")
 REVIEW_ELIGIBLE_STATUSES = ("rendered",)
+MOBILE_REVIEW_ELIGIBLE_STATUSES = ("mobile_review",)
 REVIEW_EXCLUDED_STATUSES = (
+    "mobile_review",
     "needs_rerender",
     "selected",
     "exported",
@@ -99,6 +102,7 @@ CREATE TABLE IF NOT EXISTS clips (
       'queued',
       'downloaded',
       'rendered',
+      'mobile_review',
       'needs_rerender',
       'selected',
       'exported',
@@ -309,6 +313,32 @@ def get_review_eligible_clips(
     return _select_clips(db_path=resolved_path, sql=sql, params=params)
 
 
+def get_mobile_review_clips(
+    *,
+    db_path: Path | str = DEFAULT_STATE_DB_PATH,
+    limit: int | None = None,
+) -> tuple[ClipState, ...]:
+    """Return clips prepared for the phone-friendly review server."""
+
+    resolved_path = init_db(db_path)
+    params: list[Any] = list(MOBILE_REVIEW_ELIGIBLE_STATUSES)
+    placeholders = ", ".join("?" for _ in MOBILE_REVIEW_ELIGIBLE_STATUSES)
+    sql = f"""
+        SELECT *
+        FROM clips
+        WHERE status IN ({placeholders})
+          AND render_dir IS NOT NULL
+          AND metadata_path IS NOT NULL
+          AND selected_render_layout IS NULL
+          AND selected_render_path IS NULL
+          AND export_path IS NULL
+          AND exported_at IS NULL
+    """
+    sql += _RANKED_CLIPS_ORDER_SQL
+    sql += _limit_clause(limit, label="Mobile review clip", params=params)
+    return _select_clips(db_path=resolved_path, sql=sql, params=params)
+
+
 def _count_skipped_review_exclusions(
     *,
     db_path: Path,
@@ -459,6 +489,28 @@ def mark_clip_rendered(
     return _update_clip_status(
         clip_id,
         "rendered",
+        db_path=db_path,
+        render_dir=str(render_dir),
+        metadata_path=_optional_path_string(metadata_path),
+        clear_skip_reason=True,
+        clear_error_message=True,
+        clear_selected_render=True,
+        clear_export=True,
+    )
+
+
+def mark_clip_mobile_review(
+    clip_id: str,
+    *,
+    render_dir: Path | str,
+    metadata_path: Path | str | None = None,
+    db_path: Path | str = DEFAULT_STATE_DB_PATH,
+) -> ClipState:
+    """Mark a clip as prepared for the phone-friendly review queue."""
+
+    return _update_clip_status(
+        clip_id,
+        "mobile_review",
         db_path=db_path,
         render_dir=str(render_dir),
         metadata_path=_optional_path_string(metadata_path),
@@ -706,6 +758,7 @@ def _migrate_clips_table(connection: sqlite3.Connection) -> None:
         "'exported'" in table_sql
         and "'selected'" in table_sql
         and "'needs_rerender'" in table_sql
+        and "'mobile_review'" in table_sql
         and "'approved'" not in table_sql
         and "'posted'" not in table_sql
     ):

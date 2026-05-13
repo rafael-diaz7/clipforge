@@ -8,6 +8,7 @@ from pathlib import Path
 from typing import Callable
 
 from clipforge.core.config import ClipforgeConfig
+from clipforge.media.layouts import OutputSize
 from clipforge.pipeline.artifact_reuse import (
     ensure_caption_metadata,
     ensure_layout_analysis,
@@ -70,6 +71,7 @@ def process_clip_stages(
     rerender: bool,
     channel: str | None,
     use_generated_layouts: bool,
+    candidate_output_size: OutputSize | None = None,
     config: ClipforgeConfig,
     on_media_url_resolved: Callable[[str], None] | None = None,
 ) -> ClipProcessingResult:
@@ -171,10 +173,14 @@ def process_clip_stages(
                 caption_metadata=caption_metadata,
                 caption_style=caption_style,
                 force=force_visuals,
+                output_size=candidate_output_size,
                 config=config,
             ),
         )
-        preview_output_size = review_output_size_for_layout(layout, config=config)
+        preview_output_size = candidate_output_size or review_output_size_for_layout(
+            layout,
+            config=config,
+        )
         outputs.append(
             {
                 "layout": layout.name,

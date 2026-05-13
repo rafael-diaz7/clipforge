@@ -8,8 +8,9 @@ from clipforge.server.http import ReviewApplication
 from clipforge.server.review import ReviewQueueService
 from clipforge.storage.state import (
     get_clip,
-    get_review_eligible_clips,
+    get_mobile_review_clips,
     mark_clip_rendered,
+    mark_clip_mobile_review,
     upsert_discovered_clip,
 )
 
@@ -73,7 +74,7 @@ def _write_rendered_clip(
         ),
         encoding="utf-8",
     )
-    mark_clip_rendered(
+    mark_clip_mobile_review(
         clip_id,
         render_dir=render_dir,
         metadata_path=metadata_path,
@@ -167,7 +168,7 @@ def test_approve_action_exports_selected_render_and_removes_from_queue(
     assert state.selected_render_layout == "hybrid"
     assert state.export_path is not None
     assert Path(state.export_path).read_bytes() == b"video:clip-ready:hybrid"
-    assert get_review_eligible_clips(db_path=config.state_db_path) == ()
+    assert get_mobile_review_clips(db_path=config.state_db_path) == ()
 
 
 def test_skip_action_marks_skipped_and_advances(tmp_path: Path) -> None:
@@ -197,7 +198,28 @@ def test_rerender_action_marks_needs_rerender(tmp_path: Path) -> None:
     assert state is not None
     assert state.status == "needs_rerender"
     assert state.skip_reason == "web review requested rerender after candidates generated"
-    assert get_review_eligible_clips(db_path=config.state_db_path) == ()
+    assert get_mobile_review_clips(db_path=config.state_db_path) == ()
+
+
+def test_review_page_only_returns_mobile_review_items(tmp_path: Path) -> None:
+    config = _config(tmp_path)
+    _write_rendered_clip(config, "clip-normal", rank_score=2.0, title="Normal Render")
+    normal_metadata = config.metadata_dir / "clip-normal.json"
+    mark_clip_rendered(
+        "clip-normal",
+        render_dir=config.renders_dir / "example" / "clip-normal" / "ytdlp",
+        metadata_path=normal_metadata,
+        db_path=config.state_db_path,
+    )
+    _write_rendered_clip(config, "clip-mobile", rank_score=1.0, title="Mobile Render")
+
+    response = _app(config).handle("GET", "/")
+
+    assert response.status == 200
+    assert b"clip-mobile" in response.body
+    assert b"Mobile Render" in response.body
+    assert b"clip-normal" not in response.body
+    assert b"Normal Render" not in response.body
 
 
 def test_server_routes_do_not_call_discovery_render_or_prepare_logic(
@@ -219,4 +241,3 @@ def test_server_routes_do_not_call_discovery_render_or_prepare_logic(
     assert app.handle("GET", "/").status == 200
     assert app.handle("GET", "/clips/clip-ready/renders/hybrid.mp4").status == 200
     assert app.handle("POST", "/skip", body=b"clip_id=clip-ready").status == 303
-

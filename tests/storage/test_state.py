@@ -7,6 +7,7 @@ import pytest
 from clipforge.storage.state import (
     ClipStateError,
     get_clip,
+    get_mobile_review_clips,
     get_review_eligible_clips,
     get_unprocessed_clips,
     init_db,
@@ -15,6 +16,7 @@ from clipforge.storage.state import (
     mark_clip_failed,
     mark_clip_needs_rerender,
     mark_clip_rendered,
+    mark_clip_mobile_review,
     mark_clip_selected,
     mark_clip_skipped,
     reset_all_clips_to_discovered,
@@ -282,6 +284,36 @@ def test_review_eligibility_requires_render_candidates(tmp_path: Path) -> None:
 
     assert [clip.clip_id for clip in get_review_eligible_clips(db_path=db_path)] == [
         "clip-ready"
+    ]
+
+
+def test_mobile_review_query_requires_prepare_state(tmp_path: Path) -> None:
+    db_path = _db_path(tmp_path)
+    for clip_id in ("clip-rendered", "clip-mobile"):
+        upsert_discovered_clip(
+            clip_id=clip_id,
+            url=f"https://clips.twitch.tv/{clip_id}",
+            rank_score=1.0,
+            db_path=db_path,
+        )
+    mark_clip_rendered(
+        "clip-rendered",
+        render_dir=tmp_path / "renders" / "clip-rendered",
+        metadata_path=tmp_path / "metadata" / "clip-rendered.json",
+        db_path=db_path,
+    )
+    mark_clip_mobile_review(
+        "clip-mobile",
+        render_dir=tmp_path / "renders" / "clip-mobile",
+        metadata_path=tmp_path / "metadata" / "clip-mobile.json",
+        db_path=db_path,
+    )
+
+    assert [clip.clip_id for clip in get_mobile_review_clips(db_path=db_path)] == [
+        "clip-mobile"
+    ]
+    assert [clip.clip_id for clip in get_review_eligible_clips(db_path=db_path)] == [
+        "clip-rendered"
     ]
 
 

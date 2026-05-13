@@ -11,6 +11,7 @@ from clipforge.integrations.twitch import (
     list_channel_clips,
     twitch_channel_login_from_input,
 )
+from clipforge.media.layouts import OutputSize
 from clipforge.pipeline.metadata import render_candidates_from_metadata
 from clipforge.pipeline.state_sync import record_discovered_clips, rerank_persisted_clips
 from clipforge.pipeline.workflows import process_clip
@@ -19,7 +20,7 @@ from clipforge.storage.state import (
     get_clip,
     get_unprocessed_clips,
     mark_clip_failed,
-    mark_clip_rendered,
+    mark_clip_mobile_review,
 )
 
 
@@ -53,6 +54,7 @@ class PrepareResult:
 
 
 ProcessClipFn = Callable[..., Path]
+MOBILE_REVIEW_OUTPUT_SIZE = OutputSize(width=1080, height=1920)
 
 
 def prepare_streamer_clips(
@@ -98,6 +100,7 @@ def prepare_streamer_clips(
     failed: list[FailedPreparedClip] = []
     for clip in selected_clips:
         process_kwargs = {
+            "candidate_output_size": MOBILE_REVIEW_OUTPUT_SIZE,
             "channel": streamer_login,
             "config": config,
             "print_summary": False,
@@ -180,7 +183,7 @@ def _ensure_rendered_state(
     state = get_clip(clip.clip_id, db_path=config.state_db_path)
     if (
         state is not None
-        and state.status == "rendered"
+        and state.status == "mobile_review"
         and state.render_dir is not None
         and state.metadata_path is not None
         and state.selected_render_layout is None
@@ -193,7 +196,7 @@ def _ensure_rendered_state(
     render_options = render_candidates_from_metadata(metadata_path)
     if not render_options:
         raise ClipPrepareError(f"No render candidates found for clip: {clip.clip_id}.")
-    return mark_clip_rendered(
+    return mark_clip_mobile_review(
         clip.clip_id,
         render_dir=render_options[0].path.parent,
         metadata_path=metadata_path,

@@ -172,9 +172,13 @@ def ensure_rendered_candidate_layout(
     caption_metadata: CaptionMetadata | None,
     caption_style: CaptionStyle,
     force: bool,
+    output_size: OutputSize | None = None,
     config: ClipforgeConfig,
 ) -> tuple[Path, bool]:
-    preview_output_size = review_output_size_for_layout(layout, config=config)
+    preview_output_size = output_size or review_output_size_for_layout(
+        layout,
+        config=config,
+    )
     preview_layout = layout_with_output_size(layout, preview_output_size)
     output_path = render_output_path(
         source_path,

@@ -10,7 +10,7 @@ from clipforge.core.config import ClipforgeConfig, EXAMPLE_LAYOUTS_DIR
 from clipforge.media.captions import CaptionMetadata, CaptionSegment, save_captions
 from clipforge.media.caption_rendering import CaptionStyle
 from clipforge.media.download import DownloadResult
-from clipforge.media.layouts import load_example_layout
+from clipforge.media.layouts import OutputSize, load_example_layout
 from clipforge.media.render import Watermark
 from clipforge.media.render_settings import FFmpegRenderSettings
 from clipforge.pipeline.workflows import (
@@ -669,6 +669,50 @@ def test_process_clip_records_lower_resolution_review_preview_metadata(
         "center_gameplay.mp4",
     )
     assert metadata["layouts"][0]["output"] == {"width": 1080, "height": 1920}
+
+
+def test_process_clip_explicit_candidate_size_ignores_review_output_width(
+    tmp_path: Path,
+    monkeypatch,
+) -> None:
+    config = replace(_config(tmp_path), review_output_width=720)
+    source_path = (
+        tmp_path
+        / "downloads"
+        / TWITCH_CLIP_SLUG
+        / "clipr"
+        / f"{TWITCH_CLIP_SLUG}.mp4"
+    )
+    calls: list[tuple[str, int, int]] = []
+
+    monkeypatch.setattr(
+        "clipforge.pipeline.artifact_reuse.download_twitch_clip",
+        lambda *args, **kwargs: DownloadResult(source_path=source_path, backend="clipr"),
+    )
+
+    def fake_render(source: Path, output: Path, layout) -> Path:
+        del source
+        calls.append((layout.name, layout.output.width, layout.output.height))
+        output.parent.mkdir(parents=True, exist_ok=True)
+        output.write_text(layout.name, encoding="utf-8")
+        return output
+
+    monkeypatch.setattr("clipforge.pipeline.rendering.render_layout", fake_render)
+
+    metadata_path = process_clip(
+        TWITCH_CLIP_URL,
+        candidate_output_size=OutputSize(width=1080, height=1920),
+        use_generated_layouts=False,
+        config=config,
+    )
+
+    metadata = json.loads(metadata_path.read_text(encoding="utf-8"))
+    assert calls[0] == ("center_gameplay", 1080, 1920)
+    assert metadata["outputs"][0]["resolution"] == {"width": 1080, "height": 1920}
+    assert Path(metadata["outputs"][0]["path"]).parts[-2:] == (
+        "clipr",
+        "center_gameplay.mp4",
+    )
 
 
 def test_process_clip_uses_generated_layouts_when_present(

@@ -8,6 +8,7 @@ from pathlib import Path
 from clipforge.core.config import ClipforgeConfig, load_config
 from clipforge.integrations.clipr import CliprClient
 from clipforge.media.download import download_clip
+from clipforge.media.layouts import OutputSize
 from clipforge.pipeline.clip_processing import (
     ClipProcessingError,
     ClipProcessingResult,
@@ -58,6 +59,7 @@ def process_clip(
     rerender: bool = False,
     channel: str | None = None,
     use_generated_layouts: bool = True,
+    candidate_output_size: OutputSize | None = None,
     print_summary: bool = True,
     config: ClipforgeConfig | None = None,
 ) -> Path:
@@ -72,6 +74,7 @@ def process_clip(
         rerender=rerender,
         channel=channel,
         use_generated_layouts=use_generated_layouts,
+        candidate_output_size=candidate_output_size,
         config=config,
         on_media_url_resolved=lambda media_url: LOGGER.info(
             "Resolved download URL: %s.",

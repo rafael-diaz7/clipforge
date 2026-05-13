@@ -146,6 +146,7 @@ def test_review_discovers_upserts_selects_top_ranked_and_exports(
         clip_id = url.rsplit("/", 1)[-1]
         events.append(f"process:{clip_id}")
         assert kwargs["config"] == config
+        assert "candidate_output_size" not in kwargs
         return _write_metadata(config, clip_id)
 
     monkeypatch.setattr("clipforge.pipeline.review.list_channel_clips", fake_list_channel_clips)

@@ -12,7 +12,7 @@ from clipforge.pipeline.metadata import RenderCandidate, render_candidates_from_
 from clipforge.pipeline.workflows import render_selected_layout_from_metadata
 from clipforge.storage.state import (
     ClipState,
-    get_review_eligible_clips,
+    get_mobile_review_clips,
     mark_clip_failed,
     mark_clip_needs_rerender,
     mark_clip_skipped,
@@ -24,7 +24,7 @@ class ReviewServerError(RuntimeError):
 
 
 class ReviewItemNotFound(ReviewServerError):
-    """Raised when a clip is not available in the normal review queue."""
+    """Raised when a clip is not available in the mobile review queue."""
 
 
 class UnsafeRenderPath(ReviewServerError):
@@ -54,16 +54,16 @@ class ReviewQueueService:
         self._export_selection = export_selection
 
     def next_item(self) -> ReviewItem | None:
-        clips = get_review_eligible_clips(db_path=self.config.state_db_path, limit=1)
+        clips = get_mobile_review_clips(db_path=self.config.state_db_path, limit=1)
         if not clips:
             return None
         return self._review_item(clips[0])
 
     def item_for_clip(self, clip_id: str) -> ReviewItem:
-        for clip in get_review_eligible_clips(db_path=self.config.state_db_path):
+        for clip in get_mobile_review_clips(db_path=self.config.state_db_path):
             if clip.clip_id == clip_id:
                 return self._review_item(clip)
-        raise ReviewItemNotFound(f"Clip is not in the normal review queue: {clip_id}.")
+        raise ReviewItemNotFound(f"Clip is not in the mobile review queue: {clip_id}.")
 
     def candidate_path(self, *, clip_id: str, layout: str) -> Path:
         if _has_path_separator(layout):
