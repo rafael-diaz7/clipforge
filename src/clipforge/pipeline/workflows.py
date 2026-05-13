@@ -18,7 +18,6 @@ from clipforge.utils.paths import (
 from clipforge.integrations.clipr import CliprClient
 from clipforge.media.download import (
     DownloadResult,
-    backend_download_dir,
     download_clip,
     download_twitch_clip,
 )
@@ -54,6 +53,7 @@ from clipforge.media.render_settings import (
 )
 from clipforge.pipeline.artifacts import write_metadata
 from clipforge.pipeline.state_sync import record_rendered_clip
+from clipforge.storage.paths import backend_download_dir, render_path, render_preview_path
 from clipforge.storage.state import get_clip
 
 
@@ -768,17 +768,27 @@ def _render_output_path(
 ) -> Path:
     stem = clip_id or source_path.stem
     if backend is not None:
-        output_dir = config.renders_dir
-        if channel:
-            output_dir = output_dir / safe_filename(channel)
-        output_dir = ensure_directory(
-            output_dir / safe_filename(stem) / safe_filename(backend)
-        )
         if output_size is not None and output_size != layout.output:
-            output_dir = ensure_directory(
-                output_dir / f"preview_{output_size.width}x{output_size.height}"
+            output_path = render_preview_path(
+                config,
+                streamer=channel,
+                clip_id=stem,
+                engine=backend,
+                layout=layout.name,
+                width=output_size.width,
+                height=output_size.height,
             )
-        return output_dir / f"{layout.name}.{config.output_format}"
+            ensure_directory(output_path.parent)
+            return output_path
+        output_path = render_path(
+            config,
+            streamer=channel,
+            clip_id=stem,
+            engine=backend,
+            layout=layout.name,
+        )
+        ensure_directory(output_path.parent)
+        return output_path
 
     output_dir = ensure_directory(config.renders_dir)
     if output_size is not None and output_size != layout.output:

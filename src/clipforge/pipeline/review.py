@@ -17,6 +17,7 @@ from clipforge.integrations.twitch import (
 from clipforge.pipeline.state_sync import record_discovered_clips
 from clipforge.media.render_settings import FFmpegRenderSettings
 from clipforge.pipeline.workflows import process_clip, render_selected_layout_from_metadata
+from clipforge.storage.paths import export_path as selected_export_path
 from clipforge.storage.state import (
     REVIEW_EXCLUDED_STATUSES,
     ClipState,
@@ -27,7 +28,7 @@ from clipforge.storage.state import (
     mark_clip_needs_rerender,
     mark_clip_skipped,
 )
-from clipforge.utils.paths import ensure_directory, safe_filename
+from clipforge.utils.paths import ensure_directory
 
 
 InputFn = Callable[[str], str]
@@ -325,12 +326,12 @@ def _export_selected_render(
     config: ClipforgeConfig,
 ) -> SelectedExport:
     source_path = selected.path
-    export_path = (
-        config.exports_dir
-        / "ready"
-        / safe_filename(streamer_login)
-        / safe_filename(clip.clip_id)
-        / f"{safe_filename(selected.layout)}.{config.output_format}"
+    export_path = selected_export_path(
+        config,
+        streamer=streamer_login,
+        title=clip.title,
+        clip_id=clip.clip_id,
+        layout=selected.layout,
     )
     if export_path.exists() and not force:
         raise ClipReviewError(f"Export already exists: {export_path}. Re-run with --force.")

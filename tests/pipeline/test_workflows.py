@@ -563,6 +563,7 @@ def test_process_clip_writes_metadata(
         str(
             tmp_path
             / "renders"
+            / "unknown_streamer"
             / TWITCH_CLIP_SLUG
             / "clipr"
             / "center_gameplay.mp4"
@@ -570,6 +571,7 @@ def test_process_clip_writes_metadata(
         str(
             tmp_path
             / "renders"
+            / "unknown_streamer"
             / TWITCH_CLIP_SLUG
             / "clipr"
             / "fullscreen_downscaled_blur_bg.mp4"
@@ -577,14 +579,23 @@ def test_process_clip_writes_metadata(
         str(
             tmp_path
             / "renders"
+            / "unknown_streamer"
             / TWITCH_CLIP_SLUG
             / "clipr"
             / "facecam_focus.mp4"
         ),
-        str(tmp_path / "renders" / TWITCH_CLIP_SLUG / "clipr" / "hybrid.mp4"),
         str(
             tmp_path
             / "renders"
+            / "unknown_streamer"
+            / TWITCH_CLIP_SLUG
+            / "clipr"
+            / "hybrid.mp4"
+        ),
+        str(
+            tmp_path
+            / "renders"
+            / "unknown_streamer"
             / TWITCH_CLIP_SLUG
             / "clipr"
             / "hybrid_full_game_bottom.mp4"
@@ -600,7 +611,9 @@ def test_process_clip_writes_metadata(
     assert state.status == "rendered"
     assert state.url == TWITCH_CLIP_URL
     assert state.metadata_path == str(metadata_path)
-    assert state.render_dir == str(tmp_path / "renders" / TWITCH_CLIP_SLUG / "clipr")
+    assert state.render_dir == str(
+        tmp_path / "renders" / "unknown_streamer" / TWITCH_CLIP_SLUG / "clipr"
+    )
     output = capsys.readouterr().out
     assert "download_url: https://cdn.example.test/source.mp4" in output
     assert "metadata:" in output
@@ -717,6 +730,7 @@ def test_process_clip_uses_generated_layouts_when_present(
         str(
             tmp_path
             / "renders"
+            / "unknown_streamer"
             / TWITCH_CLIP_SLUG
             / "clipr"
             / "center_gameplay.mp4"
@@ -724,6 +738,7 @@ def test_process_clip_uses_generated_layouts_when_present(
         str(
             tmp_path
             / "renders"
+            / "unknown_streamer"
             / TWITCH_CLIP_SLUG
             / "clipr"
             / "fullscreen_downscaled_blur_bg.mp4"
@@ -731,6 +746,7 @@ def test_process_clip_uses_generated_layouts_when_present(
         str(
             tmp_path
             / "renders"
+            / "unknown_streamer"
             / TWITCH_CLIP_SLUG
             / "clipr"
             / "detected_streamer_focus.mp4"
@@ -738,6 +754,7 @@ def test_process_clip_uses_generated_layouts_when_present(
         str(
             tmp_path
             / "renders"
+            / "unknown_streamer"
             / TWITCH_CLIP_SLUG
             / "clipr"
             / "detected_hybrid.mp4"
@@ -745,6 +762,7 @@ def test_process_clip_uses_generated_layouts_when_present(
         str(
             tmp_path
             / "renders"
+            / "unknown_streamer"
             / TWITCH_CLIP_SLUG
             / "clipr"
             / "detected_hybrid_full_game_bottom.mp4"
@@ -1439,7 +1457,13 @@ def test_process_clip_reuses_existing_analysis_and_render_artifacts_without_forc
         layout_name="detected_hybrid_full_game_bottom",
     )
     for name in GENERATED_LAYOUT_CANDIDATE_NAMES:
-        render_path = config.renders_dir / TWITCH_CLIP_SLUG / "ytdlp" / f"{name}.mp4"
+        render_path = (
+            config.renders_dir
+            / "unknown_streamer"
+            / TWITCH_CLIP_SLUG
+            / "ytdlp"
+            / f"{name}.mp4"
+        )
         render_path.parent.mkdir(parents=True, exist_ok=True)
         render_path.write_text("existing", encoding="utf-8")
 

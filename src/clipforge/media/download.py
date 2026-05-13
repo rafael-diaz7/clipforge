@@ -14,6 +14,7 @@ from urllib.parse import unquote, urlparse
 import requests
 
 from clipforge.core.config import DOWNLOADS_DIR, ClipforgeConfig, ConfigError
+from clipforge.storage.paths import backend_download_dir
 from clipforge.utils.paths import (
     ensure_directory,
     is_http_url,
@@ -212,17 +213,6 @@ def _remove_partial(partial_path: Path) -> None:
         partial_path.unlink(missing_ok=True)
     except OSError:
         pass
-
-
-def backend_download_dir(
-    downloads_dir: Path,
-    *,
-    clip_id: str,
-    backend: str,
-) -> Path:
-    """Return the backend-scoped download directory for a Twitch clip."""
-
-    return downloads_dir / safe_filename(clip_id) / safe_filename(backend)
 
 
 @dataclass(frozen=True)

@@ -242,7 +242,7 @@ eligible clips from the DB, processes them through the normal pipeline, prompts
 for one render per clip, and saves only selected renders to:
 
 ```text
-data/exports/ready/<streamer>/<clip_id>/<layout_name>.mp4
+data/exports/<streamer>/<safe_clip_title>__<clip_id>/<layout_name>.mp4
 ```
 
 Review candidates can be rendered at a lower resolution to make choosing clips
@@ -251,7 +251,7 @@ preserves the normal aspect ratio, so the default `1080x1920` output previews at
 `720x1280`. When a candidate is selected, Clipforge reuses it only if the
 preview resolution and FFmpeg settings already match the final profile;
 otherwise it renders that selected layout once more at full resolution with the
-normal final settings before writing `exports/ready`.
+normal final settings before writing `exports`.
 
 Example fast review settings:
 

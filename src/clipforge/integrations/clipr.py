@@ -15,7 +15,8 @@ from clipforge.utils.paths import (
     response_text_excerpt,
     twitch_clip_slug_from_url,
 )
-from clipforge.media.download import DownloadResult, backend_download_dir, download_clip
+from clipforge.media.download import DownloadResult, download_clip
+from clipforge.storage.paths import backend_download_dir
 
 
 CLIPR_API_HOST = "clipr.p.rapidapi.com"

@@ -161,7 +161,7 @@ def test_review_discovers_upserts_selects_top_ranked_and_exports(
 
     assert events == ["discover", "process:clip-high"]
     assert exported == (
-        tmp_path / "exports" / "ready" / "example" / "clip-high" / "hybrid.mp4",
+        tmp_path / "exports" / "example" / "high__clip-high" / "hybrid.mp4",
     )
     assert exported[0].read_bytes().startswith(b"videohybrid")
     assert get_clip("clip-low", db_path=config.state_db_path) is not None
@@ -426,7 +426,7 @@ def test_review_rejects_invalid_selection_and_reprompts(
 
     assert output.count("Invalid selection. Enter 1-2, s to skip, or r to rerender.") == 2
     assert exported == (
-        tmp_path / "exports" / "ready" / "example" / "clip-1" / "center_gameplay.mp4",
+        tmp_path / "exports" / "example" / "clip-1__clip-1" / "center_gameplay.mp4",
     )
 
 
@@ -534,7 +534,7 @@ def test_review_force_controls_export_overwrite(
     tmp_path: Path,
 ) -> None:
     config = _config(tmp_path)
-    export_path = tmp_path / "exports" / "ready" / "example" / "clip-1" / "hybrid.mp4"
+    export_path = tmp_path / "exports" / "example" / "clip-1__clip-1" / "hybrid.mp4"
     export_path.parent.mkdir(parents=True, exist_ok=True)
     export_path.write_bytes(b"old")
 
