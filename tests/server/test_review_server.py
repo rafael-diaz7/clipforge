@@ -162,13 +162,102 @@ def test_approve_action_exports_selected_render_and_removes_from_queue(
     )
 
     state = get_clip("clip-ready", db_path=config.state_db_path)
-    assert response.status == 303
+    expected_export = (
+        config.exports_dir / "ready" / "example" / "clip-ready" / "hybrid.mp4"
+    )
+    assert response.status == 200
+    assert b"Download MP4" in response.body
+    assert b"/exports/ready/example/clip-ready/hybrid.mp4" in response.body
     assert state is not None
     assert state.status == "exported"
     assert state.selected_render_layout == "hybrid"
-    assert state.export_path is not None
-    assert Path(state.export_path).read_bytes() == b"video:clip-ready:hybrid"
+    assert state.export_path == str(expected_export)
+    assert expected_export.read_bytes() == b"video:clip-ready:hybrid"
     assert get_mobile_review_clips(db_path=config.state_db_path) == ()
+
+
+def test_approve_action_does_not_render_selected_layout(
+    monkeypatch,
+    tmp_path: Path,
+) -> None:
+    config = _config(tmp_path)
+    _write_rendered_clip(config, "clip-ready", layouts=("hybrid",))
+
+    def fail(*args, **kwargs):
+        raise AssertionError("Mobile approval should copy the prepared candidate.")
+
+    monkeypatch.setattr(
+        "clipforge.pipeline.exports.render_selected_layout_from_metadata",
+        fail,
+    )
+
+    response = _app(config).handle(
+        "POST",
+        "/approve",
+        body=b"clip_id=clip-ready&layout=hybrid",
+    )
+
+    assert response.status == 200
+    assert (
+        config.exports_dir / "ready" / "example" / "clip-ready" / "hybrid.mp4"
+    ).read_bytes() == b"video:clip-ready:hybrid"
+
+
+def test_approve_action_is_idempotent_for_existing_export(tmp_path: Path) -> None:
+    config = _config(tmp_path)
+    _write_rendered_clip(config, "clip-ready", layouts=("hybrid",))
+    app = _app(config)
+
+    first = app.handle(
+        "POST",
+        "/approve",
+        body=b"clip_id=clip-ready&layout=hybrid",
+    )
+    second = app.handle(
+        "POST",
+        "/approve",
+        body=b"clip_id=clip-ready&layout=hybrid",
+    )
+
+    assert first.status == 200
+    assert second.status == 200
+    assert b"/exports/ready/example/clip-ready/hybrid.mp4" in second.body
+    assert (
+        config.exports_dir / "ready" / "example" / "clip-ready" / "hybrid.mp4"
+    ).read_bytes() == b"video:clip-ready:hybrid"
+
+
+def test_export_download_route_serves_ready_mp4(tmp_path: Path) -> None:
+    config = _config(tmp_path)
+    export_path = config.exports_dir / "ready" / "example" / "clip-1" / "hybrid.mp4"
+    export_path.parent.mkdir(parents=True, exist_ok=True)
+    export_path.write_bytes(b"exported")
+
+    response = _app(config).handle(
+        "GET",
+        "/exports/ready/example/clip-1/hybrid.mp4",
+    )
+
+    assert response.status == 200
+    assert response.body == b"exported"
+    assert ("Content-Type", "video/mp4") in response.headers
+    assert (
+        "Content-Disposition",
+        'attachment; filename="hybrid.mp4"',
+    ) in response.headers
+
+
+def test_export_download_route_rejects_path_traversal(tmp_path: Path) -> None:
+    config = _config(tmp_path)
+    secret_path = tmp_path / "secret.mp4"
+    secret_path.write_bytes(b"secret")
+
+    response = _app(config).handle(
+        "GET",
+        "/exports/ready/example/clip-1/..%2F..%2F..%2F..%2Fsecret.mp4",
+    )
+
+    assert response.status == 403
 
 
 def test_skip_action_marks_skipped_and_advances(tmp_path: Path) -> None:
@@ -183,6 +272,8 @@ def test_skip_action_marks_skipped_and_advances(tmp_path: Path) -> None:
     assert response.status == 303
     assert first is not None
     assert first.status == "skipped"
+    assert first.export_path is None
+    assert not config.exports_dir.exists()
     assert b"clip-next" in page.body
     assert b"clip-first" not in page.body
 
@@ -228,6 +319,7 @@ def test_server_routes_do_not_call_discovery_render_or_prepare_logic(
 ) -> None:
     config = _config(tmp_path)
     _write_rendered_clip(config, "clip-ready", layouts=("hybrid",))
+    _write_rendered_clip(config, "clip-skip", rank_score=0.5, layouts=("hybrid",))
     app = _app(config)
 
     def fail(*args, **kwargs):
@@ -236,8 +328,15 @@ def test_server_routes_do_not_call_discovery_render_or_prepare_logic(
     monkeypatch.setattr("clipforge.pipeline.prepare.prepare_streamer_clips", fail)
     monkeypatch.setattr("clipforge.pipeline.workflows.process_clip", fail)
     monkeypatch.setattr("clipforge.pipeline.workflows.render_all_candidates", fail)
-    monkeypatch.setattr("clipforge.server.review.render_selected_layout_from_metadata", fail)
+    monkeypatch.setattr(
+        "clipforge.pipeline.exports.render_selected_layout_from_metadata",
+        fail,
+    )
 
     assert app.handle("GET", "/").status == 200
     assert app.handle("GET", "/clips/clip-ready/renders/hybrid.mp4").status == 200
-    assert app.handle("POST", "/skip", body=b"clip_id=clip-ready").status == 303
+    assert (
+        app.handle("POST", "/approve", body=b"clip_id=clip-ready&layout=hybrid").status
+        == 200
+    )
+    assert app.handle("POST", "/skip", body=b"clip_id=clip-skip").status == 303

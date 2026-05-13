@@ -8,6 +8,7 @@ from clipforge.storage.paths import (
     clip_folder_name,
     download_dir,
     export_path,
+    ready_export_path,
     render_path,
     sanitize_path_part,
 )
@@ -53,6 +54,26 @@ def test_export_path_uses_safe_title_plus_clip_id(tmp_path: Path) -> None:
         / "exports"
         / "example"
         / "Wild_clutch_1v5__clip-1"
+        / "center_gameplay.mp4"
+    )
+
+
+def test_ready_export_path_uses_ready_streamer_clip_layout(tmp_path: Path) -> None:
+    config = _config(tmp_path)
+
+    path = ready_export_path(
+        config,
+        streamer="Example Streamer!",
+        clip_id=" Clip:One! ",
+        layout="center gameplay",
+    )
+
+    assert path == (
+        tmp_path
+        / "exports"
+        / "ready"
+        / "Example_Streamer"
+        / "Clip_One"
         / "center_gameplay.mp4"
     )
 

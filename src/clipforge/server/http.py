@@ -12,10 +12,12 @@ from urllib.parse import parse_qs, quote, unquote, urlsplit
 
 from clipforge.core.config import ClipforgeConfig
 from clipforge.server.review import (
+    ApprovedExport,
     ReviewItem,
     ReviewItemNotFound,
     ReviewQueueService,
     ReviewServerError,
+    UnsafeExportPath,
     UnsafeRenderPath,
 )
 
@@ -52,6 +54,12 @@ class ReviewApplication:
                 return self._video_response(
                     clip_id=clip_id,
                     layout=layout,
+                    range_header=headers.get("Range"),
+                )
+            export_request = _parse_export_path(path)
+            if export_request is not None:
+                return self._export_response(
+                    relative_parts=export_request,
                     range_header=headers.get("Range"),
                 )
         if method == "POST" and path in {"/approve", "/skip", "/rerender"}:
@@ -93,6 +101,29 @@ class ReviewApplication:
             )
         return _file_response(candidate_path, range_header=range_header)
 
+    def _export_response(
+        self,
+        *,
+        relative_parts: tuple[str, ...],
+        range_header: str | None,
+    ) -> HttpResponse:
+        try:
+            export_path = self.service.export_file_path(relative_parts=relative_parts)
+        except UnsafeExportPath:
+            return _html_response(HTTPStatus.FORBIDDEN, _error_page("Forbidden"))
+        except ReviewItemNotFound:
+            return _html_response(HTTPStatus.NOT_FOUND, _error_page("Not Found"))
+        except ReviewServerError as exc:
+            return _html_response(
+                HTTPStatus.INTERNAL_SERVER_ERROR,
+                _error_page(str(exc)),
+            )
+        return _file_response(
+            export_path,
+            range_header=range_header,
+            attachment_filename=export_path.name,
+        )
+
     def _handle_action(self, path: str, body: bytes) -> HttpResponse:
         form = parse_qs(body.decode("utf-8"), keep_blank_values=True)
         clip_id = _one(form, "clip_id")
@@ -103,7 +134,11 @@ class ReviewApplication:
                 layout = _one(form, "layout")
                 if not layout:
                     raise ReviewServerError("Missing layout.")
-                self.service.approve(clip_id=clip_id, layout=layout)
+                approved = self.service.approve(clip_id=clip_id, layout=layout)
+                return _html_response(
+                    HTTPStatus.OK,
+                    _page(_approved_html(approved), title="Clipforge Review"),
+                )
             elif path == "/skip":
                 self.service.skip(clip_id=clip_id)
             else:
@@ -164,6 +199,16 @@ def _parse_video_path(path: str) -> tuple[str, str] | None:
     if "/" in clip_id or "\\" in clip_id or "/" in layout or "\\" in layout:
         return None
     return clip_id, layout
+
+
+def _parse_export_path(path: str) -> tuple[str, ...] | None:
+    parts = path.split("/")
+    if len(parts) < 4 or parts[0] or parts[1] != "exports":
+        return None
+    filename = unquote(parts[-1])
+    if not filename.endswith(".mp4"):
+        return None
+    return tuple(unquote(part) for part in parts[2:])
 
 
 def _review_item_html(item: ReviewItem, *, error: str | None) -> str:
@@ -233,6 +278,18 @@ def _candidate_html(item: ReviewItem, layout: str) -> str:
 """
 
 
+def _approved_html(approved: ApprovedExport) -> str:
+    filename = approved.export_path.name
+    return f"""
+<main class="empty">
+  <h1>Export ready</h1>
+  <p>{html.escape(filename)}</p>
+  <a class="button" href="{html.escape(approved.download_url)}" download>Download MP4</a>
+  <p><a href="/">Review next clip</a></p>
+</main>
+"""
+
+
 def _empty_state() -> str:
     return """
 <main class="empty">
@@ -282,7 +339,9 @@ def _page(content: str, *, title: str) -> str:
     .candidates {{ display: grid; gap: 18px; }}
     .candidate {{ border-top: 1px solid #32343a; padding-top: 14px; }}
     video {{ display: block; width: 100%; max-height: 72vh; background: #050506; }}
-    button {{
+    button, .button {{
+      display: inline-grid;
+      place-items: center;
       width: 100%;
       min-height: 52px;
       margin-top: 10px;
@@ -292,6 +351,7 @@ def _page(content: str, *, title: str) -> str:
       color: #07110d;
       font: inherit;
       font-weight: 800;
+      text-decoration: none;
     }}
     button.secondary {{ background: #2a2d34; color: #f5f5f2; }}
     .empty {{ min-height: 100vh; display: grid; align-content: center; }}
@@ -310,7 +370,12 @@ def _page(content: str, *, title: str) -> str:
 """
 
 
-def _file_response(path: Path, *, range_header: str | None) -> HttpResponse:
+def _file_response(
+    path: Path,
+    *,
+    range_header: str | None,
+    attachment_filename: str | None = None,
+) -> HttpResponse:
     file_size = path.stat().st_size
     content_type = mimetypes.guess_type(path.name)[0] or "application/octet-stream"
     start, end = _parse_range(range_header, file_size=file_size)
@@ -319,6 +384,13 @@ def _file_response(path: Path, *, range_header: str | None) -> HttpResponse:
         ("Content-Type", content_type),
         ("Accept-Ranges", "bytes"),
     ]
+    if attachment_filename is not None:
+        headers.append(
+            (
+                "Content-Disposition",
+                f'attachment; filename="{_disposition_filename(attachment_filename)}"',
+            )
+        )
     if start is None or end is None:
         body = path.read_bytes()
         headers.append(("Content-Length", str(file_size)))
@@ -334,6 +406,10 @@ def _file_response(path: Path, *, range_header: str | None) -> HttpResponse:
             )
         )
     return HttpResponse(status=status, headers=tuple(headers), body=body)
+
+
+def _disposition_filename(filename: str) -> str:
+    return filename.replace("\\", "_").replace("/", "_").replace('"', "_")
 
 
 def _parse_range(range_header: str | None, *, file_size: int) -> tuple[int | None, int | None]:
@@ -382,4 +458,3 @@ def _one(form: dict[str, list[str]], key: str) -> str | None:
     if not values:
         return None
     return values[0]
-

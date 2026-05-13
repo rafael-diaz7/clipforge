@@ -17,6 +17,7 @@ from clipforge.pipeline.metadata import (
 )
 from clipforge.pipeline.workflows import render_selected_layout_from_metadata
 from clipforge.storage.paths import export_path as selected_export_path
+from clipforge.storage.paths import ready_export_path
 from clipforge.storage.state import ClipState, mark_clip_exported, mark_clip_selected
 from clipforge.utils.paths import ensure_directory
 
@@ -136,6 +137,47 @@ def export_selected_render(
     )
 
 
+def export_selected_candidate(
+    *,
+    clip: ClipState,
+    streamer_login: str,
+    selected: RenderCandidate,
+    config: ClipforgeConfig,
+    render_root: Path,
+) -> SelectedExport:
+    """Copy an already final-ready review candidate to exports/ready."""
+
+    export_path = ready_export_path(
+        config,
+        streamer=streamer_login,
+        clip_id=clip.clip_id,
+        layout=selected.layout,
+    )
+    source_path = _candidate_source_path(selected, render_root=render_root)
+    if export_path.exists():
+        if not export_path.is_file():
+            raise ClipExportError(
+                f"Export path already exists and is not a file: {export_path}."
+            )
+        return SelectedExport(
+            export_path=export_path,
+            final_render_path=source_path,
+            final_resolution=selected.resolution,
+            reused_preview=True,
+        )
+
+    if not source_path.is_file():
+        raise ClipExportError(f"Selected render does not exist: {source_path}.")
+    ensure_directory(export_path.parent)
+    copy_selected_render(source_path=source_path, export_path=export_path)
+    return SelectedExport(
+        export_path=export_path,
+        final_render_path=source_path,
+        final_resolution=selected.resolution,
+        reused_preview=True,
+    )
+
+
 def copy_selected_render(*, source_path: Path, export_path: Path) -> None:
     try:
         shutil.copy2(source_path, export_path)
@@ -143,6 +185,16 @@ def copy_selected_render(*, source_path: Path, export_path: Path) -> None:
         raise ClipExportError(
             f"Could not export selected render to {export_path}: {exc}"
         ) from exc
+
+
+def _candidate_source_path(selected: RenderCandidate, *, render_root: Path) -> Path:
+    source_path = selected.path.resolve()
+    resolved_root = render_root.resolve()
+    if not source_path.is_relative_to(resolved_root):
+        raise ClipExportError(
+            f"Selected render is outside the clip render directory: {selected.layout}."
+        )
+    return source_path
 
 
 def selected_preview_matches_final(

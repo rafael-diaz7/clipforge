@@ -107,6 +107,24 @@ def export_path(
     )
 
 
+def ready_export_path(
+    config: ClipforgeConfig,
+    *,
+    streamer: str,
+    clip_id: str,
+    layout: str,
+) -> Path:
+    """Return the phone-review ready export path for one selected candidate."""
+
+    return (
+        config.exports_dir
+        / "ready"
+        / sanitize_path_part(streamer, fallback="unknown_streamer")
+        / _artifact_id(clip_id)
+        / f"{_layout(layout)}.{config.output_format}"
+    )
+
+
 def _artifact_id(value: str) -> str:
     return sanitize_path_part(value, fallback="clip", max_length=None)
 
