@@ -58,6 +58,7 @@ def process_clip(
     rerender: bool = False,
     channel: str | None = None,
     use_generated_layouts: bool = True,
+    print_summary: bool = True,
     config: ClipforgeConfig | None = None,
 ) -> Path:
     """Run the full MVP pipeline and return the metadata path."""
@@ -78,7 +79,8 @@ def process_clip(
         ),
     )
     _log_process_clip_result(result)
-    _print_clip_summary(result)
+    if print_summary:
+        _print_clip_summary(result)
     return result.metadata_path
 
 

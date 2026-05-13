@@ -21,6 +21,7 @@ from clipforge.pipeline.processing import (
     process_saved_clips,
     select_saved_clips_for_processing,
 )
+from clipforge.pipeline.prepare import prepare_streamer_clips
 from clipforge.pipeline.state_sync import (
     record_discovered_clips,
     rerank_persisted_clips,
@@ -362,6 +363,42 @@ def build_parser() -> argparse.ArgumentParser:
         action="store_true",
         help="Ignore generated analysis layouts and render static layouts.",
     )
+    clips_prepare_parser = clips_subparsers.add_parser(
+        "prepare",
+        help="Discover, process, and render review-ready candidates without prompting.",
+    )
+    clips_prepare_parser.add_argument(
+        "--streamer",
+        required=True,
+        help="Twitch streamer login to discover and prepare.",
+    )
+    clips_prepare_parser.add_argument(
+        "--count",
+        type=int,
+        default=3,
+        help="Number of top-ranked eligible clips to prepare. Defaults to 3.",
+    )
+    clips_prepare_parser.add_argument(
+        "--generate-captions",
+        action="store_true",
+        default=None,
+        help="Generate caption metadata before rendering.",
+    )
+    clips_prepare_parser.add_argument(
+        "--force-captions",
+        action="store_true",
+        help="Regenerate caption metadata even when deterministic metadata already exists.",
+    )
+    clips_prepare_parser.add_argument(
+        "--clip-id",
+        action="append",
+        help="Prepare a specific saved clip ID. May be passed more than once.",
+    )
+    clips_prepare_parser.add_argument(
+        "--static-layouts",
+        action="store_true",
+        help="Ignore generated analysis layouts and render static layouts.",
+    )
 
     analyze_parser = subparsers.add_parser(
         "analyze",
@@ -552,6 +589,9 @@ def _handle_clips_command(args: argparse.Namespace) -> int:
     if args.clips_command == "review":
         return _handle_clips_review_command(args)
 
+    if args.clips_command == "prepare":
+        return _handle_clips_prepare_command(args)
+
     if not args.channel:
         raise CLIError("clips discovery requires --channel.")
 
@@ -717,6 +757,40 @@ def _handle_clips_review_command(args: argparse.Namespace) -> int:
         for path in exported_paths:
             print(path)
     return 0
+
+
+def _handle_clips_prepare_command(args: argparse.Namespace) -> int:
+    started_at, ended_at = _clip_date_filters(
+        started_at=args.started_at,
+        ended_at=args.ended_at,
+    )
+    config = load_config()
+    result = prepare_streamer_clips(
+        streamer=args.streamer,
+        count=args.count,
+        generate_captions=args.generate_captions,
+        force_captions=args.force_captions,
+        clip_ids=args.clip_id or (),
+        started_at=started_at,
+        ended_at=ended_at,
+        discovery_limit=max(args.count, args.limit),
+        use_generated_layouts=not args.static_layouts,
+        config=config,
+    )
+    print(f"discovered/upserted: {result.discovered_count}")
+    print(f"reranked: {result.reranked_count}")
+    print(f"selected: {result.selected_count}")
+    print(f"rendered: {result.rendered_count}")
+    print(f"failed: {len(result.failed)}")
+    if result.prepared:
+        print("prepared clips:")
+        for prepared in result.prepared:
+            print(f"{prepared.clip_id}: {prepared.metadata_path}")
+    if result.failed:
+        print("failed clips:")
+        for failed in result.failed:
+            print(f"{failed.clip_id}: {failed.error_message}")
+    return 1 if result.failed else 0
 
 
 def _format_state_clip_table(clips, *, show_url: bool = False) -> tuple[str, ...]:

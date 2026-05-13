@@ -1694,6 +1694,69 @@ def test_main_routes_clips_review_command(monkeypatch, capsys, tmp_path: Path) -
     ]
 
 
+def test_main_routes_clips_prepare_command(monkeypatch, capsys, tmp_path: Path) -> None:
+    from clipforge.pipeline.prepare import PrepareResult, PreparedClip
+
+    config = ClipforgeConfig(state_db_path=tmp_path / "state" / "clipforge.sqlite")
+    calls: list[dict[str, object]] = []
+    metadata_path = tmp_path / "metadata" / "clip-1.json"
+
+    def fake_prepare_streamer_clips(**kwargs) -> PrepareResult:
+        calls.append(kwargs)
+        return PrepareResult(
+            discovered_count=4,
+            reranked_count=4,
+            selected_count=1,
+            prepared=(PreparedClip(clip_id="clip-1", metadata_path=metadata_path),),
+            failed=(),
+        )
+
+    monkeypatch.setattr("clipforge.pipeline.cli.load_config", lambda: config)
+    monkeypatch.setattr(
+        "clipforge.pipeline.cli.prepare_streamer_clips",
+        fake_prepare_streamer_clips,
+    )
+
+    exit_code = main(
+        [
+            "clips",
+            "prepare",
+            "--streamer",
+            "ohnepixel",
+            "--count",
+            "3",
+            "--generate-captions",
+            "--force-captions",
+            "--static-layouts",
+            "--clip-id",
+            "clip-1",
+        ]
+    )
+
+    assert exit_code == 0
+    assert len(calls) == 1
+    call = calls[0]
+    assert call["streamer"] == "ohnepixel"
+    assert call["count"] == 3
+    assert call["generate_captions"] is True
+    assert call["force_captions"] is True
+    assert call["clip_ids"] == ["clip-1"]
+    assert call["started_at"] is not None
+    assert call["ended_at"] is not None
+    assert call["discovery_limit"] == 10
+    assert call["use_generated_layouts"] is False
+    assert call["config"] == config
+    assert capsys.readouterr().out.splitlines() == [
+        "discovered/upserted: 4",
+        "reranked: 4",
+        "selected: 1",
+        "rendered: 1",
+        "failed: 0",
+        "prepared clips:",
+        f"clip-1: {metadata_path}",
+    ]
+
+
 def test_main_routes_clips_review_rerender_flag(
     monkeypatch,
     tmp_path: Path,
