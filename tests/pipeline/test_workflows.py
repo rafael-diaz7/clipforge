@@ -80,7 +80,7 @@ def test_render_candidate_uses_layout_name_for_output_path(
         calls.append((source_path, output_path, layout.name))
         return output_path
 
-    monkeypatch.setattr("clipforge.pipeline.workflows.render_layout", fake_render)
+    monkeypatch.setattr("clipforge.pipeline.rendering.render_layout", fake_render)
 
     output_path = render_candidate(
         tmp_path / "source.mp4",
@@ -132,7 +132,7 @@ def test_render_candidate_can_burn_caption_metadata(
         )
         return output_path
 
-    monkeypatch.setattr("clipforge.pipeline.workflows.render_layout", fake_render)
+    monkeypatch.setattr("clipforge.pipeline.rendering.render_layout", fake_render)
 
     output_path = render_candidate(
         tmp_path / "source.mp4",
@@ -166,7 +166,7 @@ def test_render_candidate_passes_review_ffmpeg_settings_when_configured(
         calls.append(kwargs)
         return output_path
 
-    monkeypatch.setattr("clipforge.pipeline.workflows.render_layout", fake_render)
+    monkeypatch.setattr("clipforge.pipeline.rendering.render_layout", fake_render)
 
     render_candidate(
         tmp_path / "source.mp4",
@@ -198,7 +198,7 @@ def test_render_candidate_uses_review_output_width_for_preview_layout(
         )
         return output_path
 
-    monkeypatch.setattr("clipforge.pipeline.workflows.render_layout", fake_render)
+    monkeypatch.setattr("clipforge.pipeline.rendering.render_layout", fake_render)
 
     output_path = render_candidate(
         tmp_path / "source.mp4",
@@ -243,7 +243,7 @@ def test_render_candidate_scales_caption_style_for_review_preview(
         calls.append(caption_style)
         return output_path
 
-    monkeypatch.setattr("clipforge.pipeline.workflows.render_layout", fake_render)
+    monkeypatch.setattr("clipforge.pipeline.rendering.render_layout", fake_render)
 
     render_candidate(
         tmp_path / "source.mp4",
@@ -326,7 +326,7 @@ def test_render_selected_layout_from_metadata_uses_final_settings_and_size(
         )
         return output_path
 
-    monkeypatch.setattr("clipforge.pipeline.workflows.render_layout", fake_render)
+    monkeypatch.setattr("clipforge.pipeline.rendering.render_layout", fake_render)
 
     output_path = tmp_path / "exports" / "ready" / "clip-123.mp4"
     render_selected_layout_from_metadata(
@@ -359,7 +359,7 @@ def test_render_all_candidates_renders_default_layouts(
         rendered_layouts.append(layout.name)
         return output_path
 
-    monkeypatch.setattr("clipforge.pipeline.workflows.render_layout", fake_render)
+    monkeypatch.setattr("clipforge.pipeline.rendering.render_layout", fake_render)
 
     output_paths = render_all_candidates(
         tmp_path / "source.mp4",
@@ -406,7 +406,7 @@ def test_render_all_candidates_prefers_generated_analysis_layouts(
         rendered_layouts.append(layout.name)
         return output_path
 
-    monkeypatch.setattr("clipforge.pipeline.workflows.render_layout", fake_render)
+    monkeypatch.setattr("clipforge.pipeline.rendering.render_layout", fake_render)
 
     output_paths = render_all_candidates(
         tmp_path / "source.mp4",
@@ -441,7 +441,7 @@ def test_render_all_candidates_falls_back_when_generated_layout_is_missing(
         rendered_layouts.append(layout.name)
         return output_path
 
-    monkeypatch.setattr("clipforge.pipeline.workflows.render_layout", fake_render)
+    monkeypatch.setattr("clipforge.pipeline.rendering.render_layout", fake_render)
 
     output_paths = render_all_candidates(
         tmp_path / "source.mp4",
@@ -494,7 +494,7 @@ def test_render_all_candidates_static_layouts_opt_out(
         rendered_layouts.append(layout.name)
         return output_path
 
-    monkeypatch.setattr("clipforge.pipeline.workflows.render_layout", fake_render)
+    monkeypatch.setattr("clipforge.pipeline.rendering.render_layout", fake_render)
 
     output_paths = render_all_candidates(
         tmp_path / "source.mp4",
@@ -543,7 +543,7 @@ def test_process_clip_writes_metadata(
         )
 
     monkeypatch.setattr(
-        "clipforge.pipeline.workflows.download_twitch_clip",
+        "clipforge.pipeline.artifact_reuse.download_twitch_clip",
         fake_download_twitch_clip,
     )
 
@@ -551,7 +551,7 @@ def test_process_clip_writes_metadata(
         output.write_text(layout.name, encoding="utf-8")
         return output
 
-    monkeypatch.setattr("clipforge.pipeline.workflows.render_layout", fake_render)
+    monkeypatch.setattr("clipforge.pipeline.rendering.render_layout", fake_render)
 
     metadata_path = process_clip(
         TWITCH_CLIP_URL,
@@ -622,8 +622,7 @@ def test_process_clip_writes_metadata(
         tmp_path / "renders" / "unknown_streamer" / TWITCH_CLIP_SLUG / "clipr"
     )
     output = capsys.readouterr().out
-    assert "download_url: https://cdn.example.test/source.mp4" in output
-    assert "metadata:" in output
+    assert output.splitlines() == [f"Slug: {TWITCH_CLIP_SLUG}"]
 
 
 def test_process_clip_records_lower_resolution_review_preview_metadata(
@@ -641,7 +640,7 @@ def test_process_clip_records_lower_resolution_review_preview_metadata(
     calls: list[tuple[str, int, int]] = []
 
     monkeypatch.setattr(
-        "clipforge.pipeline.workflows.download_twitch_clip",
+        "clipforge.pipeline.artifact_reuse.download_twitch_clip",
         lambda *args, **kwargs: DownloadResult(source_path=source_path, backend="clipr"),
     )
 
@@ -652,7 +651,7 @@ def test_process_clip_records_lower_resolution_review_preview_metadata(
         output.write_text(layout.name, encoding="utf-8")
         return output
 
-    monkeypatch.setattr("clipforge.pipeline.workflows.render_layout", fake_render)
+    monkeypatch.setattr("clipforge.pipeline.rendering.render_layout", fake_render)
 
     metadata_path = process_clip(
         TWITCH_CLIP_URL,
@@ -719,11 +718,11 @@ def test_process_clip_uses_generated_layouts_when_present(
         )
 
     monkeypatch.setattr(
-        "clipforge.pipeline.workflows.download_twitch_clip",
+        "clipforge.pipeline.artifact_reuse.download_twitch_clip",
         fake_download_twitch_clip,
     )
     monkeypatch.setattr(
-        "clipforge.pipeline.workflows.render_layout",
+        "clipforge.pipeline.rendering.render_layout",
         lambda source, output, layout: output,
     )
 
@@ -837,14 +836,14 @@ def test_process_clip_can_generate_captions_before_rendering(
         return output
 
     monkeypatch.setattr(
-        "clipforge.pipeline.workflows.download_twitch_clip",
+        "clipforge.pipeline.artifact_reuse.download_twitch_clip",
         fake_download_twitch_clip,
     )
     monkeypatch.setattr(
-        "clipforge.pipeline.workflows.generate_caption_metadata",
+        "clipforge.pipeline.artifact_reuse.generate_caption_metadata",
         fake_generate_caption_metadata,
     )
-    monkeypatch.setattr("clipforge.pipeline.workflows.render_layout", fake_render)
+    monkeypatch.setattr("clipforge.pipeline.rendering.render_layout", fake_render)
 
     metadata_path = process_clip(
         TWITCH_CLIP_URL,
@@ -915,14 +914,14 @@ def test_process_clip_reuses_existing_caption_metadata(
         return output
 
     monkeypatch.setattr(
-        "clipforge.pipeline.workflows.download_twitch_clip",
+        "clipforge.pipeline.artifact_reuse.download_twitch_clip",
         fake_download_twitch_clip,
     )
     monkeypatch.setattr(
-        "clipforge.pipeline.workflows.generate_caption_metadata",
+        "clipforge.pipeline.artifact_reuse.generate_caption_metadata",
         fail_generate_caption_metadata,
     )
-    monkeypatch.setattr("clipforge.pipeline.workflows.render_layout", fake_render)
+    monkeypatch.setattr("clipforge.pipeline.rendering.render_layout", fake_render)
 
     metadata_path = process_clip(
         TWITCH_CLIP_URL,
@@ -941,7 +940,7 @@ def test_process_clip_reuses_existing_caption_metadata(
         "render:hybrid",
         "render:hybrid_full_game_bottom",
     ]
-    assert f"captions: reusing existing {caption_path}" in capsys.readouterr().out
+    assert capsys.readouterr().out.splitlines() == [f"Slug: {TWITCH_CLIP_SLUG}"]
 
 
 def test_process_clip_force_captions_regenerates_existing_caption_metadata(
@@ -998,14 +997,14 @@ def test_process_clip_force_captions_regenerates_existing_caption_metadata(
         return output
 
     monkeypatch.setattr(
-        "clipforge.pipeline.workflows.download_twitch_clip",
+        "clipforge.pipeline.artifact_reuse.download_twitch_clip",
         fake_download_twitch_clip,
     )
     monkeypatch.setattr(
-        "clipforge.pipeline.workflows.generate_caption_metadata",
+        "clipforge.pipeline.artifact_reuse.generate_caption_metadata",
         fake_generate_caption_metadata,
     )
-    monkeypatch.setattr("clipforge.pipeline.workflows.render_layout", fake_render)
+    monkeypatch.setattr("clipforge.pipeline.rendering.render_layout", fake_render)
 
     metadata_path = process_clip(
         TWITCH_CLIP_URL,
@@ -1023,6 +1022,7 @@ def test_process_clip_force_captions_regenerates_existing_caption_metadata(
 def test_process_clip_marks_existing_state_as_rendered(
     tmp_path: Path,
     monkeypatch,
+    capsys,
 ) -> None:
     config = _config(tmp_path)
     upsert_discovered_clip(
@@ -1050,11 +1050,11 @@ def test_process_clip_marks_existing_state_as_rendered(
         )
 
     monkeypatch.setattr(
-        "clipforge.pipeline.workflows.download_twitch_clip",
+        "clipforge.pipeline.artifact_reuse.download_twitch_clip",
         fake_download_twitch_clip,
     )
     monkeypatch.setattr(
-        "clipforge.pipeline.workflows.render_layout",
+        "clipforge.pipeline.rendering.render_layout",
         lambda source, output, layout: output,
     )
 
@@ -1111,6 +1111,17 @@ def test_process_clip_marks_existing_state_as_rendered(
             / "hybrid_full_game_bottom.mp4"
         ),
     ]
+    output = capsys.readouterr().out.splitlines()
+    expected_summary = [
+        f"Slug: {TWITCH_CLIP_SLUG}",
+        "Title: existing title",
+        "Streamer: example",
+        "Views: 10",
+        "Duration: 12s",
+    ]
+    if state.created_at:
+        expected_summary.insert(4, f"Created: {state.created_at}")
+    assert output == expected_summary
 
 
 def test_process_clip_explicit_channel_scopes_render_outputs(
@@ -1127,7 +1138,7 @@ def test_process_clip_explicit_channel_scopes_render_outputs(
     source_path = tmp_path / "downloads" / TWITCH_CLIP_SLUG / "clipr" / f"{TWITCH_CLIP_SLUG}.mp4"
 
     monkeypatch.setattr(
-        "clipforge.pipeline.workflows.download_twitch_clip",
+        "clipforge.pipeline.artifact_reuse.download_twitch_clip",
         lambda *args, **kwargs: DownloadResult(source_path=source_path, backend="clipr"),
     )
 
@@ -1136,7 +1147,7 @@ def test_process_clip_explicit_channel_scopes_render_outputs(
         output.write_text(layout.name, encoding="utf-8")
         return output
 
-    monkeypatch.setattr("clipforge.pipeline.workflows.render_layout", fake_render)
+    monkeypatch.setattr("clipforge.pipeline.rendering.render_layout", fake_render)
 
     metadata_path = process_clip(
         TWITCH_CLIP_URL,
@@ -1219,7 +1230,7 @@ def test_process_clip_applies_streamer_watermark_from_env(
     watermarks: list[Watermark] = []
 
     monkeypatch.setattr(
-        "clipforge.pipeline.workflows.download_twitch_clip",
+        "clipforge.pipeline.artifact_reuse.download_twitch_clip",
         lambda *args, **kwargs: DownloadResult(source_path=source_path, backend="ytdlp"),
     )
 
@@ -1235,7 +1246,7 @@ def test_process_clip_applies_streamer_watermark_from_env(
         output.write_text(layout.name, encoding="utf-8")
         return output
 
-    monkeypatch.setattr("clipforge.pipeline.workflows.render_layout", fake_render)
+    monkeypatch.setattr("clipforge.pipeline.rendering.render_layout", fake_render)
 
     process_clip(TWITCH_CLIP_URL, use_generated_layouts=False, config=config)
 
@@ -1260,7 +1271,7 @@ def test_process_clip_explicit_channel_applies_streamer_watermark_from_env(
     watermarks: list[Watermark] = []
 
     monkeypatch.setattr(
-        "clipforge.pipeline.workflows.download_twitch_clip",
+        "clipforge.pipeline.artifact_reuse.download_twitch_clip",
         lambda *args, **kwargs: DownloadResult(source_path=source_path, backend="clipr"),
     )
 
@@ -1276,7 +1287,7 @@ def test_process_clip_explicit_channel_applies_streamer_watermark_from_env(
         output.write_text(layout.name, encoding="utf-8")
         return output
 
-    monkeypatch.setattr("clipforge.pipeline.workflows.render_layout", fake_render)
+    monkeypatch.setattr("clipforge.pipeline.rendering.render_layout", fake_render)
 
     process_clip(
         TWITCH_CLIP_URL,
@@ -1307,7 +1318,7 @@ def test_process_clip_keeps_render_calls_unchanged_without_watermark_env(
 
     monkeypatch.delenv("OHNEPIXEL_WATERMARK", raising=False)
     monkeypatch.setattr(
-        "clipforge.pipeline.workflows.download_twitch_clip",
+        "clipforge.pipeline.artifact_reuse.download_twitch_clip",
         lambda *args, **kwargs: DownloadResult(source_path=source_path, backend="ytdlp"),
     )
 
@@ -1317,7 +1328,7 @@ def test_process_clip_keeps_render_calls_unchanged_without_watermark_env(
         output.write_text(layout.name, encoding="utf-8")
         return output
 
-    monkeypatch.setattr("clipforge.pipeline.workflows.render_layout", fake_render)
+    monkeypatch.setattr("clipforge.pipeline.rendering.render_layout", fake_render)
 
     process_clip(TWITCH_CLIP_URL, use_generated_layouts=False, config=config)
 
@@ -1396,16 +1407,16 @@ def test_process_clip_generates_analysis_artifacts_and_renders_outputs(
         return output
 
     monkeypatch.setattr(
-        "clipforge.pipeline.workflows.download_twitch_clip",
+        "clipforge.pipeline.artifact_reuse.download_twitch_clip",
         fake_download_twitch_clip,
     )
-    monkeypatch.setattr("clipforge.pipeline.workflows.sample_frames", fake_sample_frames)
-    monkeypatch.setattr("clipforge.pipeline.workflows.analyze_overlay", fake_analyze_overlay)
+    monkeypatch.setattr("clipforge.pipeline.artifact_reuse.sample_frames", fake_sample_frames)
+    monkeypatch.setattr("clipforge.pipeline.artifact_reuse.analyze_overlay", fake_analyze_overlay)
     monkeypatch.setattr(
-        "clipforge.pipeline.workflows.generate_detected_layout_candidates",
+        "clipforge.pipeline.artifact_reuse.generate_detected_layout_candidates",
         fake_generate_layouts,
     )
-    monkeypatch.setattr("clipforge.pipeline.workflows.render_layout", fake_render)
+    monkeypatch.setattr("clipforge.pipeline.rendering.render_layout", fake_render)
 
     metadata_path = process_clip(TWITCH_CLIP_URL, config=config)
 
@@ -1475,29 +1486,29 @@ def test_process_clip_reuses_existing_analysis_and_render_artifacts_without_forc
         render_path.write_text("existing", encoding="utf-8")
 
     monkeypatch.setattr(
-        "clipforge.pipeline.workflows.download_twitch_clip",
+        "clipforge.pipeline.artifact_reuse.download_twitch_clip",
         lambda *args, **kwargs: DownloadResult(source_path=source_path, backend="ytdlp"),
     )
     monkeypatch.setattr(
-        "clipforge.pipeline.workflows.sample_frames",
+        "clipforge.pipeline.artifact_reuse.sample_frames",
         lambda *args, **kwargs: (_ for _ in ()).throw(
             AssertionError("frames should be reused")
         ),
     )
     monkeypatch.setattr(
-        "clipforge.pipeline.workflows.analyze_overlay",
+        "clipforge.pipeline.artifact_reuse.analyze_overlay",
         lambda *args, **kwargs: (_ for _ in ()).throw(
             AssertionError("overlay should be reused")
         ),
     )
     monkeypatch.setattr(
-        "clipforge.pipeline.workflows.generate_detected_layout_candidates",
+        "clipforge.pipeline.artifact_reuse.generate_detected_layout_candidates",
         lambda *args, **kwargs: (_ for _ in ()).throw(
             AssertionError("layouts should be reused")
         ),
     )
     monkeypatch.setattr(
-        "clipforge.pipeline.workflows.render_layout",
+        "clipforge.pipeline.rendering.render_layout",
         lambda *args, **kwargs: (_ for _ in ()).throw(
             AssertionError("renders should be reused")
         ),
@@ -1596,16 +1607,16 @@ def test_process_clip_force_regenerates_analysis_and_render_artifacts(
         return output
 
     monkeypatch.setattr(
-        "clipforge.pipeline.workflows.download_twitch_clip",
+        "clipforge.pipeline.artifact_reuse.download_twitch_clip",
         lambda *args, **kwargs: DownloadResult(source_path=source_path, backend="ytdlp"),
     )
-    monkeypatch.setattr("clipforge.pipeline.workflows.sample_frames", fake_sample_frames)
-    monkeypatch.setattr("clipforge.pipeline.workflows.analyze_overlay", fake_analyze_overlay)
+    monkeypatch.setattr("clipforge.pipeline.artifact_reuse.sample_frames", fake_sample_frames)
+    monkeypatch.setattr("clipforge.pipeline.artifact_reuse.analyze_overlay", fake_analyze_overlay)
     monkeypatch.setattr(
-        "clipforge.pipeline.workflows.generate_detected_layout_candidates",
+        "clipforge.pipeline.artifact_reuse.generate_detected_layout_candidates",
         fake_generate_layouts,
     )
-    monkeypatch.setattr("clipforge.pipeline.workflows.render_layout", fake_render)
+    monkeypatch.setattr("clipforge.pipeline.rendering.render_layout", fake_render)
 
     process_clip(TWITCH_CLIP_URL, force=True, config=config)
 
@@ -1723,27 +1734,25 @@ def test_process_clip_rerender_reuses_source_and_captions_without_transcription(
         output.write_text("fresh", encoding="utf-8")
         return output
 
-    monkeypatch.setattr("clipforge.pipeline.workflows.download_twitch_clip", fail_download)
+    monkeypatch.setattr("clipforge.pipeline.artifact_reuse.download_twitch_clip", fail_download)
     monkeypatch.setattr(
-        "clipforge.pipeline.workflows.generate_caption_metadata",
+        "clipforge.pipeline.artifact_reuse.generate_caption_metadata",
         fail_generate_caption_metadata,
     )
-    monkeypatch.setattr("clipforge.pipeline.workflows.sample_frames", fake_sample_frames)
-    monkeypatch.setattr("clipforge.pipeline.workflows.analyze_overlay", fake_analyze_overlay)
+    monkeypatch.setattr("clipforge.pipeline.artifact_reuse.sample_frames", fake_sample_frames)
+    monkeypatch.setattr("clipforge.pipeline.artifact_reuse.analyze_overlay", fake_analyze_overlay)
     monkeypatch.setattr(
-        "clipforge.pipeline.workflows.generate_detected_layout_candidates",
+        "clipforge.pipeline.artifact_reuse.generate_detected_layout_candidates",
         fake_generate_layouts,
     )
-    monkeypatch.setattr("clipforge.pipeline.workflows.render_layout", fake_render)
+    monkeypatch.setattr("clipforge.pipeline.rendering.render_layout", fake_render)
 
     metadata_path = process_clip(TWITCH_CLIP_URL, rerender=True, config=config)
 
     metadata = json.loads(metadata_path.read_text(encoding="utf-8"))
     output = capsys.readouterr().out
     assert metadata["caption_metadata_path"] == str(caption_path)
-    assert "rerender: regenerating visual artifacts" in output
-    assert f"source: reusing existing {source_path}" in output
-    assert f"captions: reusing existing {caption_path}" in output
+    assert output.splitlines() == [f"Slug: {TWITCH_CLIP_SLUG}"]
     assert events == [
         "frames",
         "overlay",
@@ -1772,7 +1781,7 @@ def test_process_clip_rerender_preserves_explicit_channel(
     rendered_paths: list[Path] = []
 
     monkeypatch.setattr(
-        "clipforge.pipeline.workflows.download_twitch_clip",
+        "clipforge.pipeline.artifact_reuse.download_twitch_clip",
         lambda *args, **kwargs: (_ for _ in ()).throw(
             AssertionError("Rerender should reuse the existing source video.")
         ),
@@ -1793,7 +1802,7 @@ def test_process_clip_rerender_preserves_explicit_channel(
         output.write_text("fresh", encoding="utf-8")
         return output
 
-    monkeypatch.setattr("clipforge.pipeline.workflows.render_layout", fake_render)
+    monkeypatch.setattr("clipforge.pipeline.rendering.render_layout", fake_render)
 
     metadata_path = process_clip(
         TWITCH_CLIP_URL,
@@ -1824,9 +1833,9 @@ def test_process_clip_rerender_fails_when_captions_are_missing(
     def fail_download(*args, **kwargs) -> DownloadResult:
         raise AssertionError("Rerender should fail on missing captions before download.")
 
-    monkeypatch.setattr("clipforge.pipeline.workflows.download_twitch_clip", fail_download)
+    monkeypatch.setattr("clipforge.pipeline.artifact_reuse.download_twitch_clip", fail_download)
     monkeypatch.setattr(
-        "clipforge.pipeline.workflows.generate_caption_metadata",
+        "clipforge.pipeline.artifact_reuse.generate_caption_metadata",
         fail_generate_caption_metadata,
     )
 
@@ -1845,11 +1854,11 @@ def test_process_clip_surfaces_failing_stage(
     source_path = tmp_path / "downloads" / TWITCH_CLIP_SLUG / "ytdlp" / f"{TWITCH_CLIP_SLUG}.mp4"
 
     monkeypatch.setattr(
-        "clipforge.pipeline.workflows.download_twitch_clip",
+        "clipforge.pipeline.artifact_reuse.download_twitch_clip",
         lambda *args, **kwargs: DownloadResult(source_path=source_path, backend="ytdlp"),
     )
     monkeypatch.setattr(
-        "clipforge.pipeline.workflows.sample_frames",
+        "clipforge.pipeline.artifact_reuse.sample_frames",
         lambda *args, **kwargs: (_ for _ in ()).throw(RuntimeError("ffmpeg exploded")),
     )
 
@@ -1897,7 +1906,7 @@ def test_render_candidate_accepts_layout_file_path(
     )
 
     monkeypatch.setattr(
-        "clipforge.pipeline.workflows.render_layout",
+        "clipforge.pipeline.rendering.render_layout",
         lambda source, output, layout: output,
     )
 

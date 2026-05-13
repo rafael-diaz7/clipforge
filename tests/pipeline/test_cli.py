@@ -1430,14 +1430,14 @@ def test_main_reprocesses_rendered_clip_reuses_existing_captions_by_default(
 
     monkeypatch.setattr("clipforge.pipeline.cli.load_config", lambda: config)
     monkeypatch.setattr(
-        "clipforge.pipeline.workflows.download_twitch_clip",
+        "clipforge.pipeline.artifact_reuse.download_twitch_clip",
         fake_download_twitch_clip,
     )
     monkeypatch.setattr(
-        "clipforge.pipeline.workflows.generate_caption_metadata",
+        "clipforge.pipeline.artifact_reuse.generate_caption_metadata",
         fail_generate_caption_metadata,
     )
-    monkeypatch.setattr("clipforge.pipeline.workflows.render_layout", fake_render)
+    monkeypatch.setattr("clipforge.pipeline.rendering.render_layout", fake_render)
 
     exit_code = main(
         [
@@ -1453,7 +1453,10 @@ def test_main_reprocesses_rendered_clip_reuses_existing_captions_by_default(
 
     output = capsys.readouterr().out
     assert exit_code == 0
-    assert f"captions: reusing existing {caption_path}" in output
+    assert output.splitlines() == [
+        "Slug: clip-rendered",
+        f"processed: clip-rendered: {tmp_path / 'metadata' / 'clip-rendered.json'}",
+    ]
     assert events == [
         "download",
         "render:center_gameplay",
