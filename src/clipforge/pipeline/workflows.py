@@ -6,7 +6,6 @@ import json
 import logging
 from dataclasses import asdict, replace
 from pathlib import Path
-from typing import Any
 
 from clipforge.core.config import ClipforgeConfig, load_config
 from clipforge.utils.paths import (
@@ -37,7 +36,6 @@ from clipforge.media.layouts import (
     load_example_layouts,
     load_example_layout,
     load_layout,
-    parse_layout,
 )
 from clipforge.media.overlay import analyze_overlay
 from clipforge.media.render import (
@@ -52,6 +50,13 @@ from clipforge.media.render_settings import (
     FFmpegRenderSettings,
 )
 from clipforge.pipeline.artifacts import write_metadata
+from clipforge.pipeline.metadata import (
+    PipelineMetadataError,
+    metadata_layout,
+    metadata_optional_path,
+    metadata_source_path,
+    read_pipeline_metadata,
+)
 from clipforge.pipeline.state_sync import record_rendered_clip
 from clipforge.storage.paths import backend_download_dir, render_path, render_preview_path
 from clipforge.storage.state import get_clip
@@ -907,11 +912,14 @@ def render_selected_layout_from_metadata(
     """Render one selected layout from pipeline metadata with final settings."""
 
     config = config or load_config()
-    payload = _read_pipeline_metadata(metadata_path)
-    source_path = _metadata_source_path(payload, metadata_path=metadata_path)
-    layout = _metadata_layout(payload, selected_layout=selected_layout)
+    try:
+        payload = read_pipeline_metadata(metadata_path)
+        source_path = metadata_source_path(payload, metadata_path=metadata_path)
+        layout = metadata_layout(payload, selected_layout=selected_layout)
+    except PipelineMetadataError as exc:
+        raise ClipProcessingError(str(exc)) from exc
     caption_metadata = _load_optional_caption_metadata(
-        _metadata_optional_path(payload, "caption_metadata_path")
+        metadata_optional_path(payload, "caption_metadata_path")
     )
     caption_style = _caption_style_from_config(config)
     ensure_directory(output_path.parent)
@@ -1026,45 +1034,3 @@ def _render_settings_payload(
     render_settings: FFmpegRenderSettings,
 ) -> dict[str, object]:
     return asdict(render_settings.normalized())
-
-
-def _read_pipeline_metadata(metadata_path: Path) -> dict[str, Any]:
-    try:
-        payload = json.loads(metadata_path.read_text(encoding="utf-8"))
-    except OSError as exc:
-        raise ClipProcessingError(
-            f"Could not read pipeline metadata {metadata_path}: {exc}"
-        ) from exc
-    except json.JSONDecodeError as exc:
-        raise ClipProcessingError(f"Pipeline metadata is not valid JSON: {metadata_path}") from exc
-    if not isinstance(payload, dict):
-        raise ClipProcessingError(f"Pipeline metadata must be a JSON object: {metadata_path}")
-    return payload
-
-
-def _metadata_source_path(payload: dict[str, Any], *, metadata_path: Path) -> Path:
-    value = payload.get("source_path")
-    if not isinstance(value, str) or not value:
-        raise ClipProcessingError(f"Pipeline metadata is missing source_path: {metadata_path}")
-    return Path(value)
-
-
-def _metadata_layout(payload: dict[str, Any], *, selected_layout: str) -> Layout:
-    layouts = payload.get("layouts")
-    if not isinstance(layouts, list):
-        raise ClipProcessingError("Pipeline metadata is missing layouts.")
-    for layout_payload in layouts:
-        if not isinstance(layout_payload, dict):
-            continue
-        if layout_payload.get("name") == selected_layout:
-            return parse_layout(layout_payload)
-    raise ClipProcessingError(
-        f"Pipeline metadata does not contain selected layout: {selected_layout}."
-    )
-
-
-def _metadata_optional_path(payload: dict[str, Any], key: str) -> Path | None:
-    value = payload.get(key)
-    if not isinstance(value, str) or not value:
-        return None
-    return Path(value)

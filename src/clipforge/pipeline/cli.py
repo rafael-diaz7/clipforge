@@ -15,10 +15,14 @@ from clipforge.integrations.twitch import list_channel_clips, twitch_channel_log
 from clipforge.media.captions import generate_caption_metadata
 from clipforge.media.layouts import generate_detected_layout_candidates
 from clipforge.media.overlay import analyze_overlay, write_overlay_debug_images
-from clipforge.pipeline.artifacts import write_clip_discovery_export, write_metadata
+from clipforge.pipeline.artifacts import write_clip_discovery_export
+from clipforge.pipeline.processing import (
+    SavedClipProcessingError,
+    process_saved_clips,
+    select_saved_clips_for_processing,
+)
 from clipforge.pipeline.state_sync import (
     record_discovered_clips,
-    record_rendered_clip,
     rerank_persisted_clips,
 )
 from clipforge.pipeline.workflows import (
@@ -30,10 +34,8 @@ from clipforge.pipeline.workflows import (
 )
 from clipforge.pipeline.review import review_streamer_clips
 from clipforge.storage.state import (
-    UNPROCESSED_STATUSES,
     get_clip,
     get_unprocessed_clips,
-    mark_clip_failed,
     reset_all_clips_to_discovered,
     reset_clip_to_discovered,
 )
@@ -616,55 +618,37 @@ def _handle_clips_pending_command(args: argparse.Namespace) -> int:
 def _handle_clips_process_command(args: argparse.Namespace) -> int:
     config = load_config()
     _reject_rerender_caption_generation_conflict(args)
-    if args.top is not None:
-        if args.force:
-            raise CLIError("--force can only be used with --clip-id.")
-        if args.rerender:
-            raise CLIError("--rerender can only be used with --clip-id.")
-        clips = get_unprocessed_clips(db_path=config.state_db_path, limit=args.top)
-        if not clips:
-            raise CLIError("No unprocessed clips found.")
-    else:
-        clip = get_clip(args.clip_id, db_path=config.state_db_path)
-        if clip is None:
-            raise CLIError(f"Clip not found: {args.clip_id}.")
-        if clip.status == "rendered" and not (args.force or args.rerender):
-            raise CLIError(
-                f"Clip is already rendered: {args.clip_id}. "
-                "Re-run with --force to reprocess it or --rerender to rebuild "
-                "visual artifacts while reusing captions."
-            )
-        if clip.status not in UNPROCESSED_STATUSES and not (
-            clip.status == "rendered" and (args.force or args.rerender)
-        ):
-            raise CLIError(f"Clip is not unprocessed: {args.clip_id}.")
-        clips = (clip,)
+    try:
+        clips = select_saved_clips_for_processing(
+            top=args.top,
+            clip_id=args.clip_id,
+            force=args.force,
+            rerender=args.rerender,
+            config=config,
+        )
+    except SavedClipProcessingError as exc:
+        raise CLIError(str(exc)) from exc
 
+    process_kwargs = _process_clip_kwargs(
+        args,
+        config=config,
+        include_force=True,
+        include_rerender=True,
+    )
+    results = process_saved_clips(
+        clips,
+        config=config,
+        process_kwargs=process_kwargs,
+        continue_on_error=args.continue_on_error,
+        process_clip_fn=process_clip,
+    )
     failures = 0
-    for clip in clips:
-        try:
-            process_kwargs = _process_clip_kwargs(
-                args,
-                config=config,
-                include_force=True,
-                include_rerender=True,
-            )
-            if clip.status == "needs_rerender":
-                process_kwargs["force"] = True
-            metadata_path = process_clip(clip.url, **process_kwargs)
-        except Exception as exc:
-            failures += 1
-            error_message = str(exc)
-            mark_clip_failed(
-                clip.clip_id,
-                error_message=error_message,
-                db_path=config.state_db_path,
-            )
-            print(f"failed: {clip.clip_id}: {error_message}")
-            if not args.continue_on_error:
-                return 1
+    for result in results:
+        if result.succeeded:
+            print(f"processed: {result.clip.clip_id}: {result.metadata_path}")
         else:
-            print(f"processed: {clip.clip_id}: {metadata_path}")
+            failures += 1
+            print(f"failed: {result.clip.clip_id}: {result.error_message}")
 
     return 1 if failures else 0
 

@@ -1,7 +1,6 @@
 from __future__ import annotations
 
 import json
-import sqlite3
 from pathlib import Path
 
 import pytest
@@ -393,17 +392,17 @@ def test_review_rerenders_selected_layout_when_review_settings_differ(
     assert exported[0].read_bytes() == b"final-settings"
 
 
-def test_review_excludes_exported_and_posted_clips(
+def test_review_excludes_exported_clips(
     monkeypatch,
     tmp_path: Path,
 ) -> None:
     config = _config(tmp_path)
-    for clip_id in ("clip-exported", "clip-posted", "clip-eligible"):
+    for clip_id in ("clip-exported", "clip-eligible"):
         upsert_discovered_clip(
             clip_id=clip_id,
             url=f"https://clips.twitch.tv/{clip_id}",
             streamer_login="example",
-            rank_score=1.0 if clip_id != "clip-eligible" else 0.1,
+            rank_score=1.0 if clip_id == "clip-exported" else 0.1,
             db_path=config.state_db_path,
         )
     mark_clip_exported(
@@ -413,8 +412,6 @@ def test_review_excludes_exported_and_posted_clips(
         export_path=tmp_path / "exports" / "clip-exported.mp4",
         db_path=config.state_db_path,
     )
-    with sqlite3.connect(config.state_db_path) as connection:
-        connection.execute("UPDATE clips SET status = 'posted' WHERE clip_id = ?", ("clip-posted",))
 
     calls: list[str] = []
 
@@ -422,7 +419,6 @@ def test_review_excludes_exported_and_posted_clips(
         "clipforge.pipeline.review.list_channel_clips",
         lambda *args, **kwargs: (
             _clip("clip-exported", views=1000),
-            _clip("clip-posted", views=900),
             _clip("clip-eligible", views=10),
         ),
     )

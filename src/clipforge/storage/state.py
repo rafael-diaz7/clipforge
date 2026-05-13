@@ -23,10 +23,8 @@ CLIP_STATUSES = frozenset(
         "downloaded",
         "rendered",
         "needs_rerender",
-        "approved",
         "selected",
         "exported",
-        "posted",
         "skipped",
         "failed",
     }
@@ -35,10 +33,8 @@ UNPROCESSED_STATUSES = ("discovered", "queued", "needs_rerender")
 REVIEW_ELIGIBLE_STATUSES = ("rendered",)
 REVIEW_EXCLUDED_STATUSES = (
     "needs_rerender",
-    "approved",
     "selected",
     "exported",
-    "posted",
     "skipped",
     "failed",
 )
@@ -71,6 +67,19 @@ _RANKED_CLIPS_ORDER_SQL = """
         ORDER BY rank_score IS NULL ASC, rank_score DESC, discovered_at ASC, clip_id ASC
     """
 
+_RESET_TO_DISCOVERED_SQL = """
+              status = 'discovered',
+              download_path = NULL,
+              metadata_path = NULL,
+              render_dir = NULL,
+              skip_reason = NULL,
+              error_message = NULL,
+              selected_render_layout = NULL,
+              selected_render_path = NULL,
+              export_path = NULL,
+              exported_at = NULL
+"""
+
 _CREATE_CLIPS_TABLE_SQL = """
 CREATE TABLE IF NOT EXISTS clips (
   clip_id TEXT PRIMARY KEY,
@@ -91,10 +100,8 @@ CREATE TABLE IF NOT EXISTS clips (
       'downloaded',
       'rendered',
       'needs_rerender',
-      'approved',
       'selected',
       'exported',
-      'posted',
       'skipped',
       'failed'
     )),
@@ -571,19 +578,10 @@ def reset_clip_to_discovered(
     resolved_path = init_db(db_path)
     with _connect(resolved_path) as connection:
         cursor = connection.execute(
-            """
+            f"""
             UPDATE clips
             SET
-              status = 'discovered',
-              download_path = NULL,
-              metadata_path = NULL,
-              render_dir = NULL,
-              skip_reason = NULL,
-              error_message = NULL,
-              selected_render_layout = NULL,
-              selected_render_path = NULL,
-              export_path = NULL,
-              exported_at = NULL
+{_RESET_TO_DISCOVERED_SQL}
             WHERE clip_id = ?
             """,
             (clip_id,),
@@ -606,19 +604,10 @@ def reset_all_clips_to_discovered(
     resolved_path = init_db(db_path)
     with _connect(resolved_path) as connection:
         cursor = connection.execute(
-            """
+            f"""
             UPDATE clips
             SET
-              status = 'discovered',
-              download_path = NULL,
-              metadata_path = NULL,
-              render_dir = NULL,
-              skip_reason = NULL,
-              error_message = NULL,
-              selected_render_layout = NULL,
-              selected_render_path = NULL,
-              export_path = NULL,
-              exported_at = NULL
+{_RESET_TO_DISCOVERED_SQL}
             """
         )
         return cursor.rowcount
@@ -717,6 +706,8 @@ def _migrate_clips_table(connection: sqlite3.Connection) -> None:
         "'exported'" in table_sql
         and "'selected'" in table_sql
         and "'needs_rerender'" in table_sql
+        and "'approved'" not in table_sql
+        and "'posted'" not in table_sql
     ):
         return
 
