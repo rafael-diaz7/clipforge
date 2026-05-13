@@ -1088,6 +1088,88 @@ def test_process_clip_marks_existing_state_as_rendered(
     ]
 
 
+def test_process_clip_explicit_channel_scopes_render_outputs(
+    tmp_path: Path,
+    monkeypatch,
+) -> None:
+    config = _config(tmp_path)
+    upsert_discovered_clip(
+        clip_id=TWITCH_CLIP_SLUG,
+        url=TWITCH_CLIP_URL,
+        streamer_login="stored_channel",
+        db_path=config.state_db_path,
+    )
+    source_path = tmp_path / "downloads" / TWITCH_CLIP_SLUG / "clipr" / f"{TWITCH_CLIP_SLUG}.mp4"
+
+    monkeypatch.setattr(
+        "clipforge.pipeline.workflows.download_twitch_clip",
+        lambda *args, **kwargs: DownloadResult(source_path=source_path, backend="clipr"),
+    )
+
+    def fake_render(source: Path, output: Path, layout) -> Path:
+        output.parent.mkdir(parents=True, exist_ok=True)
+        output.write_text(layout.name, encoding="utf-8")
+        return output
+
+    monkeypatch.setattr("clipforge.pipeline.workflows.render_layout", fake_render)
+
+    metadata_path = process_clip(
+        TWITCH_CLIP_URL,
+        channel="dima_wallhacks",
+        use_generated_layouts=False,
+        config=config,
+    )
+
+    metadata = json.loads(metadata_path.read_text(encoding="utf-8"))
+    assert [output["path"] for output in metadata["outputs"]] == [
+        str(
+            tmp_path
+            / "renders"
+            / "dima_wallhacks"
+            / TWITCH_CLIP_SLUG
+            / "clipr"
+            / "center_gameplay.mp4"
+        ),
+        str(
+            tmp_path
+            / "renders"
+            / "dima_wallhacks"
+            / TWITCH_CLIP_SLUG
+            / "clipr"
+            / "fullscreen_downscaled_blur_bg.mp4"
+        ),
+        str(
+            tmp_path
+            / "renders"
+            / "dima_wallhacks"
+            / TWITCH_CLIP_SLUG
+            / "clipr"
+            / "facecam_focus.mp4"
+        ),
+        str(
+            tmp_path
+            / "renders"
+            / "dima_wallhacks"
+            / TWITCH_CLIP_SLUG
+            / "clipr"
+            / "hybrid.mp4"
+        ),
+        str(
+            tmp_path
+            / "renders"
+            / "dima_wallhacks"
+            / TWITCH_CLIP_SLUG
+            / "clipr"
+            / "hybrid_full_game_bottom.mp4"
+        ),
+    ]
+    state = get_clip(TWITCH_CLIP_SLUG, db_path=config.state_db_path)
+    assert state is not None
+    assert state.render_dir == str(
+        tmp_path / "renders" / "dima_wallhacks" / TWITCH_CLIP_SLUG / "clipr"
+    )
+
+
 def test_process_clip_applies_streamer_watermark_from_env(
     tmp_path: Path,
     monkeypatch,
@@ -1136,6 +1218,52 @@ def test_process_clip_applies_streamer_watermark_from_env(
     assert all(watermark.path == watermark_path for watermark in watermarks)
     assert all(watermark.native_width == 300 for watermark in watermarks)
     assert all(watermark.native_height == 80 for watermark in watermarks)
+
+
+def test_process_clip_explicit_channel_applies_streamer_watermark_from_env(
+    tmp_path: Path,
+    monkeypatch,
+) -> None:
+    config = _config(tmp_path)
+    watermark_path = _write_png_header(
+        tmp_path / "assets" / "dima_watermark.png",
+        width=640,
+        height=180,
+    )
+    monkeypatch.setenv("DIMA_WALLHACKS_WATERMARK", "assets/dima_watermark.png")
+    source_path = tmp_path / "downloads" / TWITCH_CLIP_SLUG / "clipr" / f"{TWITCH_CLIP_SLUG}.mp4"
+    watermarks: list[Watermark] = []
+
+    monkeypatch.setattr(
+        "clipforge.pipeline.workflows.download_twitch_clip",
+        lambda *args, **kwargs: DownloadResult(source_path=source_path, backend="clipr"),
+    )
+
+    def fake_render(
+        source: Path,
+        output: Path,
+        layout,
+        *,
+        watermark: Watermark,
+    ) -> Path:
+        watermarks.append(watermark)
+        output.parent.mkdir(parents=True, exist_ok=True)
+        output.write_text(layout.name, encoding="utf-8")
+        return output
+
+    monkeypatch.setattr("clipforge.pipeline.workflows.render_layout", fake_render)
+
+    process_clip(
+        TWITCH_CLIP_URL,
+        channel="dima_wallhacks",
+        use_generated_layouts=False,
+        config=config,
+    )
+
+    assert len(watermarks) == len(STATIC_LAYOUT_NAMES)
+    assert all(watermark.path == watermark_path for watermark in watermarks)
+    assert all(watermark.native_width == 640 for watermark in watermarks)
+    assert all(watermark.native_height == 180 for watermark in watermarks)
 
 
 def test_process_clip_keeps_render_calls_unchanged_without_watermark_env(
@@ -1595,6 +1723,62 @@ def test_process_clip_rerender_reuses_source_and_captions_without_transcription(
         "render:detected_hybrid",
         "render:detected_hybrid_full_game_bottom",
     ]
+
+
+def test_process_clip_rerender_preserves_explicit_channel(
+    tmp_path: Path,
+    monkeypatch,
+) -> None:
+    config = _config(tmp_path)
+    source_path = tmp_path / "downloads" / TWITCH_CLIP_SLUG / "ytdlp" / f"{TWITCH_CLIP_SLUG}.mp4"
+    source_path.parent.mkdir(parents=True, exist_ok=True)
+    source_path.write_bytes(b"video")
+    save_captions(
+        clip_id=TWITCH_CLIP_SLUG,
+        segments=(CaptionSegment(start_time=0, end_time=1, text="existing"),),
+        config=config,
+    )
+    rendered_paths: list[Path] = []
+
+    monkeypatch.setattr(
+        "clipforge.pipeline.workflows.download_twitch_clip",
+        lambda *args, **kwargs: (_ for _ in ()).throw(
+            AssertionError("Rerender should reuse the existing source video.")
+        ),
+    )
+
+    def fake_render(
+        source: Path,
+        output: Path,
+        layout,
+        *,
+        caption_metadata: CaptionMetadata,
+        caption_renderer_backend: str,
+        ass_temp_dir: Path,
+    ) -> Path:
+        del source, layout, caption_metadata, caption_renderer_backend, ass_temp_dir
+        rendered_paths.append(output)
+        output.parent.mkdir(parents=True, exist_ok=True)
+        output.write_text("fresh", encoding="utf-8")
+        return output
+
+    monkeypatch.setattr("clipforge.pipeline.workflows.render_layout", fake_render)
+
+    metadata_path = process_clip(
+        TWITCH_CLIP_URL,
+        rerender=True,
+        channel="dima_wallhacks",
+        use_generated_layouts=False,
+        config=config,
+    )
+
+    metadata = json.loads(metadata_path.read_text(encoding="utf-8"))
+    expected_dir = tmp_path / "renders" / "dima_wallhacks" / TWITCH_CLIP_SLUG / "ytdlp"
+    assert rendered_paths[0] == expected_dir / "center_gameplay.mp4"
+    assert Path(metadata["outputs"][0]["path"]) == expected_dir / "center_gameplay.mp4"
+    state = get_clip(TWITCH_CLIP_SLUG, db_path=config.state_db_path)
+    assert state is not None
+    assert state.render_dir == str(expected_dir)
 
 
 def test_process_clip_rerender_fails_when_captions_are_missing(

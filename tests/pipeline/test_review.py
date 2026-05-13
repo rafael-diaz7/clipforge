@@ -721,6 +721,7 @@ def test_review_rerender_includes_clip_that_needs_rerender(
     state = get_clip("clip-rerender", db_path=config.state_db_path)
     assert calls[0]["url"] == "https://clips.twitch.tv/clip-rerender"
     assert calls[0]["rerender"] is True
+    assert calls[0]["channel"] == "example"
     assert state is not None
     assert state.status == "exported"
 
@@ -754,4 +755,5 @@ def test_review_rerender_passes_visual_only_flag(
 
     assert calls[0]["url"] == "https://clips.twitch.tv/clip-1"
     assert calls[0]["rerender"] is True
+    assert calls[0]["channel"] == "example"
     assert calls[0]["config"] == config

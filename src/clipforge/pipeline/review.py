@@ -107,7 +107,11 @@ def review_streamer_clips(
     exported_paths: list[Path] = []
     for clip in selected_clips:
         output_fn(_format_clip_header(clip))
-        process_kwargs = {"config": config, "use_generated_layouts": use_generated_layouts}
+        process_kwargs = {
+            "channel": streamer_login,
+            "config": config,
+            "use_generated_layouts": use_generated_layouts,
+        }
         if rerender:
             process_kwargs["rerender"] = True
         if generate_captions is not None:

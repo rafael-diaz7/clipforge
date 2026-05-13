@@ -176,6 +176,7 @@ def process_clip(
     force_captions: bool = False,
     force: bool = False,
     rerender: bool = False,
+    channel: str | None = None,
     use_generated_layouts: bool = True,
     config: ClipforgeConfig | None = None,
 ) -> Path:
@@ -184,7 +185,8 @@ def process_clip(
     config = config or load_config()
     clip_id = twitch_clip_slug_from_url(twitch_clip_url)
     clip_state = get_clip(clip_id, db_path=config.state_db_path)
-    channel = clip_state.streamer_login if clip_state is not None else None
+    state_channel = clip_state.streamer_login if clip_state is not None else None
+    channel = channel or state_channel
     force_visuals = force or rerender
     LOGGER.info("Starting clip pipeline for clip %s.", clip_id)
     caption_metadata_path = None
