@@ -26,6 +26,7 @@ from clipforge.media.captions import (
     generate_caption_metadata,
     load_caption_metadata,
 )
+from clipforge.media.caption_rendering import CaptionStyle, CaptionVerticalSafeArea
 from clipforge.media.analyze import FRAME_SAMPLE_EXTENSION, sample_frames, sample_timestamps
 from clipforge.media.layouts import (
     DEFAULT_LAYOUT_NAMES,
@@ -39,8 +40,6 @@ from clipforge.media.layouts import (
 )
 from clipforge.media.overlay import analyze_overlay
 from clipforge.media.render import (
-    CaptionStyle,
-    CaptionVerticalSafeArea,
     Watermark,
     load_streamer_watermark,
     render_layout,

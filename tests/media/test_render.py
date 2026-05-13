@@ -6,20 +6,22 @@ from pathlib import Path
 import pytest
 
 from clipforge.media.captions import CaptionMetadata, CaptionSegment, CaptionWord
-from clipforge.media.layouts import Layout, LayoutRegion, NormalizedRect, OutputSize
-from clipforge.media.render import (
+from clipforge.media.caption_rendering import (
     CaptionAnimationPreset,
     CaptionCue,
     CaptionStyle,
     CaptionVerticalSafeArea,
+    _caption_chunk_duration,
+    _caption_cues,
+    generate_ass_subtitle,
+)
+from clipforge.media.layouts import Layout, LayoutRegion, NormalizedRect, OutputSize
+from clipforge.media.render import (
     FFmpegCommandError,
     RenderError,
     Watermark,
-    _caption_chunk_duration,
-    _caption_cues,
     build_ffmpeg_command,
     build_filter_complex,
-    generate_ass_subtitle,
     load_streamer_watermark,
     rect_to_pixels,
     render_layout,

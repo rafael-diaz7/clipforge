@@ -7,10 +7,11 @@ from pathlib import Path
 import pytest
 
 from clipforge.core.config import ClipforgeConfig, EXAMPLE_LAYOUTS_DIR
-from clipforge.media.download import DownloadResult
 from clipforge.media.captions import CaptionMetadata, CaptionSegment, save_captions
+from clipforge.media.caption_rendering import CaptionStyle
+from clipforge.media.download import DownloadResult
 from clipforge.media.layouts import load_example_layout
-from clipforge.media.render import CaptionStyle, Watermark
+from clipforge.media.render import Watermark
 from clipforge.media.render_settings import FFmpegRenderSettings
 from clipforge.pipeline.workflows import (
     ClipProcessingError,

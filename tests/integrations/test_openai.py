@@ -17,8 +17,12 @@ from clipforge.media.captions import (
     CaptionTranscriptionError,
     CaptionWord,
 )
+from clipforge.media.caption_rendering import (
+    CaptionStyle,
+    _caption_cues,
+    generate_ass_subtitle,
+)
 from clipforge.media.layouts import OutputSize
-from clipforge.media.render import CaptionStyle, _caption_cues, generate_ass_subtitle
 from tests.constants import TWITCH_CLIP_SLUG
 
 
