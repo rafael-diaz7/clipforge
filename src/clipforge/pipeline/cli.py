@@ -34,6 +34,7 @@ from clipforge.pipeline.workflows import (
     resolve_download_url,
 )
 from clipforge.pipeline.review import review_streamer_clips
+from clipforge.server.http import serve_review_app
 from clipforge.storage.state import (
     get_clip,
     get_unprocessed_clips,
@@ -400,6 +401,27 @@ def build_parser() -> argparse.ArgumentParser:
         help="Ignore generated analysis layouts and render static layouts.",
     )
 
+    review_parser = subparsers.add_parser(
+        "review",
+        help="Review clips already prepared into the local review queue.",
+    )
+    review_subparsers = review_parser.add_subparsers(dest="review_command")
+    review_server_parser = review_subparsers.add_parser(
+        "server",
+        help="Start a local web server for reviewing prepared rendered clips.",
+    )
+    review_server_parser.add_argument(
+        "--host",
+        default="127.0.0.1",
+        help="Host interface to bind. Defaults to 127.0.0.1.",
+    )
+    review_server_parser.add_argument(
+        "--port",
+        type=int,
+        default=8080,
+        help="TCP port to bind. Defaults to 8080.",
+    )
+
     analyze_parser = subparsers.add_parser(
         "analyze",
         help="Create lightweight local analysis artifacts.",
@@ -525,6 +547,9 @@ def main(argv: Sequence[str] | None = None) -> int:
 
         if args.command == "clips":
             return _handle_clips_command(args)
+
+        if args.command == "review":
+            return _handle_review_command(args)
 
         if args.command == "analyze":
             return _handle_analyze_command(args)
@@ -791,6 +816,29 @@ def _handle_clips_prepare_command(args: argparse.Namespace) -> int:
         for failed in result.failed:
             print(f"{failed.clip_id}: {failed.error_message}")
     return 1 if result.failed else 0
+
+
+def _handle_review_command(args: argparse.Namespace) -> int:
+    if args.review_command == "server":
+        return _handle_review_server_command(args)
+    raise CLIError("review requires a subcommand.")
+
+
+def _handle_review_server_command(args: argparse.Namespace) -> int:
+    if args.port < 1 or args.port > 65535:
+        raise CLIError("--port must be between 1 and 65535.")
+
+    config = load_config()
+    display_host = "127.0.0.1" if args.host == "0.0.0.0" else args.host
+    print(f"Clipforge review server: http://{display_host}:{args.port}")
+    if args.host == "0.0.0.0":
+        print(
+            "Bound to 0.0.0.0. From your phone, open "
+            f"http://<tailscale-or-lan-ip>:{args.port}"
+        )
+    print("Reviews prepared rendered clips only. Fill the queue with clips prepare.")
+    serve_review_app(host=args.host, port=args.port, config=config)
+    return 0
 
 
 def _format_state_clip_table(clips, *, show_url: bool = False) -> tuple[str, ...]:

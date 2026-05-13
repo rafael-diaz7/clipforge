@@ -1791,6 +1791,34 @@ def test_main_routes_clips_review_rerender_flag(
     assert calls[0]["clip_ids"] == ["clip-1"]
 
 
+def test_main_routes_review_server_command(monkeypatch, capsys, tmp_path: Path) -> None:
+    config = ClipforgeConfig(state_db_path=tmp_path / "state" / "clipforge.sqlite")
+    calls: list[dict[str, object]] = []
+
+    def fake_serve_review_app(**kwargs) -> None:
+        calls.append(kwargs)
+
+    monkeypatch.setattr("clipforge.pipeline.cli.load_config", lambda: config)
+    monkeypatch.setattr("clipforge.pipeline.cli.serve_review_app", fake_serve_review_app)
+
+    exit_code = main(
+        [
+            "review",
+            "server",
+            "--host",
+            "0.0.0.0",
+            "--port",
+            "8080",
+        ]
+    )
+
+    assert exit_code == 0
+    assert calls == [{"host": "0.0.0.0", "port": 8080, "config": config}]
+    output = capsys.readouterr().out
+    assert "Clipforge review server: http://127.0.0.1:8080" in output
+    assert "http://<tailscale-or-lan-ip>:8080" in output
+
+
 def test_main_rejects_rerender_with_caption_generation(
     monkeypatch,
     capsys,
