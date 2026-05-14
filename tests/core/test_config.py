@@ -3,6 +3,7 @@ from pathlib import Path
 import pytest
 
 from clipforge.core.config import (
+    ClipDiscoveryWindow,
     ClipforgeConfig,
     ConfigError,
     DEFAULT_DOWNLOADER_BACKEND,
@@ -304,6 +305,41 @@ def test_load_config_uses_env_for_review_output_width(
 
     assert config.review_output_width == 720
     assert config.review_resolution_for(width=1080, height=1920) == (720, 1280)
+
+
+def test_load_config_defaults_discovery_windows(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    monkeypatch.delenv("CLIPFORGE_DISCOVERY_WINDOWS", raising=False)
+
+    config = load_config(load_dotenv_file=False)
+
+    assert config.discovery_windows == (
+        ClipDiscoveryWindow(days=7, limit=100),
+        ClipDiscoveryWindow(days=31, limit=100),
+    )
+
+
+def test_load_config_uses_env_for_discovery_windows(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    monkeypatch.setenv("CLIPFORGE_DISCOVERY_WINDOWS", "3:12,14:25")
+
+    config = load_config(load_dotenv_file=False)
+
+    assert config.discovery_windows == (
+        ClipDiscoveryWindow(days=3, limit=12),
+        ClipDiscoveryWindow(days=14, limit=25),
+    )
+
+
+def test_load_config_rejects_invalid_discovery_windows(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    monkeypatch.setenv("CLIPFORGE_DISCOVERY_WINDOWS", "7:101")
+
+    with pytest.raises(ConfigError, match="Discovery window limit"):
+        load_config(load_dotenv_file=False)
 
 
 def test_load_config_rejects_invalid_review_output_width(

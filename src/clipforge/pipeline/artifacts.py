@@ -24,6 +24,7 @@ def write_clip_discovery_export(
     ended_at: str | None,
     config: ClipforgeConfig,
     output_path: Path | None = None,
+    discovery_windows: Sequence[Any] | None = None,
 ) -> Path:
     """Persist discovered Twitch clips in a queue-friendly JSON shape."""
 
@@ -46,6 +47,15 @@ def write_clip_discovery_export(
         },
         "clips": [asdict(clip) for clip in clips],
     }
+    if discovery_windows is not None:
+        payload["filters"]["windows"] = [
+            {
+                "limit": window.limit,
+                "started_at": window.started_at,
+                "ended_at": window.ended_at,
+            }
+            for window in discovery_windows
+        ]
     export_path.write_text(json.dumps(payload, indent=2), encoding="utf-8")
     return export_path
 

@@ -106,7 +106,11 @@ def test_prepare_discovers_upserts_reranks_and_processes_top_ranked(
     )
 
     prepared_state = get_clip("clip-high", db_path=config.state_db_path)
-    assert events == ["discover:example:10", "process:clip-high"]
+    assert events == [
+        "discover:example:100",
+        "discover:example:100",
+        "process:clip-high",
+    ]
     assert result.discovered_count == 2
     assert result.reranked_count == 2
     assert result.selected_count == 1

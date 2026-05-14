@@ -42,12 +42,28 @@ SUPPORTED_CAPTION_RENDERER_BACKENDS = frozenset(
 )
 ASS_TEMP_DIR = DATA_DIR / "metadata" / "ass"
 DEFAULT_CAPTION_FONT_FALLBACKS = ("Arial",)
+MAX_DISCOVERY_WINDOW_LIMIT = 100
+DEFAULT_DISCOVERY_WINDOWS_SPEC = "7:100,31:100"
 _TRUE_ENV_VALUES = frozenset({"1", "true", "yes", "on"})
 _FALSE_ENV_VALUES = frozenset({"0", "false", "no", "off"})
 
 
 class ConfigError(RuntimeError):
     """Raised when required clipforge configuration is missing or invalid."""
+
+
+@dataclass(frozen=True)
+class ClipDiscoveryWindow:
+    """Configured Twitch clip discovery window."""
+
+    days: int
+    limit: int
+
+
+DEFAULT_DISCOVERY_WINDOWS = (
+    ClipDiscoveryWindow(days=7, limit=100),
+    ClipDiscoveryWindow(days=31, limit=100),
+)
 
 
 @dataclass(frozen=True)
@@ -82,6 +98,7 @@ class ClipforgeConfig:
     review_fast_render: bool = False
     review_ffmpeg_render_settings: FFmpegRenderSettings | None = None
     review_output_width: int | None = None
+    discovery_windows: tuple[ClipDiscoveryWindow, ...] = DEFAULT_DISCOVERY_WINDOWS
 
     @property
     def target_resolution(self) -> tuple[int, int]:
@@ -186,6 +203,7 @@ def load_config(*, load_dotenv_file: bool = True) -> ClipforgeConfig:
             fast_render=review_fast_render,
         ),
         review_output_width=_env_int("CLIPFORGE_REVIEW_OUTPUT_WIDTH"),
+        discovery_windows=_env_discovery_windows("CLIPFORGE_DISCOVERY_WINDOWS"),
     )
 
     config.require_downloader_backend()
@@ -195,6 +213,7 @@ def load_config(*, load_dotenv_file: bool = True) -> ClipforgeConfig:
         _require_ffmpeg_settings(config.review_ffmpeg_render_settings)
     if config.review_output_width is not None and config.review_output_width <= 0:
         raise ConfigError("CLIPFORGE_REVIEW_OUTPUT_WIDTH must be a positive integer.")
+    _require_discovery_windows(config.discovery_windows)
 
     return config
 
@@ -317,3 +336,47 @@ def _env_int(name: str) -> int | None:
         return int(value)
     except ValueError as exc:
         raise ConfigError(f"Invalid integer configuration for {name}: {value!r}.") from exc
+
+
+def _env_discovery_windows(name: str) -> tuple[ClipDiscoveryWindow, ...]:
+    value = _env_str(name)
+    if value is None:
+        return DEFAULT_DISCOVERY_WINDOWS
+
+    windows: list[ClipDiscoveryWindow] = []
+    for item in value.split(","):
+        spec = item.strip()
+        if not spec:
+            continue
+        parts = spec.split(":")
+        if len(parts) != 2:
+            raise ConfigError(
+                f"Invalid discovery window configuration for {name}: {value!r}. "
+                "Use comma-separated days:limit entries, for example "
+                f"{DEFAULT_DISCOVERY_WINDOWS_SPEC}."
+            )
+        days_text, limit_text = parts
+        try:
+            days = int(days_text)
+            limit = int(limit_text)
+        except ValueError as exc:
+            raise ConfigError(
+                f"Invalid discovery window configuration for {name}: {value!r}. "
+                "Days and limit must be integers."
+            ) from exc
+        windows.append(ClipDiscoveryWindow(days=days, limit=limit))
+
+    return tuple(windows)
+
+
+def _require_discovery_windows(windows: tuple[ClipDiscoveryWindow, ...]) -> None:
+    if not windows:
+        raise ConfigError("CLIPFORGE_DISCOVERY_WINDOWS must include at least one window.")
+    for window in windows:
+        if window.days < 1:
+            raise ConfigError("Discovery window days must be at least 1.")
+        if window.limit < 1 or window.limit > MAX_DISCOVERY_WINDOW_LIMIT:
+            raise ConfigError(
+                "Discovery window limit must be between "
+                f"1 and {MAX_DISCOVERY_WINDOW_LIMIT}."
+            )

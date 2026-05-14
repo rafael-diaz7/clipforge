@@ -11,6 +11,7 @@ from clipforge.integrations.twitch import (
     list_channel_clips,
     twitch_channel_login_from_input,
 )
+from clipforge.pipeline.discovery import discover_channel_clips
 from clipforge.media.layouts import OutputSize
 from clipforge.pipeline.metadata import render_candidates_from_metadata
 from clipforge.pipeline.state_sync import record_discovered_clips, rerank_persisted_clips
@@ -79,13 +80,15 @@ def prepare_streamer_clips(
     config = config or load_config()
     process_clip_fn = process_clip_fn or process_clip
     streamer_login = twitch_channel_login_from_input(streamer)
-    discovered = list_channel_clips(
+    discovery = discover_channel_clips(
         streamer,
-        limit=discovery_limit or max(count, 10),
+        config=config,
+        limit=discovery_limit,
         started_at=started_at,
         ended_at=ended_at,
-        config=config,
+        list_clips_fn=list_channel_clips,
     )
+    discovered = discovery.clips
     record_discovered_clips(clips=discovered, channel=streamer, config=config)
     reranked_count = rerank_persisted_clips(config=config, channel=streamer)
 

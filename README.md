@@ -103,6 +103,7 @@ Clipforge loads `.env` from the project root.
 | `CLIPFORGE_REVIEW_FFMPEG_CRF` | No | none | Optional review-only x264 CRF, or NVENC `-cq` fallback when no review quality is set. |
 | `CLIPFORGE_REVIEW_FFMPEG_QUALITY` | No | none | Optional review-only NVENC `-cq` quality value. |
 | `CLIPFORGE_REVIEW_OUTPUT_WIDTH` | No | none | Optional review/candidate preview width. Blank keeps normal output dimensions; `720` produces `720x1280` previews for the default `1080x1920` vertical output. |
+| `CLIPFORGE_DISCOVERY_WINDOWS` | No | `7:100,31:100` | Comma-separated Twitch discovery windows as `days:limit`. Defaults to top 100 clips from the last 7 days plus top 100 from the last 31 days. |
 | `CLIPFORGE_SUBJECT_DETECTOR` | No | `yolo` | Primary subject detector. Supported values: `yolo`, `haar`, `none`. |
 | `CLIPFORGE_YOLO_MODEL` | No | `yolo11n.pt` | Ultralytics YOLO model for person detection, for example `yolo11n.pt` or `yolo11s.pt`. |
 | `CLIPFORGE_YOLO_DEVICE` | No | `auto` | YOLO inference device. Use `cuda` for NVIDIA GPU, `cpu`, or `auto`. |
@@ -143,7 +144,7 @@ the output width, and smaller PNGs are not upscaled.
 Discover and persist clips for a channel:
 
 ```powershell
-clipforge clips --channel "<channel_login>" --limit 20
+clipforge clips --channel "<channel_login>"
 ```
 
 Review the saved pending list:
@@ -191,10 +192,13 @@ paths between runs.
 ### Discover
 
 `clipforge clips` searches Twitch clips and persists every returned clip to
-SQLite. Without date filters, discovery searches the last 7 days in UTC.
+SQLite. Without date filters, discovery searches the configured windows in UTC.
+The default is top 100 clips from the last 7 days plus top 100 clips from the
+last 31 days. Clips found in both windows are deduped by Twitch clip ID before
+they are stored or ranked.
 
 ```powershell
-clipforge clips --channel "<channel_login>" --limit 20
+clipforge clips --channel "<channel_login>"
 ```
 
 Use UTC ISO-8601 filters when you want a specific window:
@@ -207,7 +211,7 @@ The command prints a compact tab-separated list and updates local state. JSON
 discovery exports are still available for manual inspection or external tools:
 
 ```powershell
-clipforge clips --channel "<channel_login>" --limit 20 --format json
+clipforge clips --channel "<channel_login>" --format json
 ```
 
 Pass `--output "<path>"` with `--format json` to choose the export path.

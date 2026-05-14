@@ -5,7 +5,6 @@ from __future__ import annotations
 import argparse
 import logging
 import sys
-from datetime import UTC, datetime, timedelta
 from pathlib import Path
 from typing import Sequence
 
@@ -17,6 +16,7 @@ from clipforge.media.layouts import generate_detected_layout_candidates
 from clipforge.media.overlay import analyze_overlay, write_overlay_debug_images
 from clipforge.pipeline.artifacts import write_clip_discovery_export
 from clipforge.pipeline.cleanup import cleanup_local_artifacts
+from clipforge.pipeline.discovery import discover_channel_clips
 from clipforge.pipeline.processing import (
     SavedClipProcessingError,
     process_saved_clips,
@@ -207,8 +207,10 @@ def build_parser() -> argparse.ArgumentParser:
     clips_parser.add_argument(
         "--limit",
         type=int,
-        default=10,
-        help="Maximum clips to list, from 1 to 100. Defaults to 10.",
+        help=(
+            "Maximum clips per discovery window, from 1 to 100. "
+            "Defaults to configured discovery windows."
+        ),
     )
     clips_parser.add_argument(
         "--started-at",
@@ -660,22 +662,25 @@ def _handle_clips_command(args: argparse.Namespace) -> int:
         ended_at=args.ended_at,
     )
     config = load_config()
-    clips = list_channel_clips(
+    discovery = discover_channel_clips(
         args.channel,
+        config=config,
         limit=args.limit,
         started_at=started_at,
         ended_at=ended_at,
-        config=config,
+        list_clips_fn=list_channel_clips,
     )
+    clips = discovery.clips
     record_discovered_clips(clips=clips, channel=args.channel, config=config)
     if args.format == "json":
         # TODO: Add more formats.
         export_path = write_clip_discovery_export(
             clips=clips,
             channel=args.channel,
-            limit=args.limit,
+            limit=sum(request.limit for request in discovery.requests),
             started_at=started_at,
             ended_at=ended_at,
+            discovery_windows=discovery.requests,
             output_path=Path(args.output) if args.output else None,
             config=config,
         )
@@ -699,7 +704,7 @@ def _handle_clips_command(args: argparse.Namespace) -> int:
 
 def _handle_clips_pending_command(args: argparse.Namespace) -> int:
     config = load_config()
-    limit = args.pending_limit if args.pending_limit is not None else args.limit
+    limit = args.pending_limit if args.pending_limit is not None else args.limit or 10
     channel = args.pending_channel or args.channel
     streamer_login = twitch_channel_login_from_input(channel) if channel else None
     clips = get_unprocessed_clips(
@@ -805,7 +810,7 @@ def _handle_clips_review_command(args: argparse.Namespace) -> int:
         clip_ids=args.clip_id or (),
         started_at=started_at,
         ended_at=ended_at,
-        discovery_limit=max(args.count, args.limit),
+        discovery_limit=max(args.count, args.limit) if args.limit is not None else None,
         use_generated_layouts=not args.static_layouts,
         config=config,
     )
@@ -830,7 +835,7 @@ def _handle_clips_prepare_command(args: argparse.Namespace) -> int:
         clip_ids=args.clip_id or (),
         started_at=started_at,
         ended_at=ended_at,
-        discovery_limit=max(args.count, args.limit),
+        discovery_limit=max(args.count, args.limit) if args.limit is not None else None,
         use_generated_layouts=not args.static_layouts,
         config=config,
     )
@@ -970,14 +975,7 @@ def _clip_date_filters(
         raise CLIError("--ended-at requires --started-at for Twitch clip discovery.")
     if started_at:
         return started_at, ended_at
-
-    now = datetime.now(UTC).replace(microsecond=0)
-    one_week_ago = now - timedelta(days=7)
-    return _format_twitch_timestamp(one_week_ago), _format_twitch_timestamp(now)
-
-
-def _format_twitch_timestamp(value: datetime) -> str:
-    return value.isoformat().replace("+00:00", "Z")
+    return None, None
 
 
 if __name__ == "__main__":

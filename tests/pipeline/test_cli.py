@@ -1683,9 +1683,9 @@ def test_main_routes_clips_review_command(monkeypatch, capsys, tmp_path: Path) -
     assert call["generate_captions"] is True
     assert call["force_captions"] is False
     assert call["clip_ids"] == ["clip-1"]
-    assert call["started_at"] is not None
-    assert call["ended_at"] is not None
-    assert call["discovery_limit"] == 10
+    assert call["started_at"] is None
+    assert call["ended_at"] is None
+    assert call["discovery_limit"] is None
     assert call["use_generated_layouts"] is True
     assert call["config"] == config
     assert capsys.readouterr().out.splitlines() == [
@@ -1741,9 +1741,9 @@ def test_main_routes_clips_prepare_command(monkeypatch, capsys, tmp_path: Path) 
     assert call["generate_captions"] is True
     assert call["force_captions"] is True
     assert call["clip_ids"] == ["clip-1"]
-    assert call["started_at"] is not None
-    assert call["ended_at"] is not None
-    assert call["discovery_limit"] == 10
+    assert call["started_at"] is None
+    assert call["ended_at"] is None
+    assert call["discovery_limit"] is None
     assert call["use_generated_layouts"] is False
     assert call["config"] == config
     assert capsys.readouterr().out.splitlines() == [

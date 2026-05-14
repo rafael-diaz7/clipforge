@@ -160,7 +160,7 @@ def test_review_discovers_upserts_selects_top_ranked_and_exports(
         output_fn=lambda line: None,
     )
 
-    assert events == ["discover", "process:clip-high"]
+    assert events == ["discover", "discover", "process:clip-high"]
     assert exported == (
         tmp_path / "exports" / "example" / "high__clip-high" / "hybrid.mp4",
     )
