@@ -60,6 +60,7 @@ _CLIPS_COLUMNS = (
     "render_dir",
     "skip_reason",
     "error_message",
+    "failed_at",
     "selected_render_layout",
     "selected_render_path",
     "export_path",
@@ -77,6 +78,7 @@ _RESET_TO_DISCOVERED_SQL = """
               render_dir = NULL,
               skip_reason = NULL,
               error_message = NULL,
+              failed_at = NULL,
               selected_render_layout = NULL,
               selected_render_path = NULL,
               export_path = NULL,
@@ -114,6 +116,7 @@ CREATE TABLE IF NOT EXISTS clips (
   render_dir TEXT,
   skip_reason TEXT,
   error_message TEXT,
+  failed_at TEXT,
   selected_render_layout TEXT,
   selected_render_path TEXT,
   export_path TEXT,
@@ -145,6 +148,7 @@ class ClipState:
     render_dir: str | None
     skip_reason: str | None
     error_message: str | None
+    failed_at: str | None
     selected_render_layout: str | None
     selected_render_path: str | None
     export_path: str | None
@@ -169,6 +173,7 @@ def init_db(db_path: Path | str = DEFAULT_STATE_DB_PATH) -> Path:
         _ensure_column(connection, "clips", "created_at", "TEXT")
         _ensure_column(connection, "clips", "rank_score", "REAL")
         _ensure_column(connection, "clips", "rank_breakdown", "TEXT")
+        _ensure_column(connection, "clips", "failed_at", "TEXT")
         _ensure_column(connection, "clips", "selected_render_layout", "TEXT")
         _ensure_column(connection, "clips", "selected_render_path", "TEXT")
         _ensure_column(connection, "clips", "export_path", "TEXT")
@@ -265,6 +270,42 @@ def get_unprocessed_clips(
         params.append(streamer_login)
     sql += _RANKED_CLIPS_ORDER_SQL
     sql += _limit_clause(limit, label="Unprocessed clip", params=params)
+    return _select_clips(db_path=resolved_path, sql=sql, params=params)
+
+
+def get_prepare_candidate_clips(
+    *,
+    db_path: Path | str = DEFAULT_STATE_DB_PATH,
+    limit: int | None = None,
+    streamer_login: str | None = None,
+    failed_before: str | None = None,
+) -> tuple[ClipState, ...]:
+    """Return ranked clips eligible for prepare, including cooled-down failures."""
+
+    resolved_path = init_db(db_path)
+    params: list[Any] = ["discovered", "queued"]
+    sql = """
+        SELECT *
+        FROM clips
+        WHERE (
+            status IN (?, ?)
+    """
+    if failed_before is not None:
+        sql += """
+            OR (
+                status = 'failed'
+                AND (failed_at IS NULL OR failed_at < ?)
+            )
+        """
+        params.append(failed_before)
+    sql += """
+        )
+    """
+    if streamer_login is not None:
+        sql += " AND LOWER(streamer_login) = LOWER(?)"
+        params.append(streamer_login)
+    sql += _RANKED_CLIPS_ORDER_SQL
+    sql += _limit_clause(limit, label="Prepare candidate clip", params=params)
     return _select_clips(db_path=resolved_path, sql=sql, params=params)
 
 
@@ -472,6 +513,7 @@ def mark_clip_downloaded(
         metadata_path=_optional_path_string(metadata_path),
         clear_skip_reason=True,
         clear_error_message=True,
+        clear_failed_at=True,
         clear_selected_render=True,
         clear_export=True,
     )
@@ -494,6 +536,7 @@ def mark_clip_rendered(
         metadata_path=_optional_path_string(metadata_path),
         clear_skip_reason=True,
         clear_error_message=True,
+        clear_failed_at=True,
         clear_selected_render=True,
         clear_export=True,
     )
@@ -516,6 +559,7 @@ def mark_clip_mobile_review(
         metadata_path=_optional_path_string(metadata_path),
         clear_skip_reason=True,
         clear_error_message=True,
+        clear_failed_at=True,
         clear_selected_render=True,
         clear_export=True,
     )
@@ -535,6 +579,7 @@ def mark_clip_skipped(
         db_path=db_path,
         skip_reason=skip_reason,
         clear_error_message=True,
+        clear_failed_at=True,
         clear_selected_render=True,
         clear_export=True,
     )
@@ -554,6 +599,7 @@ def mark_clip_needs_rerender(
         db_path=db_path,
         skip_reason=skip_reason,
         clear_error_message=True,
+        clear_failed_at=True,
         clear_selected_render=True,
         clear_export=True,
     )
@@ -576,6 +622,7 @@ def mark_clip_selected(
         selected_render_path=str(selected_render_path),
         clear_skip_reason=True,
         clear_error_message=True,
+        clear_failed_at=True,
         clear_export=True,
     )
 
@@ -601,6 +648,7 @@ def mark_clip_exported(
         exported_at=exported_at or utc_timestamp(),
         clear_skip_reason=True,
         clear_error_message=True,
+        clear_failed_at=True,
     )
 
 
@@ -609,6 +657,7 @@ def mark_clip_failed(
     *,
     error_message: str,
     db_path: Path | str = DEFAULT_STATE_DB_PATH,
+    failed_at: str | None = None,
 ) -> ClipState:
     """Mark a clip as failed."""
 
@@ -617,6 +666,7 @@ def mark_clip_failed(
         "failed",
         db_path=db_path,
         error_message=error_message,
+        failed_at=failed_at or utc_timestamp(),
     )
 
 
@@ -675,12 +725,14 @@ def _update_clip_status(
     render_dir: str | None = None,
     skip_reason: str | None = None,
     error_message: str | None = None,
+    failed_at: str | None = None,
     selected_render_layout: str | None = None,
     selected_render_path: str | None = None,
     export_path: str | None = None,
     exported_at: str | None = None,
     clear_skip_reason: bool = False,
     clear_error_message: bool = False,
+    clear_failed_at: bool = False,
     clear_selected_render: bool = False,
     clear_export: bool = False,
 ) -> ClipState:
@@ -699,6 +751,7 @@ def _update_clip_status(
               render_dir = COALESCE(?, render_dir),
               skip_reason = CASE WHEN ? THEN NULL ELSE COALESCE(?, skip_reason) END,
               error_message = CASE WHEN ? THEN NULL ELSE COALESCE(?, error_message) END,
+              failed_at = CASE WHEN ? THEN NULL ELSE COALESCE(?, failed_at) END,
               selected_render_layout = CASE
                 WHEN ? THEN NULL
                 ELSE COALESCE(?, selected_render_layout)
@@ -720,6 +773,8 @@ def _update_clip_status(
                 skip_reason,
                 clear_error_message,
                 error_message,
+                clear_failed_at,
+                failed_at,
                 clear_selected_render,
                 selected_render_layout,
                 clear_selected_render,
@@ -840,6 +895,7 @@ def _clip_from_row(row: sqlite3.Row) -> ClipState:
         render_dir=data["render_dir"],
         skip_reason=data["skip_reason"],
         error_message=data["error_message"],
+        failed_at=data["failed_at"],
         selected_render_layout=data["selected_render_layout"],
         selected_render_path=data["selected_render_path"],
         export_path=data["export_path"],

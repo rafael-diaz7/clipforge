@@ -8,6 +8,7 @@ from clipforge.storage.state import (
     ClipStateError,
     get_clip,
     get_mobile_review_clips,
+    get_prepare_candidate_clips,
     get_review_eligible_clips,
     get_unprocessed_clips,
     init_db,
@@ -163,7 +164,40 @@ def test_mark_clip_skipped_and_failed_exclude_clips_from_unprocessed_query(
     assert skipped.skip_reason == "not enough context"
     assert failed.status == "failed"
     assert failed.error_message == "download failed"
+    assert failed.failed_at is not None
     assert [clip.clip_id for clip in get_unprocessed_clips(db_path=db_path)] == ["clip-1"]
+
+
+def test_prepare_candidates_include_only_cooled_down_failures(tmp_path: Path) -> None:
+    db_path = _db_path(tmp_path)
+    for clip_id in ("clip-ready", "clip-old-failed", "clip-recent-failed"):
+        upsert_discovered_clip(
+            clip_id=clip_id,
+            url=f"https://clips.twitch.tv/{clip_id}",
+            streamer_login="example",
+            rank_score=1.0,
+            db_path=db_path,
+        )
+    mark_clip_failed(
+        "clip-old-failed",
+        error_message="old failure",
+        failed_at="2026-05-14T10:00:00+00:00",
+        db_path=db_path,
+    )
+    mark_clip_failed(
+        "clip-recent-failed",
+        error_message="recent failure",
+        failed_at="2026-05-14T11:30:00+00:00",
+        db_path=db_path,
+    )
+
+    clips = get_prepare_candidate_clips(
+        db_path=db_path,
+        streamer_login="example",
+        failed_before="2026-05-14T11:00:00+00:00",
+    )
+
+    assert [clip.clip_id for clip in clips] == ["clip-ready", "clip-old-failed"]
 
 
 def test_rendered_clip_is_not_returned_by_unprocessed_query(tmp_path: Path) -> None:

@@ -3,8 +3,9 @@
 from __future__ import annotations
 
 from dataclasses import dataclass
+from datetime import UTC, datetime, timedelta
 from pathlib import Path
-from typing import Callable, Sequence
+from typing import Callable, Iterable, Sequence
 
 from clipforge.core.config import ClipforgeConfig, load_config
 from clipforge.integrations.twitch import (
@@ -19,7 +20,7 @@ from clipforge.pipeline.workflows import process_clip
 from clipforge.storage.state import (
     ClipState,
     get_clip,
-    get_unprocessed_clips,
+    get_prepare_candidate_clips,
     mark_clip_failed,
     mark_clip_mobile_review,
 )
@@ -48,14 +49,23 @@ class PrepareResult:
     selected_count: int
     prepared: tuple[PreparedClip, ...]
     failed: tuple[FailedPreparedClip, ...]
+    requested_count: int = 0
+    exhausted: bool = False
+    max_failures_reached: bool = False
 
     @property
     def rendered_count(self) -> int:
         return len(self.prepared)
 
+    @property
+    def attempted_count(self) -> int:
+        return len(self.prepared) + len(self.failed)
+
 
 ProcessClipFn = Callable[..., Path]
 MOBILE_REVIEW_OUTPUT_SIZE = OutputSize(width=1080, height=1920)
+DEFAULT_MAX_PREPARE_FAILURES = 10
+DEFAULT_FAILED_CLIP_RETRY_COOLDOWN_MINUTES = 60
 
 
 def prepare_streamer_clips(
@@ -69,6 +79,8 @@ def prepare_streamer_clips(
     ended_at: str | None = None,
     discovery_limit: int | None = None,
     use_generated_layouts: bool = True,
+    max_failures: int = DEFAULT_MAX_PREPARE_FAILURES,
+    failed_retry_cooldown_minutes: int = DEFAULT_FAILED_CLIP_RETRY_COOLDOWN_MINUTES,
     config: ClipforgeConfig | None = None,
     process_clip_fn: ProcessClipFn | None = None,
 ) -> PrepareResult:
@@ -76,6 +88,10 @@ def prepare_streamer_clips(
 
     if count < 1:
         raise ClipPrepareError("--count must be at least 1.")
+    if max_failures < 1:
+        raise ClipPrepareError("--max-failures must be at least 1.")
+    if failed_retry_cooldown_minutes < 0:
+        raise ClipPrepareError("--failed-retry-cooldown-minutes cannot be negative.")
 
     config = config or load_config()
     process_clip_fn = process_clip_fn or process_clip
@@ -91,17 +107,61 @@ def prepare_streamer_clips(
     discovered = discovery.clips
     record_discovered_clips(clips=discovered, channel=streamer, config=config)
     reranked_count = rerank_persisted_clips(config=config, channel=streamer)
+    requested_count = len(clip_ids) if clip_ids else count
 
-    selected_clips = _selected_prepare_clips(
+    candidate_clips = _selected_prepare_clips(
         clip_ids=clip_ids,
-        count=count,
         streamer_login=streamer_login,
+        failed_before=_failed_retry_cutoff(
+            cooldown_minutes=failed_retry_cooldown_minutes,
+        ),
         config=config,
     )
 
+    prepared, failed = prepare_until_count(
+        candidate_clips,
+        count=requested_count,
+        max_failures=max_failures,
+        streamer_login=streamer_login,
+        generate_captions=generate_captions,
+        force_captions=force_captions,
+        use_generated_layouts=use_generated_layouts,
+        config=config,
+        process_clip_fn=process_clip_fn,
+    )
+    exhausted = len(prepared) < requested_count and len(failed) < max_failures
+
+    return PrepareResult(
+        discovered_count=len(discovered),
+        reranked_count=reranked_count,
+        selected_count=len(prepared) + len(failed),
+        prepared=tuple(prepared),
+        failed=tuple(failed),
+        requested_count=requested_count,
+        exhausted=exhausted,
+        max_failures_reached=len(prepared) < requested_count
+        and len(failed) >= max_failures,
+    )
+
+
+def prepare_until_count(
+    candidates: Iterable[ClipState],
+    *,
+    count: int,
+    max_failures: int,
+    streamer_login: str,
+    generate_captions: bool | None,
+    force_captions: bool,
+    use_generated_layouts: bool,
+    config: ClipforgeConfig,
+    process_clip_fn: ProcessClipFn,
+) -> tuple[list[PreparedClip], list[FailedPreparedClip]]:
     prepared: list[PreparedClip] = []
     failed: list[FailedPreparedClip] = []
-    for clip in selected_clips:
+    attempted_clip_ids: set[str] = set()
+    for clip in iter_ranked_candidates(candidates, attempted_clip_ids=attempted_clip_ids):
+        if len(prepared) >= count or len(failed) >= max_failures:
+            break
         process_kwargs = {
             "candidate_output_size": MOBILE_REVIEW_OUTPUT_SIZE,
             "channel": streamer_login,
@@ -138,31 +198,44 @@ def prepare_streamer_clips(
                 metadata_path=Path(state.metadata_path or metadata_path),
             )
         )
+    return prepared, failed
 
-    return PrepareResult(
-        discovered_count=len(discovered),
-        reranked_count=reranked_count,
-        selected_count=len(selected_clips),
-        prepared=tuple(prepared),
-        failed=tuple(failed),
-    )
+
+def iter_ranked_candidates(
+    candidates: Iterable[ClipState],
+    *,
+    attempted_clip_ids: set[str],
+) -> Iterable[ClipState]:
+    for clip in candidates:
+        selected = select_next_candidate(clip, attempted_clip_ids=attempted_clip_ids)
+        if selected is not None:
+            yield selected
+
+
+def select_next_candidate(
+    clip: ClipState,
+    *,
+    attempted_clip_ids: set[str],
+) -> ClipState | None:
+    if clip.clip_id in attempted_clip_ids:
+        return None
+    attempted_clip_ids.add(clip.clip_id)
+    return clip
 
 
 def _selected_prepare_clips(
     *,
     clip_ids: Sequence[str],
-    count: int,
     streamer_login: str,
+    failed_before: str,
     config: ClipforgeConfig,
 ) -> tuple[ClipState, ...]:
     if not clip_ids:
-        candidates = get_unprocessed_clips(
+        return get_prepare_candidate_clips(
             db_path=config.state_db_path,
             streamer_login=streamer_login,
+            failed_before=failed_before,
         )
-        return tuple(
-            clip for clip in candidates if _is_normal_prepare_candidate(clip)
-        )[:count]
 
     clips: list[ClipState] = []
     for clip_id in clip_ids:
@@ -227,4 +300,9 @@ def _ensure_manual_prepare_clip_is_eligible(
 
 
 def _is_normal_prepare_candidate(clip: ClipState) -> bool:
-    return clip.status in {"discovered", "queued"}
+    return clip.status in {"discovered", "queued", "failed"}
+
+
+def _failed_retry_cutoff(*, cooldown_minutes: int) -> str:
+    retry_after = datetime.now(UTC) - timedelta(minutes=cooldown_minutes)
+    return retry_after.isoformat()

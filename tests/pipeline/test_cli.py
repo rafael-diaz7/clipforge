@@ -1709,6 +1709,7 @@ def test_main_routes_clips_prepare_command(monkeypatch, capsys, tmp_path: Path) 
             selected_count=1,
             prepared=(PreparedClip(clip_id="clip-1", metadata_path=metadata_path),),
             failed=(),
+            requested_count=1,
         )
 
     monkeypatch.setattr("clipforge.pipeline.cli.load_config", lambda: config)
@@ -1745,16 +1746,99 @@ def test_main_routes_clips_prepare_command(monkeypatch, capsys, tmp_path: Path) 
     assert call["ended_at"] is None
     assert call["discovery_limit"] is None
     assert call["use_generated_layouts"] is False
+    assert call["max_failures"] == 10
+    assert call["failed_retry_cooldown_minutes"] == 60
     assert call["config"] == config
     assert capsys.readouterr().out.splitlines() == [
         "discovered/upserted: 4",
         "reranked: 4",
-        "selected: 1",
+        "attempted: 1",
         "rendered: 1",
         "failed: 0",
+        "exhausted: no",
         "prepared clips:",
         f"clip-1: {metadata_path}",
     ]
+
+
+def test_clips_prepare_exits_zero_when_count_is_satisfied_after_failures(
+    monkeypatch,
+    capsys,
+    tmp_path: Path,
+) -> None:
+    from clipforge.pipeline.prepare import FailedPreparedClip, PrepareResult, PreparedClip
+
+    config = ClipforgeConfig(state_db_path=tmp_path / "state" / "clipforge.sqlite")
+    metadata_path = tmp_path / "metadata" / "clip-1.json"
+
+    monkeypatch.setattr("clipforge.pipeline.cli.load_config", lambda: config)
+    monkeypatch.setattr(
+        "clipforge.pipeline.cli.prepare_streamer_clips",
+        lambda **kwargs: PrepareResult(
+            discovered_count=4,
+            reranked_count=4,
+            selected_count=3,
+            prepared=(
+                PreparedClip(clip_id="clip-1", metadata_path=metadata_path),
+                PreparedClip(clip_id="clip-2", metadata_path=metadata_path),
+            ),
+            failed=(FailedPreparedClip(clip_id="clip-failed", error_message="boom"),),
+            requested_count=2,
+        ),
+    )
+
+    exit_code = main(
+        [
+            "clips",
+            "prepare",
+            "--streamer",
+            "ohnepixel",
+            "--count",
+            "2",
+        ]
+    )
+
+    assert exit_code == 0
+    assert "failed: 1" in capsys.readouterr().out.splitlines()
+
+
+def test_clips_prepare_exits_nonzero_when_count_is_not_satisfied(
+    monkeypatch,
+    capsys,
+    tmp_path: Path,
+) -> None:
+    from clipforge.pipeline.prepare import PrepareResult, PreparedClip
+
+    config = ClipforgeConfig(state_db_path=tmp_path / "state" / "clipforge.sqlite")
+    metadata_path = tmp_path / "metadata" / "clip-1.json"
+
+    monkeypatch.setattr("clipforge.pipeline.cli.load_config", lambda: config)
+    monkeypatch.setattr(
+        "clipforge.pipeline.cli.prepare_streamer_clips",
+        lambda **kwargs: PrepareResult(
+            discovered_count=1,
+            reranked_count=1,
+            selected_count=1,
+            prepared=(PreparedClip(clip_id="clip-1", metadata_path=metadata_path),),
+            failed=(),
+            requested_count=2,
+            exhausted=True,
+        ),
+    )
+
+    exit_code = main(
+        [
+            "clips",
+            "prepare",
+            "--streamer",
+            "ohnepixel",
+            "--count",
+            "2",
+        ]
+    )
+
+    assert exit_code == 1
+    assert "exhausted: yes" in capsys.readouterr().out.splitlines()
 
 
 def test_main_routes_clips_review_rerender_flag(

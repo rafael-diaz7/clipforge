@@ -399,6 +399,18 @@ def build_parser() -> argparse.ArgumentParser:
         help="Number of top-ranked eligible clips to prepare. Defaults to 3.",
     )
     clips_prepare_parser.add_argument(
+        "--max-failures",
+        type=int,
+        default=10,
+        help="Stop prepare after this many failed candidate attempts. Defaults to 10.",
+    )
+    clips_prepare_parser.add_argument(
+        "--failed-retry-cooldown-minutes",
+        type=int,
+        default=60,
+        help="Retry previously failed clips only after this many minutes. Defaults to 60.",
+    )
+    clips_prepare_parser.add_argument(
         "--generate-captions",
         action="store_true",
         default=None,
@@ -835,15 +847,22 @@ def _handle_clips_prepare_command(args: argparse.Namespace) -> int:
         clip_ids=args.clip_id or (),
         started_at=started_at,
         ended_at=ended_at,
-        discovery_limit=max(args.count, args.limit) if args.limit is not None else None,
+        discovery_limit=(
+            max(args.count + args.max_failures, args.limit)
+            if args.limit is not None
+            else None
+        ),
         use_generated_layouts=not args.static_layouts,
+        max_failures=args.max_failures,
+        failed_retry_cooldown_minutes=args.failed_retry_cooldown_minutes,
         config=config,
     )
     print(f"discovered/upserted: {result.discovered_count}")
     print(f"reranked: {result.reranked_count}")
-    print(f"selected: {result.selected_count}")
+    print(f"attempted: {result.attempted_count}")
     print(f"rendered: {result.rendered_count}")
     print(f"failed: {len(result.failed)}")
+    print(f"exhausted: {'yes' if result.exhausted else 'no'}")
     if result.prepared:
         print("prepared clips:")
         for prepared in result.prepared:
@@ -852,7 +871,8 @@ def _handle_clips_prepare_command(args: argparse.Namespace) -> int:
         print("failed clips:")
         for failed in result.failed:
             print(f"{failed.clip_id}: {failed.error_message}")
-    return 1 if result.failed else 0
+    requested_count = result.requested_count or args.count
+    return 0 if result.rendered_count >= requested_count else 1
 
 
 def _handle_review_command(args: argparse.Namespace) -> int:

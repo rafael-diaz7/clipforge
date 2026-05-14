@@ -9,7 +9,11 @@ import pytest
 from clipforge.core.config import ClipforgeConfig
 from clipforge.integrations.twitch import TwitchClip
 from clipforge.media.layouts import OutputSize
-from clipforge.pipeline.prepare import ClipPrepareError, prepare_streamer_clips
+from clipforge.pipeline.prepare import (
+    ClipPrepareError,
+    prepare_streamer_clips,
+    prepare_until_count,
+)
 from clipforge.storage.state import (
     get_clip,
     get_mobile_review_clips,
@@ -293,6 +297,250 @@ def test_prepare_marks_failures_and_continues_when_practical(
     assert failed_state.error_message == "render failed"
     assert prepared_state is not None
     assert prepared_state.status == "mobile_review"
+
+
+def test_prepare_walks_past_first_failed_candidate(
+    monkeypatch,
+    tmp_path: Path,
+) -> None:
+    config = _config(tmp_path)
+    calls: list[str] = []
+
+    monkeypatch.setattr(
+        "clipforge.pipeline.prepare.list_channel_clips",
+        lambda *args, **kwargs: (
+            _clip("clip-fails", views=1000),
+            _clip("clip-succeeds", views=100),
+        ),
+    )
+
+    def fake_process(url: str, **kwargs) -> Path:
+        clip_id = url.rsplit("/", 1)[-1]
+        calls.append(clip_id)
+        if clip_id == "clip-fails":
+            raise RuntimeError("download failed")
+        return _write_metadata(config, clip_id)
+
+    result = prepare_streamer_clips(
+        streamer="example",
+        count=1,
+        config=config,
+        process_clip_fn=fake_process,
+    )
+
+    assert calls == ["clip-fails", "clip-succeeds"]
+    assert [prepared.clip_id for prepared in result.prepared] == ["clip-succeeds"]
+    assert [failed.clip_id for failed in result.failed] == ["clip-fails"]
+    assert result.rendered_count == 1
+    assert result.exhausted is False
+    assert result.max_failures_reached is False
+
+
+def test_prepare_allows_failures_before_enough_successes(
+    monkeypatch,
+    tmp_path: Path,
+) -> None:
+    config = _config(tmp_path)
+    calls: list[str] = []
+
+    monkeypatch.setattr(
+        "clipforge.pipeline.prepare.list_channel_clips",
+        lambda *args, **kwargs: (
+            _clip("clip-fails-1", views=1000),
+            _clip("clip-fails-2", views=900),
+            _clip("clip-succeeds-1", views=800),
+            _clip("clip-succeeds-2", views=700),
+        ),
+    )
+
+    def fake_process(url: str, **kwargs) -> Path:
+        clip_id = url.rsplit("/", 1)[-1]
+        calls.append(clip_id)
+        if clip_id.startswith("clip-fails"):
+            raise RuntimeError(f"{clip_id} failed")
+        return _write_metadata(config, clip_id)
+
+    result = prepare_streamer_clips(
+        streamer="example",
+        count=2,
+        max_failures=10,
+        config=config,
+        process_clip_fn=fake_process,
+    )
+
+    assert calls == [
+        "clip-fails-1",
+        "clip-fails-2",
+        "clip-succeeds-1",
+        "clip-succeeds-2",
+    ]
+    assert [prepared.clip_id for prepared in result.prepared] == [
+        "clip-succeeds-1",
+        "clip-succeeds-2",
+    ]
+    assert [failed.clip_id for failed in result.failed] == [
+        "clip-fails-1",
+        "clip-fails-2",
+    ]
+    assert result.attempted_count == 4
+    assert result.rendered_count == 2
+
+
+def test_prepare_does_not_retry_same_failed_clip_within_run(tmp_path: Path) -> None:
+    config = _config(tmp_path)
+    clip = upsert_discovered_clip(
+        clip_id="clip-fails",
+        url="https://clips.twitch.tv/clip-fails",
+        streamer_login="example",
+        db_path=config.state_db_path,
+    )
+    calls: list[str] = []
+
+    def fake_process(url: str, **kwargs) -> Path:
+        calls.append(url.rsplit("/", 1)[-1])
+        raise RuntimeError("download failed")
+
+    prepared, failed = prepare_until_count(
+        (clip, clip),
+        count=1,
+        max_failures=10,
+        streamer_login="example",
+        generate_captions=None,
+        force_captions=False,
+        use_generated_layouts=True,
+        config=config,
+        process_clip_fn=fake_process,
+    )
+
+    assert prepared == []
+    assert [failure.clip_id for failure in failed] == ["clip-fails"]
+    assert calls == ["clip-fails"]
+
+
+def test_prepare_retries_failed_clip_after_cooldown(
+    monkeypatch,
+    tmp_path: Path,
+) -> None:
+    config = _config(tmp_path)
+    upsert_discovered_clip(
+        clip_id="clip-old-failure",
+        url="https://clips.twitch.tv/clip-old-failure",
+        streamer_login="example",
+        rank_score=100,
+        db_path=config.state_db_path,
+    )
+    mark_clip_failed(
+        "clip-old-failure",
+        error_message="old transient failure",
+        failed_at="2000-01-01T00:00:00+00:00",
+        db_path=config.state_db_path,
+    )
+    upsert_discovered_clip(
+        clip_id="clip-recent-failure",
+        url="https://clips.twitch.tv/clip-recent-failure",
+        streamer_login="example",
+        rank_score=90,
+        db_path=config.state_db_path,
+    )
+    mark_clip_failed(
+        "clip-recent-failure",
+        error_message="recent transient failure",
+        failed_at="2999-01-01T00:00:00+00:00",
+        db_path=config.state_db_path,
+    )
+    calls: list[str] = []
+
+    monkeypatch.setattr(
+        "clipforge.pipeline.prepare.list_channel_clips",
+        lambda *args, **kwargs: (),
+    )
+
+    def fake_process(url: str, **kwargs) -> Path:
+        clip_id = url.rsplit("/", 1)[-1]
+        calls.append(clip_id)
+        return _write_metadata(config, clip_id)
+
+    result = prepare_streamer_clips(
+        streamer="example",
+        count=1,
+        failed_retry_cooldown_minutes=60,
+        config=config,
+        process_clip_fn=fake_process,
+    )
+
+    assert calls == ["clip-old-failure"]
+    assert [prepared.clip_id for prepared in result.prepared] == ["clip-old-failure"]
+    assert get_clip("clip-old-failure", db_path=config.state_db_path).status == (
+        "mobile_review"
+    )
+    assert get_clip("clip-recent-failure", db_path=config.state_db_path).status == (
+        "failed"
+    )
+
+
+def test_prepare_stops_at_max_failure_cap(
+    monkeypatch,
+    tmp_path: Path,
+) -> None:
+    config = _config(tmp_path)
+    calls: list[str] = []
+
+    monkeypatch.setattr(
+        "clipforge.pipeline.prepare.list_channel_clips",
+        lambda *args, **kwargs: (
+            _clip("clip-fails-1", views=1000),
+            _clip("clip-fails-2", views=900),
+            _clip("clip-succeeds", views=800),
+        ),
+    )
+
+    def fake_process(url: str, **kwargs) -> Path:
+        clip_id = url.rsplit("/", 1)[-1]
+        calls.append(clip_id)
+        if clip_id.startswith("clip-fails"):
+            raise RuntimeError(f"{clip_id} failed")
+        return _write_metadata(config, clip_id)
+
+    result = prepare_streamer_clips(
+        streamer="example",
+        count=1,
+        max_failures=2,
+        config=config,
+        process_clip_fn=fake_process,
+    )
+
+    assert calls == ["clip-fails-1", "clip-fails-2"]
+    assert result.prepared == ()
+    assert [failed.clip_id for failed in result.failed] == [
+        "clip-fails-1",
+        "clip-fails-2",
+    ]
+    assert result.max_failures_reached is True
+    assert result.exhausted is False
+
+
+def test_prepare_reports_exhausted_candidates(
+    monkeypatch,
+    tmp_path: Path,
+) -> None:
+    config = _config(tmp_path)
+
+    monkeypatch.setattr(
+        "clipforge.pipeline.prepare.list_channel_clips",
+        lambda *args, **kwargs: (_clip("clip-only", views=100),),
+    )
+
+    result = prepare_streamer_clips(
+        streamer="example",
+        count=2,
+        config=config,
+        process_clip_fn=lambda url, **kwargs: _write_metadata(config, "clip-only"),
+    )
+
+    assert [prepared.clip_id for prepared in result.prepared] == ["clip-only"]
+    assert result.failed == ()
+    assert result.exhausted is True
+    assert result.max_failures_reached is False
 
 
 def test_prepared_clips_are_visible_to_mobile_review_queue_only(
