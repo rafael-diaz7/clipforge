@@ -12,18 +12,25 @@ from typing import Any, Callable
 import requests
 
 from clipforge.core.config import DEFAULT_OPENAI_TRANSCRIPTION_MODEL, ClipforgeConfig
+from clipforge.integrations.retry import RetryDecision, RetryPolicy, retry_call
 from clipforge.media.captions import (
     CaptionMetadata,
     CaptionSegment,
     CaptionTranscriptionError,
     CaptionWord,
 )
-from clipforge.utils.paths import response_text_excerpt
 from clipforge.utils.json_validation import required_list, required_number
+from clipforge.utils.paths import response_text_excerpt
 
 
 OPENAI_TRANSCRIPTIONS_URL = "https://api.openai.com/v1/audio/transcriptions"
 DEFAULT_TRANSCRIPTION_TIMEOUT_SECONDS = 120
+DEFAULT_OPENAI_RETRY_POLICY = RetryPolicy(
+    max_attempts=3,
+    base_delay_seconds=1.0,
+    max_delay_seconds=30.0,
+    jitter_seconds=0.25,
+)
 GPT_TRANSCRIBE_JSON_MODELS = ("gpt-4o-transcribe", "gpt-4o-mini-transcribe")
 LOGGER = logging.getLogger(__name__)
 
@@ -39,6 +46,72 @@ class _OpenAITranscriptionWord:
     text: str
 
 
+class _OpenAIHTTPStatusError(CaptionTranscriptionError):
+    def __init__(
+        self,
+        *,
+        response: requests.Response,
+        source_path: Path,
+        api_key: str,
+    ) -> None:
+        self.response = response
+        self.status_code = response.status_code
+        self.request_id = response.headers.get("x-request-id")
+        super().__init__(
+            _openai_error_message(
+                response,
+                source_path=source_path,
+                api_key=api_key,
+                request_id=self.request_id,
+            )
+        )
+
+
+def classify_openai_retry_error(exc: BaseException) -> RetryDecision:
+    """Classify OpenAI integration errors for retry."""
+
+    if isinstance(exc, (requests.Timeout, requests.ConnectionError)):
+        return RetryDecision(retryable=True, reason="transient network error")
+
+    status_code = _openai_status_code(exc)
+    if status_code is not None:
+        if status_code in {408, 409, 429} or status_code >= 500:
+            return RetryDecision(
+                retryable=True,
+                reason=f"retryable HTTP status {status_code}",
+            )
+        return RetryDecision(
+            retryable=False,
+            reason=f"non-retryable HTTP status {status_code}",
+        )
+
+    error_name = type(exc).__name__
+    if error_name in {"RateLimitError", "APITimeoutError", "APIConnectionError"}:
+        return RetryDecision(retryable=True, reason=error_name)
+    if error_name in {
+        "AuthenticationError",
+        "BadRequestError",
+        "PermissionDeniedError",
+        "NotFoundError",
+        "APIResponseValidationError",
+    }:
+        return RetryDecision(retryable=False, reason=error_name)
+
+    return RetryDecision(retryable=False, reason="not classified as retryable")
+
+
+def _openai_status_code(exc: BaseException) -> int | None:
+    status_code = getattr(exc, "status_code", None)
+    if isinstance(status_code, int):
+        return status_code
+
+    response = getattr(exc, "response", None)
+    response_status = getattr(response, "status_code", None)
+    if isinstance(response_status, int):
+        return response_status
+    return None
+
+
 @dataclass(frozen=True)
 class OpenAITranscriptionClient:
     """Small OpenAI transcription adapter focused on caption metadata."""
@@ -49,6 +122,7 @@ class OpenAITranscriptionClient:
     timeout_seconds: int = DEFAULT_TRANSCRIPTION_TIMEOUT_SECONDS
     duration_probe: DurationProbe | None = None
     audio_extractor: AudioExtractor | None = None
+    retry_policy: RetryPolicy = DEFAULT_OPENAI_RETRY_POLICY
 
     @classmethod
     def from_config(cls, config: ClipforgeConfig) -> "OpenAITranscriptionClient":
@@ -61,20 +135,31 @@ class OpenAITranscriptionClient:
         if not source_path.is_file():
             raise CaptionTranscriptionError(f"Caption source clip not found: {source_path}")
 
-        client = self.session or requests
         try:
             with tempfile.TemporaryDirectory(prefix="clipforge-transcription-") as temp_dir:
                 upload_path = Path(temp_dir) / f"{source_path.stem}.mp3"
                 extractor = self.audio_extractor or extract_transcription_audio
                 extractor(source_path, upload_path)
                 with upload_path.open("rb") as source_file:
-                    response = client.post(
-                        OPENAI_TRANSCRIPTIONS_URL,
-                        headers={"Authorization": f"Bearer {self.api_key}"},
-                        data=_transcription_request_data(self.model),
-                        files={"file": (upload_path.name, source_file)},
-                        timeout=self.timeout_seconds,
+                    response = retry_call(
+                        operation_name="transcription request",
+                        provider="OpenAI",
+                        operation=lambda: self._post_transcription_request(
+                            upload_path=upload_path,
+                            source_file=source_file,
+                            source_path=source_path,
+                        ),
+                        policy=self.retry_policy,
+                        classify_error=classify_openai_retry_error,
                     )
+        except _OpenAIHTTPStatusError as exc:
+            LOGGER.warning(
+                "OpenAI transcription failed for %s with HTTP %s%s.",
+                source_path,
+                exc.status_code,
+                f" (request_id={exc.request_id})" if exc.request_id else "",
+            )
+            raise
         except CaptionTranscriptionError:
             raise
         except requests.RequestException as exc:
@@ -87,22 +172,6 @@ class OpenAITranscriptionClient:
             ) from exc
 
         request_id = response.headers.get("x-request-id")
-        if response.status_code >= 400:
-            LOGGER.warning(
-                "OpenAI transcription failed for %s with HTTP %s%s.",
-                source_path,
-                response.status_code,
-                f" (request_id={request_id})" if request_id else "",
-            )
-            raise CaptionTranscriptionError(
-                _openai_error_message(
-                    response,
-                    source_path=source_path,
-                    api_key=self.api_key,
-                    request_id=request_id,
-                )
-            )
-
         if request_id:
             LOGGER.info(
                 "OpenAI transcription completed for %s (request_id=%s).",
@@ -120,6 +189,30 @@ class OpenAITranscriptionClient:
             clip_id=clip_id,
             fallback_duration_seconds=fallback_duration,
         )
+
+    def _post_transcription_request(
+        self,
+        *,
+        upload_path: Path,
+        source_file: Any,
+        source_path: Path,
+    ) -> requests.Response:
+        client = self.session or requests
+        source_file.seek(0)
+        response = client.post(
+            OPENAI_TRANSCRIPTIONS_URL,
+            headers={"Authorization": f"Bearer {self.api_key}"},
+            data=_transcription_request_data(self.model),
+            files={"file": (upload_path.name, source_file)},
+            timeout=self.timeout_seconds,
+        )
+        if response.status_code >= 400:
+            raise _OpenAIHTTPStatusError(
+                response=response,
+                source_path=source_path,
+                api_key=self.api_key,
+            )
+        return response
 
 
 def extract_transcription_audio(

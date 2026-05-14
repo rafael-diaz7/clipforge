@@ -4,9 +4,11 @@ from pathlib import Path
 import subprocess
 
 import pytest
+import requests
 
 from clipforge.integrations.openai import (
     OpenAITranscriptionClient,
+    classify_openai_retry_error,
     extract_transcription_audio,
     media_duration_seconds,
     parse_openai_transcription_payload,
@@ -73,6 +75,11 @@ class FakeOpenAISession:
             }
         )
         return self.response
+
+
+class OpenAIStatusError(Exception):
+    def __init__(self, status_code: int) -> None:
+        self.status_code = status_code
 
 
 def test_parse_openai_transcription_payload_normalizes_segments() -> None:
@@ -324,6 +331,50 @@ def test_openai_transcription_client_redacts_api_key_from_errors(
     assert "request_id=req_401" in message
     assert "test-openai-key" not in message
     assert "[redacted]" in message
+
+
+@pytest.mark.parametrize(
+    "exc",
+    [
+        requests.Timeout("timed out"),
+        requests.ConnectionError("connection failed"),
+        type("RateLimitError", (Exception,), {})("rate limit"),
+        OpenAIStatusError(408),
+        OpenAIStatusError(409),
+        OpenAIStatusError(429),
+        OpenAIStatusError(500),
+        OpenAIStatusError(503),
+    ],
+)
+def test_openai_retry_classification_marks_transient_errors_retryable(
+    exc: BaseException,
+) -> None:
+    decision = classify_openai_retry_error(exc)
+
+    assert decision.retryable is True
+
+
+@pytest.mark.parametrize(
+    "exc",
+    [
+        OpenAIStatusError(400),
+        OpenAIStatusError(401),
+        OpenAIStatusError(403),
+        OpenAIStatusError(404),
+        type("BadRequestError", (Exception,), {})("bad request"),
+        type("AuthenticationError", (Exception,), {})("auth failed"),
+        type("PermissionDeniedError", (Exception,), {})("forbidden"),
+        type("NotFoundError", (Exception,), {})("not found"),
+        type("APIResponseValidationError", (Exception,), {})("invalid response"),
+        CaptionTranscriptionError("OpenAI API key is required"),
+    ],
+)
+def test_openai_retry_classification_marks_client_errors_non_retryable(
+    exc: BaseException,
+) -> None:
+    decision = classify_openai_retry_error(exc)
+
+    assert decision.retryable is False
 
 
 def test_extract_transcription_audio_uses_speech_optimized_ffmpeg_command(

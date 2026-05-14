@@ -10,6 +10,7 @@ from clipforge.integrations.twitch import (
     TwitchAPIError,
     TwitchClient,
     TwitchResponseError,
+    classify_twitch_retry_error,
     list_channel_clips,
     twitch_channel_login_from_input,
 )
@@ -22,10 +23,12 @@ class FakeResponse:
         payload: object,
         *,
         text: str = "",
+        headers: dict[str, str] | None = None,
     ) -> None:
         self.status_code = status_code
         self._payload = payload
         self.text = text
+        self.headers = headers or {}
 
     def json(self) -> object:
         if isinstance(self._payload, ValueError):
@@ -78,6 +81,17 @@ class FakeSession:
                 },
             )
         raise AssertionError(f"unexpected URL: {url}")
+
+
+class TwitchStatusError(Exception):
+    def __init__(
+        self,
+        status_code: int,
+        *,
+        headers: dict[str, str] | None = None,
+    ) -> None:
+        self.status_code = status_code
+        self.response = FakeResponse(status_code, {}, headers=headers)
 
 
 def test_client_lists_channel_clips_with_filters() -> None:
@@ -263,3 +277,63 @@ def test_list_channel_clips_uses_config(monkeypatch: pytest.MonkeyPatch) -> None
 def test_client_from_config_requires_twitch_credentials() -> None:
     with pytest.raises(ConfigError, match="TWITCH_CLIENT_ID"):
         TwitchClient.from_config(ClipforgeConfig())
+
+
+@pytest.mark.parametrize(
+    "exc",
+    [
+        requests.Timeout("timed out"),
+        requests.ConnectionError("connection failed"),
+        TwitchStatusError(408),
+        TwitchStatusError(429),
+        TwitchStatusError(500),
+        TwitchStatusError(503),
+    ],
+)
+def test_twitch_retry_classification_marks_transient_errors_retryable(
+    exc: BaseException,
+) -> None:
+    decision = classify_twitch_retry_error(exc)
+
+    assert decision.retryable is True
+
+
+@pytest.mark.parametrize(
+    "exc",
+    [
+        TwitchStatusError(400),
+        TwitchStatusError(401),
+        TwitchStatusError(403),
+        TwitchStatusError(404),
+        TwitchResponseError("missing auth scope"),
+        TwitchResponseError("invalid request"),
+    ],
+)
+def test_twitch_retry_classification_marks_client_errors_non_retryable(
+    exc: BaseException,
+) -> None:
+    decision = classify_twitch_retry_error(exc)
+
+    assert decision.retryable is False
+
+
+def test_twitch_retry_classification_uses_retry_after_override() -> None:
+    decision = classify_twitch_retry_error(
+        TwitchStatusError(429, headers={"Retry-After": "12.5"})
+    )
+
+    assert decision.retryable is True
+    assert decision.delay_override_seconds == 12.5
+
+
+def test_twitch_retry_classification_uses_ratelimit_reset_override(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    monkeypatch.setattr("clipforge.integrations.twitch.time.time", lambda: 100.0)
+
+    decision = classify_twitch_retry_error(
+        TwitchStatusError(429, headers={"Ratelimit-Reset": "112"})
+    )
+
+    assert decision.retryable is True
+    assert decision.delay_override_seconds == 12.0
