@@ -16,6 +16,7 @@ from clipforge.media.captions import generate_caption_metadata
 from clipforge.media.layouts import generate_detected_layout_candidates
 from clipforge.media.overlay import analyze_overlay, write_overlay_debug_images
 from clipforge.pipeline.artifacts import write_clip_discovery_export
+from clipforge.pipeline.cleanup import cleanup_local_artifacts
 from clipforge.pipeline.processing import (
     SavedClipProcessingError,
     process_saved_clips,
@@ -179,6 +180,22 @@ def build_parser() -> argparse.ArgumentParser:
         "--static-layouts",
         action="store_true",
         help="Ignore generated analysis layouts and render static layouts.",
+    )
+
+    cleanup_parser = subparsers.add_parser(
+        "cleanup",
+        help="Delete expired local artifacts without changing clip state.",
+    )
+    cleanup_mode = cleanup_parser.add_mutually_exclusive_group(required=True)
+    cleanup_mode.add_argument(
+        "--dry-run",
+        action="store_true",
+        help="Print expired artifacts without deleting them.",
+    )
+    cleanup_mode.add_argument(
+        "--apply",
+        action="store_true",
+        help="Delete expired artifacts.",
     )
 
     clips_parser = subparsers.add_parser(
@@ -545,6 +562,9 @@ def main(argv: Sequence[str] | None = None) -> int:
             process_clip(args.url, **_process_clip_kwargs(args))
             return 0
 
+        if args.command == "cleanup":
+            return _handle_cleanup_command(args)
+
         if args.command == "clips":
             return _handle_clips_command(args)
 
@@ -593,6 +613,18 @@ def _handle_analyze_command(args: argparse.Namespace) -> int:
         return 0
 
     raise CLIError("analyze requires a subcommand.")
+
+
+def _handle_cleanup_command(args: argparse.Namespace) -> int:
+    config = load_config()
+    result = cleanup_local_artifacts(apply=args.apply, config=config)
+    action = "deleted" if args.apply else "would delete"
+    for path in result.deleted_files:
+        print(f"{action} file: {path}")
+    for path in result.deleted_dirs:
+        print(f"{action} dir: {path}")
+    print(f"{action}: {result.file_count} files, {result.dir_count} dirs")
+    return 0
 
 
 def _handle_clips_command(args: argparse.Namespace) -> int:
