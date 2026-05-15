@@ -8,6 +8,7 @@ from clipforge.storage.paths import (
     clip_folder_name,
     download_dir,
     export_path,
+    ready_export_filename,
     ready_export_path,
     render_path,
     sanitize_path_part,
@@ -64,6 +65,7 @@ def test_ready_export_path_uses_ready_streamer_clip_layout(tmp_path: Path) -> No
     path = ready_export_path(
         config,
         streamer="Example Streamer!",
+        title="WAS???",
         clip_id=" Clip:One! ",
         layout="center gameplay",
     )
@@ -74,8 +76,40 @@ def test_ready_export_path_uses_ready_streamer_clip_layout(tmp_path: Path) -> No
         / "ready"
         / "Example_Streamer"
         / "Clip_One"
-        / "center_gameplay.mp4"
+        / "WAS-Clip_One.mp4"
     )
+
+
+def test_ready_export_filename_uses_title_and_clip_id() -> None:
+    filename = ready_export_filename(
+        title="WAS???",
+        clip_id="CreativeHilariousWrenchM4xHeh-e1mVQUh6JEati9qQ",
+        layout="hybrid",
+        extension="mp4",
+    )
+
+    assert (
+        filename
+        == "WAS-CreativeHilariousWrenchM4xHeh-e1mVQUh6JEati9qQ.mp4"
+    )
+
+
+def test_ready_export_filename_falls_back_and_limits_title() -> None:
+    filename = ready_export_filename(
+        title=" " + "A" * 90 + " ",
+        clip_id="clip-1",
+        layout="hybrid",
+        extension=".mp4",
+    )
+    missing_title = ready_export_filename(
+        title="...",
+        clip_id="clip-1",
+        layout="hybrid",
+        extension="mp4",
+    )
+
+    assert filename == f"{'A' * 80}-clip-1.mp4"
+    assert missing_title == "clip-clip-1.mp4"
 
 
 def test_sanitize_path_part_is_safe_and_short() -> None:

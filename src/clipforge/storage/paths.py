@@ -9,6 +9,7 @@ from clipforge.utils.paths import safe_filename
 
 
 MAX_TITLE_PATH_PART_LENGTH = 72
+MAX_READY_EXPORT_TITLE_LENGTH = 80
 
 
 def sanitize_path_part(
@@ -111,6 +112,7 @@ def ready_export_path(
     config: ClipforgeConfig,
     *,
     streamer: str,
+    title: str | None = None,
     clip_id: str,
     layout: str,
 ) -> Path:
@@ -121,8 +123,31 @@ def ready_export_path(
         / "ready"
         / sanitize_path_part(streamer, fallback="unknown_streamer")
         / _artifact_id(clip_id)
-        / f"{_layout(layout)}.{config.output_format}"
+        / ready_export_filename(
+            title=title,
+            clip_id=clip_id,
+            layout=layout,
+            extension=config.output_format,
+        )
     )
+
+
+def ready_export_filename(
+    *,
+    title: str | None,
+    clip_id: str,
+    layout: str,
+    extension: str,
+) -> str:
+    """Return the phone-download filename for one selected render candidate."""
+
+    safe_title = sanitize_path_part(
+        title,
+        fallback="clip",
+        max_length=MAX_READY_EXPORT_TITLE_LENGTH,
+    )
+    stem = f"{safe_title}-{_artifact_id(clip_id)}"
+    return f"{stem}.{_extension(extension)}"
 
 
 def _artifact_id(value: str) -> str:
@@ -135,3 +160,7 @@ def _engine(value: str) -> str:
 
 def _layout(value: str) -> str:
     return sanitize_path_part(value, fallback="layout", max_length=None)
+
+
+def _extension(value: str) -> str:
+    return sanitize_path_part(value.lstrip("."), fallback="mp4", max_length=None)

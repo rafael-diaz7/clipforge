@@ -150,6 +150,7 @@ def export_selected_candidate(
     export_path = ready_export_path(
         config,
         streamer=streamer_login,
+        title=clip.title,
         clip_id=clip.clip_id,
         layout=selected.layout,
     )

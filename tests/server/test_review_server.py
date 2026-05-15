@@ -163,13 +163,20 @@ def test_approve_action_exports_selected_render_and_removes_from_queue(
 
     state = get_clip("clip-ready", db_path=config.state_db_path)
     expected_export = (
-        config.exports_dir / "ready" / "example" / "clip-ready" / "hybrid.mp4"
+        config.exports_dir
+        / "ready"
+        / "example"
+        / "clip-ready"
+        / "Ready-clip-ready.mp4"
     )
     assert response.status == 200
     assert b"Download MP4" in response.body
     assert b"View MP4" in response.body
-    assert b"/exports/ready/example/clip-ready/hybrid.mp4" in response.body
-    assert b"/exports/ready/example/clip-ready/hybrid.mp4?disposition=inline" in response.body
+    assert b"/exports/ready/example/clip-ready/Ready-clip-ready.mp4" in response.body
+    assert (
+        b"/exports/ready/example/clip-ready/Ready-clip-ready.mp4?disposition=inline"
+        in response.body
+    )
     assert state is not None
     assert state.status == "exported"
     assert state.selected_render_layout == "hybrid"
@@ -201,7 +208,11 @@ def test_approve_action_does_not_render_selected_layout(
 
     assert response.status == 200
     assert (
-        config.exports_dir / "ready" / "example" / "clip-ready" / "hybrid.mp4"
+        config.exports_dir
+        / "ready"
+        / "example"
+        / "clip-ready"
+        / "clip-ready-clip-ready.mp4"
     ).read_bytes() == b"video:clip-ready:hybrid"
 
 
@@ -223,9 +234,16 @@ def test_approve_action_is_idempotent_for_existing_export(tmp_path: Path) -> Non
 
     assert first.status == 200
     assert second.status == 200
-    assert b"/exports/ready/example/clip-ready/hybrid.mp4" in second.body
     assert (
-        config.exports_dir / "ready" / "example" / "clip-ready" / "hybrid.mp4"
+        b"/exports/ready/example/clip-ready/clip-ready-clip-ready.mp4"
+        in second.body
+    )
+    assert (
+        config.exports_dir
+        / "ready"
+        / "example"
+        / "clip-ready"
+        / "clip-ready-clip-ready.mp4"
     ).read_bytes() == b"video:clip-ready:hybrid"
 
 
